@@ -11,6 +11,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let outbox = OutboxStore()
     private let power = PowerMonitor()
     private let presence = PresenceScanner()
+    private let safeNetworks = SafeNetworkStore()
+    private let network = NetworkMonitor()
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
@@ -73,7 +75,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         server.start()
         watcher.start()
         power.start()
+        network.start()
         notifier.requestAuthorization()
+
+        // Says in the log where the auto lock stands before anything else has
+        // happened. Without it the first word on the subject waits for the
+        // keychain read below, and a feature that is quietly standing down - on
+        // a safe network, say - looks the same as one that is working.
+        updatePresenceScanning()
 
         // Deliberately off the main thread: the scanner needs the pairing code,
         // and the very first keychain read can take a dozen seconds, which would
@@ -93,6 +102,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         lockStateObservers.forEach(DistributedNotificationCenter.default().removeObserver)
         lockStateObservers.removeAll()
         presence.stop()
+        network.stop()
         power.stop()
         watcher.stop()
         server.stop()
@@ -207,6 +217,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         if !phoneAllowsBeacon { return "The phone has the beacon switched off" }
         if isScreenLocked { return "Screen is locked" }
+        if let safe = safeNetworkName { return "Safe network: \(safe)" }
         guard presence.availability == .scanning else { return presence.availability.rawValue.capitalizedFirst }
         guard let mean = presence.meanRSSI else {
             if let seconds = presence.secondsSinceLastBeacon {
@@ -402,6 +413,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             self.refreshMenuTitles()
         }
 
+        // Walking into a network the user marked safe is the same kind of event
+        // as closing the lid: it changes whether there is anything to listen for.
+        network.onChange = { [weak self] _ in self?.updatePresenceScanning() }
+
         server.onPresencePreference = { [weak self] enabled in
             guard let self else { return }
             self.phoneAllowsBeacon = enabled
@@ -436,6 +451,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             power.isSuspended ? "the Mac is suspended" : nil,
             isScreenLocked ? "the screen is already locked" : nil,
             (code?.isEmpty ?? true) ? "the pairing code is not loaded yet" : nil,
+            safeNetworkName.map { "the Mac is on a safe network (\($0))" },
         ].compactMap { $0 }
 
         if let code, blockers.isEmpty {
@@ -449,6 +465,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             Log.info("Not listening for the phone: \(blockers.joined(separator: ", "))")
         }
         refreshMenuTitles()
+    }
+
+    /// The safe network this Mac is on, nil when it is on none. There is no name
+    /// to give it - macOS keeps those to itself - so it goes by its identity.
+    private var safeNetworkName: String? {
+        guard let id = network.currentProfileID, safeNetworks.isSafe(id) else { return nil }
+        return CurrentNetwork.shortForm(id)
     }
 
     private func snooze(for seconds: TimeInterval) {
@@ -692,6 +715,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             revealDownloads: { [weak self] in
                 guard let self else { return }
                 NSWorkspace.shared.open(self.server.destinationDirectory)
+            },
+            currentNetworkID: { [weak self] in self?.network.currentProfileID },
+            safeNetworks: { [weak self] in self?.safeNetworks.all ?? [] },
+            addCurrentNetwork: { [weak self] in
+                guard let self, let id = self.network.currentProfileID else { return }
+                self.safeNetworks.add(id: id)
+                self.updatePresenceScanning()
+            },
+            removeNetwork: { [weak self] id in
+                guard let self else { return }
+                self.safeNetworks.remove(id: id)
+                self.updatePresenceScanning()
             }
         )
     }

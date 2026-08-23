@@ -18,6 +18,12 @@ struct SettingsHooks {
     var liveReading: () -> String = { "" }
     var downloadsPath: () -> String = { "" }
     var revealDownloads: () -> Void = {}
+
+    /// Identity of the Wi-Fi network this Mac is on, nil when it is on none.
+    var currentNetworkID: () -> String? = { nil }
+    var safeNetworks: () -> [SafeNetworkStore.Network] = { [] }
+    var addCurrentNetwork: () -> Void = {}
+    var removeNetwork: (String) -> Void = { _ in }
 }
 
 /// The settings window: everything that is configured once and then left alone.
@@ -26,7 +32,8 @@ struct SettingsHooks {
 /// write the same `Settings`, so `refresh()` exists to keep the two in step -
 /// and it only ever writes values into controls, never fires their actions,
 /// which is what stops the two from bouncing changes off each other.
-final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTabViewDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTabViewDelegate,
+                                     NSTableViewDataSource, NSTableViewDelegate {
 
     private let settings = Settings.shared
     private let hooks: SettingsHooks
@@ -44,6 +51,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let liveLabel = NSTextField(labelWithString: "")
     private let snoozeLabel = NSTextField(labelWithString: "")
     private let snoozeButton = NSButton(title: "Pause for an hour", target: nil, action: nil)
+
+    // Safe networks
+    private let networkTable = NSTableView()
+    private let addNetworkButton = NSButton(title: "+", target: nil, action: nil)
+    private let removeNetworkButton = NSButton(title: "−", target: nil, action: nil)
+    private let networkStatusLabel = NSTextField(wrappingLabelWithString: "")
+    /// Identity of the network in use, shown so it can be matched against the list.
+    private let currentNetworkLabel = NSTextField(labelWithString: "")
+    /// What the table shows, so the data source can never disagree with it.
+    private var networks: [SafeNetworkStore.Network] = []
 
     private var ticker: DispatchSourceTimer?
     private var tabs: NSTabView?
@@ -194,6 +211,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             snoozeLabel.stringValue = autoLock ? "Running" : "Switched off"
             snoozeButton.title = "Pause for an hour"
         }
+
+        refreshNetworks()
     }
 
     /// Refresh after a change made **here**. The field editor is dismissed
@@ -218,6 +237,108 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             _ = Settings.shared.pairingCode
             DispatchQueue.main.async { [weak self] in self?.refresh() }
         }
+    }
+
+    // MARK: - Safe networks
+
+    private func refreshNetworks() {
+        let selected = selectedNetwork?.id
+        networks = hooks.safeNetworks()
+        networkTable.reloadData()
+        // Keeps the selection on the same network rather than the same row index,
+        // which after a removal would jump to a neighbour.
+        if let selected, let row = networks.firstIndex(where: { $0.id == selected }) {
+            networkTable.selectRowIndexes([row], byExtendingSelection: false)
+        }
+
+        let current = hooks.currentNetworkID()
+        let alreadyListed = current.map { id in networks.contains { $0.id == id } } ?? false
+        addNetworkButton.isEnabled = current != nil && !alreadyListed
+        addNetworkButton.toolTip = {
+            if current == nil { return "This Mac is not on a Wi-Fi network right now." }
+            if alreadyListed { return "This network is already on the list." }
+            return "Add the network this Mac is on."
+        }()
+        removeNetworkButton.isEnabled = selectedNetwork != nil
+
+        // The identity of the network in use, so it can be matched against the
+        // list by eye. It is the same value the decision compares.
+        currentNetworkLabel.stringValue = current.map(CurrentNetwork.shortForm) ?? "not on a Wi-Fi network"
+
+        networkStatusLabel.stringValue = {
+            guard current != nil else {
+                return "Not on a Wi-Fi network, so the auto lock is running."
+            }
+            if alreadyListed {
+                return "This network is on the list, so the auto lock is standing down."
+            }
+            return "This network is not on the list, so the auto lock is running."
+        }()
+    }
+
+    private var selectedNetwork: SafeNetworkStore.Network? {
+        let row = networkTable.selectedRow
+        guard row >= 0, row < networks.count else { return nil }
+        return networks[row]
+    }
+
+    /// One press, no questions. There is nothing to ask: the network identifies
+    /// itself, and macOS would not give us its name without a permission this
+    /// feature has no business holding.
+    @objc private func addCurrentNetwork() {
+        guard hooks.currentNetworkID() != nil else { return }
+        hooks.addCurrentNetwork()
+        refreshAfterChange()
+    }
+
+    @objc private func removeSelectedNetwork() {
+        guard let network = selectedNetwork else { return }
+        hooks.removeNetwork(network.id)
+        refreshAfterChange()
+    }
+
+    // MARK: - The list
+
+    func numberOfRows(in tableView: NSTableView) -> Int { networks.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < networks.count else { return nil }
+        let field = NSTextField(labelWithAttributedString: attributed(networks[row]))
+        field.lineBreakMode = .byTruncatingTail
+        field.translatesAutoresizingMaskIntoConstraints = false
+
+        let cell = NSTableCellView()
+        cell.addSubview(field)
+        cell.textField = field
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        removeNetworkButton.isEnabled = selectedNetwork != nil
+    }
+
+    /// The identity, monospaced so two of them can be compared column by column,
+    /// and for the network in use a quiet note saying so. That note is the one
+    /// thing the list cannot show by itself.
+    private func attributed(_ network: SafeNetworkStore.Network) -> NSAttributedString {
+        let text = NSMutableAttributedString(
+            string: CurrentNetwork.shortForm(network.id),
+            attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)]
+        )
+        guard network.id == hooks.currentNetworkID() else { return text }
+        text.append(NSAttributedString(
+            string: "   on this network",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        ))
+        return text
     }
 
     // MARK: - General actions
@@ -329,7 +450,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let tabs = NSTabView()
         tabs.translatesAutoresizingMaskIntoConstraints = false
 
-        let bodies = [pad(buildGeneralTab()), pad(buildAutoLockTab())]
+        let bodies = [pad(buildGeneralTab()), pad(buildAutoLockTab()), pad(buildSafeNetworksTab())]
 
         let general = NSTabViewItem(identifier: "general")
         general.label = "General"
@@ -340,6 +461,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         autoLock.label = "Auto lock"
         autoLock.view = bodies[1]
         tabs.addTabViewItem(autoLock)
+
+        let networks = NSTabViewItem(identifier: "safeNetworks")
+        networks.label = "Safe networks"
+        networks.view = bodies[2]
+        tabs.addTabViewItem(networks)
 
         // One width for both tabs, so switching them does not make the window
         // jump sideways; the height follows whichever tab is showing.
@@ -434,6 +560,69 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         return configure(grid)
     }
 
+    private func buildSafeNetworksTab() -> NSView {
+        addNetworkButton.target = self
+        addNetworkButton.action = #selector(addCurrentNetwork)
+        removeNetworkButton.target = self
+        removeNetworkButton.action = #selector(removeSelectedNetwork)
+        for button in [addNetworkButton, removeNetworkButton] {
+            button.bezelStyle = .rounded
+            button.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        }
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("network"))
+        column.width = 390
+        column.resizingMask = .autoresizingMask
+        networkTable.addTableColumn(column)
+        networkTable.headerView = nil
+        networkTable.dataSource = self
+        networkTable.delegate = self
+        networkTable.rowHeight = 22
+        networkTable.style = .inset
+        networkTable.allowsMultipleSelection = false
+        networkTable.usesAlternatingRowBackgroundColors = true
+
+        let scroll = NSScrollView()
+        scroll.documentView = networkTable
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            scroll.widthAnchor.constraint(equalToConstant: 420),
+            scroll.heightAnchor.constraint(equalToConstant: 132),
+        ])
+
+        networkStatusLabel.font = .systemFont(ofSize: 11)
+        networkStatusLabel.textColor = .secondaryLabelColor
+        networkStatusLabel.preferredMaxLayoutWidth = 420
+
+        currentNetworkLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        currentNetworkLabel.textColor = .secondaryLabelColor
+
+        let stack = NSStackView(views: [
+            hint(
+                "The Mac does not lock itself while it is on one of these networks. Everything else is "
+                + "unchanged: the phone still reports its presence, Lock Now still locks, and a network "
+                + "that is not on the list is treated as somewhere the Mac should look after itself."
+            ),
+            scroll,
+            row([addNetworkButton, removeNetworkButton]),
+            networkStatusLabel,
+            separator(),
+            row([label("This network:"), currentNetworkLabel]),
+            hint(
+                "Networks are listed by the identifier macOS gives the network you have joined, which is "
+                + "also the only thing compared. Its name is not shown because macOS reveals that only to "
+                + "an app allowed to use your location, and nothing here needs to know where you are."
+            ),
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        return stack
+    }
+
     // MARK: - Building blocks
 
     private func configure(_ grid: NSGridView) -> NSGridView {
@@ -456,6 +645,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             container.bottomAnchor.constraint(greaterThanOrEqualTo: view.bottomAnchor, constant: 16),
         ])
         return container
+    }
+
+    private func separator() -> NSView {
+        let line = NSBox()
+        line.boxType = .separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        return line
     }
 
     private func label(_ text: String) -> NSTextField {

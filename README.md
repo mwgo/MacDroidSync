@@ -91,13 +91,14 @@ lives in *Settings…* instead:
 
 #### The settings window
 
-Two tabs, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
+Three tabs, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
 other shortcuts there:
 
 | Tab | What is in it |
 |---|---|
 | **General** | the pairing code with *Copy* and *Regenerate…*, the listening port, *Launch at login*, and where incoming files are saved |
 | **Auto lock** | the *Lock when the phone leaves* switch, the three sensitivity presets with their numbers spelled out, the away threshold in dBm, the live reading next to it, and the pause |
+| **Safe networks** | the networks on which the Mac does not lock itself, with **+** adding the one it is on, and the identifier of that network under the list; see *Safe networks* below |
 
 The window and the menu show the same settings from two sides and stay in step: switching the automatic
 locking off in one is visible in the other straight away. A value typed into a field takes effect on
@@ -237,6 +238,28 @@ tappable notification instead of being applied automatically.
   - **Fast** (10 s window, -75 dBm, 10 s grace), **Balanced** (the default above) and **Cautious** (30 s
   window, -85 dBm, 45 s grace) - and *Away threshold* takes a single dBm value while keeping the preset's
   hysteresis.
+* **Safe networks.** The lock is worth having in an office, a train or a café and merely irritating at
+  your own desk, so the *Safe networks* tab in the Mac's settings holds the Wi-Fi networks on which the
+  Mac stands down. Press **+** once while on the network and it is added - no dialog, nothing to fill in.
+  The menu then says `Safe network: c5bd1be4e7…`, the log says `Not listening for the phone: the Mac is on
+  a safe network (…)`, and no measurement is taken at all until you leave. **Lock Now** from the phone
+  still works: that is a button you pressed, not a guess about where you are.
+
+  The list shows identifiers rather than names, and that is the point rather than a shortcoming. A network
+  is recognised by `ProfileID` - the system's own identifier of the network you have joined - which needs
+  no permission, does not change as you roam between the nodes of one mesh, and is the only thing ever
+  compared. Its **name** would need Location Services, because macOS treats the name of the network you
+  are on as location data: without that permission `networksetup`, `ipconfig`, `scutil`, `system_profiler`
+  and CoreWLAN all answer `<redacted>` or nothing. A name typed by hand would only be decoration on top of
+  the identifier, so the identifier is shown instead, with the one for the current network printed under
+  the list so the two can be matched by eye.
+
+  With Wi-Fi off, on Ethernet only, or on a network that is not on the list, the auto lock runs as usual.
+  That is deliberate: the identity of the network can be missing for half a dozen reasons, and every one
+  of them means "keep locking" rather than "stop". The same goes for a damaged list file, which loads as
+  an empty list. Do note that the list trusts the network you joined - it is a convenience, not a defence
+  against whoever runs that network.
+
 * **Locking the Mac by hand.** **Lock Now** in the Android app, both as a button in the main window and
   as an action on the ongoing notification, locks the Mac straight away. It works whether or not the
   automatic locking is switched on and regardless of the beacon, because it is a button press rather
@@ -324,6 +347,7 @@ adb logcat -s MacDroidSync
 | Incoming clipboard arrives as a notification instead of being applied | *Display over other apps* is not granted |
 | On the emulator the clipboard seems to bounce between host and guest | The emulator mirrors the guest clipboard onto the host by itself; that is an emulator feature, not this app |
 | Port already in use | Another process holds 47831; change it in *Settings…*, tab *General*, and in the Android app |
+| After a rebuild the Mac asks for the keychain password again | The grant is tied to the app's code signature, and `build.sh` signs ad-hoc, so every rebuild is a different app as far as macOS is concerned. Answer once per build; an installed copy that is not rebuilt keeps it |
 | A rebuild changes nothing | `build.sh` always writes `macos/build/MacDroidSync.app`. If you moved the app to `/Applications`, copy the fresh bundle over it again: `cp -R macos/build/MacDroidSync.app /Applications/` |
 | The phone shows no icon although the Mac is awake | If the Mac runs docked with the lid closed, the sync is suspended by design; the Mac menu says `Suspended, the lid is closed`. Open the lid to resume |
 | macOS asks whether MacDroidSync may access the Downloads folder | Incoming files are saved there; allow it once. Denying it makes every transfer end with `Failed: …` in the menu and a refusal on the phone |
