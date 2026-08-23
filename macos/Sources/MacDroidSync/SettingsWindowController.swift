@@ -631,6 +631,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         return stack
     }
 
+    /// Where the source lives. The About tab is the one place in the app that
+    /// says it out loud, so it is written here and nowhere else.
+    private static let sourceURL = "https://github.com/mwgo/MacDroidSync"
+
     /// The About tab: what used to be the system About panel, now the last card
     /// here because it is read once and never touched again. Every particular
     /// comes out of the bundle, so none of them can drift away from what was
@@ -693,6 +697,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                 + "PROTOCOL.md in the source repository.",
                 width: aboutWidth
             ),
+            row([hint("Source:"), link(Self.sourceURL)]),
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -753,6 +758,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             field.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
+    }
+
+    /// A clickable address. AppKit draws and follows a `.link` attribute itself,
+    /// as long as the field may be selected and may carry attributes, so this
+    /// needs no target and no action of ours.
+    private func link(_ address: String) -> NSTextField {
+        let text = NSMutableAttributedString(
+            string: address,
+            attributes: [.font: NSFont.systemFont(ofSize: 11)]
+        )
+        if let url = URL(string: address) {
+            text.addAttribute(.link, value: url, range: NSRange(location: 0, length: text.length))
+        }
+        let field = NSTextField(labelWithAttributedString: text)
+        field.isSelectable = true
+        field.allowsEditingTextAttributes = true
+        return field
     }
 
     private func button(_ title: String, _ action: Selector) -> NSButton {

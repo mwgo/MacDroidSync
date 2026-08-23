@@ -127,6 +127,21 @@
                 android:text="@string/about_protocol"
                 android:textAppearance="?attr/textAppearanceBodySmall"
                 android:textColor="?android:attr/textColorSecondary" />
+
+            <TextView
+                style="@style/SectionHeading"
+                android:text="@string/about_source_heading" />
+
+            <!-- autoLink rather than a click listener of our own: the system
+                 opens the address in the browser the user actually chose, and
+                 there is no missing-browser case left for us to handle. -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:autoLink="web"
+                android:text="@string/about_source"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textIsSelectable="true" />
         </LinearLayout>
     </ScrollView>
 </LinearLayout>
