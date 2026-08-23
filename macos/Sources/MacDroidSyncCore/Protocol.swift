@@ -15,6 +15,17 @@ public enum Wire {
     /// Clipboard payloads above this size are skipped instead of being synced.
     public static let maxClipboardBytes = 512 * 1024
 
+    /// Raw bytes per `file-chunk`; base64 grows it by a third, which still leaves
+    /// plenty of room below `maxFrameSize`.
+    public static let fileChunkBytes = 192 * 1024
+    /// Files above this size are rejected with `file-ack { ok: false }`.
+    public static let maxFileBytes: Int64 = 512 * 1024 * 1024
+    /// How long the sender waits for the `file-ack` after the last chunk.
+    public static let fileAckTimeout: TimeInterval = 60
+    /// Chunks the sender may keep in flight. One at a time costs about three
+    /// quarters of the throughput; the window bounds memory at eight chunks.
+    public static let fileSendWindow = 8
+
     public static let heartbeatInterval: TimeInterval = 15
     public static let receiveTimeout: TimeInterval = 30
 }
@@ -35,6 +46,10 @@ public enum MessageType {
     public static let pong = "pong"
     public static let heartbeat = "heartbeat"
     public static let bye = "bye"
+    public static let fileOffer = "file-offer"
+    public static let fileChunk = "file-chunk"
+    public static let fileEnd = "file-end"
+    public static let fileAck = "file-ack"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.
@@ -49,6 +64,16 @@ public struct Message: Codable {
     public var challenge: String?
     public var token: UInt64?
     public var reason: String?
+    // File transfer, see PROTOCOL.md section 6.
+    public var fileId: String?
+    public var name: String?
+    public var size: Int64?
+    public var mime: String?
+    public var sha256: String?
+    /// Base64 of one `file-chunk` payload.
+    public var data: String?
+    public var ok: Bool?
+    public var path: String?
 
     public init(
         v: Int = Wire.version,
@@ -60,7 +85,15 @@ public struct Message: Codable {
         deviceId: String? = nil,
         challenge: String? = nil,
         token: UInt64? = nil,
-        reason: String? = nil
+        reason: String? = nil,
+        fileId: String? = nil,
+        name: String? = nil,
+        size: Int64? = nil,
+        mime: String? = nil,
+        sha256: String? = nil,
+        data: String? = nil,
+        ok: Bool? = nil,
+        path: String? = nil
     ) {
         self.v = v
         self.seq = seq
@@ -72,6 +105,14 @@ public struct Message: Codable {
         self.challenge = challenge
         self.token = token
         self.reason = reason
+        self.fileId = fileId
+        self.name = name
+        self.size = size
+        self.mime = mime
+        self.sha256 = sha256
+        self.data = data
+        self.ok = ok
+        self.path = path
     }
 
     public static func now() -> Int64 {

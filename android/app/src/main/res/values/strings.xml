@@ -53,5 +53,27 @@
     <string name="notification_pending_title">Clipboard from %1$s</string>
     <string name="notification_pending_text">Tap to put it on this phone\'s clipboard.</string>
 
+    <string name="notification_channel_transfer">File transfers</string>
+    <string name="notification_channel_transfer_description">Progress of the files being sent to the Mac.</string>
+    <string name="notification_transfer_title">Sending to the Mac</string>
+    <string name="notification_transfer_text_queued">%1$s, %2$d more waiting</string>
+    <string name="notification_incoming_title">Receiving from the Mac</string>
+    <string name="notification_file_received_title">File from the Mac</string>
+    <string name="notification_action_open">Open</string>
+    <string name="notification_file_sent_title">Sent to the Mac</string>
+    <string name="notification_file_failed_title">File not sent</string>
+    <string name="notification_file_failed_text">%1$s: %2$s</string>
+    <string name="file_error_no_answer">The Mac never confirmed the transfer</string>
+
+    <string name="share_label">Send to Mac</string>
+    <string name="share_hint">Share any file with MacDroidSync to drop it in the Mac\'s Downloads folder.</string>
+    <string name="share_queued_one">%1$s is on its way to the Mac</string>
+    <string name="share_queued_many">%1$d files are on their way to the Mac</string>
+    <string name="share_text_sent">Text sent to the Mac\'s clipboard</string>
+    <string name="share_too_large">%1$s is too large to send</string>
+    <string name="share_failed">Could not read %1$s</string>
+    <string name="share_nothing_to_send">Nothing to send</string>
+    <string name="status_queued_files">%1$d file(s) waiting for the Mac</string>
+
     <string name="toast_clipboard_empty">The clipboard is empty</string>
 </resources>

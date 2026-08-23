@@ -7,6 +7,11 @@ Clipboard sharing between macOS and Android over Wi-Fi, in the spirit of KDE Con
   waits in a queue and is delivered on the next connection.
 * **Android → macOS is on demand.** The phone pushes its clipboard when you tap *Send clipboard to Mac*
   in the notification.
+* **Files go both ways.** On the phone, pick *Send to Mac* in the share sheet and the file lands in the
+  Mac's Downloads folder; shared plain text goes to the Mac's clipboard instead. On the Mac, use the Share
+  menu, *Send to Android* in the Services menu, or *Send files to phone…* in the menu bar, and the file
+  lands in the phone's Download folder. Files shared while the other device is away wait in a queue and
+  are delivered on the next connection.
 * **The status bar icon on Android only exists while a Mac is connected.** No connection, no icon.
 * **Ping** the phone straight from the Mac menu and get the round trip time.
 
@@ -71,6 +76,10 @@ Everything lives in the menu:
 | `Ping phone` (⌘P) | rings the phone and shows the round trip time, `Ping: 23 ms`, for a few seconds |
 | `Send clipboard now` (⌘S) | pushes the current clipboard even if it did not change |
 | `Last sent: …` | what was last sent, received or queued |
+| `Send files to phone…` (⌘O) | opens a file picker; several files at a time are fine |
+| `Sending photo.jpg - 45%` | outgoing transfer, then `Sent: …` or `Queued: 3 files` |
+| `Received: <file>` | the file that arrived last; selecting it reveals the file in Finder |
+| `Open Downloads folder` | opens the folder incoming files are saved to |
 | `Pairing code…` | shows the code, copies it, or generates a new one |
 | `Port…` | changes the listening port (both sides must match) |
 | `Launch at login` | registers the app as a login item |
@@ -102,6 +111,9 @@ Then open the app once and:
 3. Grant **notifications** and **display over other apps**.
 4. Turn on *Keep the clipboard in sync*.
 
+To send a file, share it from any app (*Share* → *Send to Mac*). That works whether or not clipboard sync
+is on: a shared file is an explicit request, so the app connects for it and goes back to idle afterwards.
+
 #### Why "display over other apps" is required
 
 Since Android 10 an app may only read or write the clipboard while it owns the focused window, and it may
@@ -125,6 +137,41 @@ tappable notification instead of being applied automatically.
 * **Offline queue.** Only the most recent clipboard value is kept (clipboard semantics are "last one
   wins"). It is stored in `~/Library/Application Support/MacDroidSync/pending.json`, so it also survives
   restarting the Mac app, and it is cleared once the phone acknowledges it.
+* **Sending files.** *Share* → *Send to Mac* copies the shared files into the app cache and hands them
+  to the sync service, which streams them over the same encrypted connection in 192 KiB chunks. The Mac
+  writes to `<name>.macdroidsync-part` in `~/Downloads` and only renames it to the real name once the
+  SHA-256 sent with the last frame matches, so a half transferred file never shows up as finished. An
+  existing name is not overwritten: `photo.jpg` becomes `photo (2).jpg`, exactly like Finder. The phone
+  shows the progress in a notification and the Mac shows it in the menu; when the file lands, the Mac
+  posts a notification with a *Show in Finder* action.
+  The copy into the cache is not optional: the permission to read a shared `content://` URI dies with the
+  screen you shared from, so the bytes have to be taken while it is still open. That same copy is the
+  offline queue, capped at 512 MiB in total, and it survives the app being killed. Files are sent from the
+  phone to the Mac only; the Mac never pushes files to the phone.
+* **Sending files from the Mac.** Three entry points end up in the same queue: the **Share** menu (a
+  share extension inside the app bundle), **Send to Android** in the Services menu, which also appears in
+  the Finder context menu, and **Send files to phone…** in the menu bar. Files are streamed straight from
+  disk, so nothing is copied first; the queue in
+  `~/Library/Application Support/MacDroidSync/outbox.json` only remembers paths, which means a file that
+  is moved or deleted before its turn is dropped from the queue and reported in the menu instead of being
+  sent. Up to eight chunks are kept in flight, which keeps memory flat: sending 120 MB moves the app from
+  50 to 80 MB of RSS and stays there. On the phone the file goes to the public **Download** folder through
+  MediaStore, so no storage permission is involved, and MediaStore renames duplicates itself
+  (`photo.jpg`, then `photo (1).jpg`). The arrival notification carries an **Open** action.
+* **The Share menu needs one setup step.** An ad-hoc signed extension is registered but not necessarily
+  enabled, so after the first build run `pluginkit -a macos/build/MacDroidSync.app/Contents/PlugIns/ShareExtension.appex`
+  and turn MacDroidSync on under *System Settings, General, Login Items and Extensions, Sharing*. The
+  Services entry needs `/System/Library/CoreServices/pbs -flush` once. Both are printed by `build.sh`.
+  The extension itself does no networking: it is sandboxed, drops the shared paths into
+  `~/Library/Application Support/MacDroidSync/share-requests/` and the app, which watches that folder,
+  picks them up within milliseconds and starts sending. Because it is sandboxed, that path is resolved
+  from the real home directory (`getpwuid`) instead of the usual `FileManager` search paths: those are
+  redirected into `~/Library/Containers/…`, where the app would never find the requests.
+* **Android strips location metadata from shared media.** When a photo or video comes from the gallery,
+  Android hands out a copy with the GPS tags zeroed out unless the app holds the media location
+  permission. MacDroidSync deliberately asks for no storage permission at all, so what arrives on the Mac
+  is byte identical to what Android provided: the whole file, minus the geotag. Sharing the same file from
+  a file manager keeps it intact.
 * **No echo loops.** A value received from the peer is never sent back, and an identical value that some
   other app rewrites onto the clipboard is not forwarded twice.
 * **A ping rings the phone.** `Ping phone` is a "where did I leave it": the phone plays its own ringtone
@@ -134,7 +181,8 @@ tappable notification instead of being applied automatically.
   and shows the round trip time.
 * **Secrets are skipped.** Copies marked `org.nspasteboard.ConcealedType`, `TransientType` or
   `AutoGeneratedType` (password managers, clipboard tools) are never sent.
-* **Size limit.** Clipboard payloads above 512 KiB are skipped; text only, no images or files.
+* **Size limit.** Clipboard payloads above 512 KiB are skipped, and the clipboard carries text only.
+  Files use the transfer path below, with a limit of 512 MiB per file.
 * **The Android status bar icon.** A foreground service must always keep an ongoing notification, and
   Android raises such a notification to at least `IMPORTANCE_LOW` even when its channel asks for
   `IMPORTANCE_MIN`. The disconnected notification therefore uses a fully transparent icon
@@ -191,12 +239,23 @@ adb logcat -s MacDroidSync
 | Port already in use | Another process holds 47831; change it under `Port…` and in the Android app |
 | A rebuild changes nothing | `build.sh` always writes `macos/build/MacDroidSync.app`. If you moved the app to `/Applications`, copy the fresh bundle over it again: `cp -R macos/build/MacDroidSync.app /Applications/` |
 | The phone shows no icon although the Mac is awake | If the Mac runs docked with the lid closed, the sync is suspended by design; the Mac menu says `Suspended, the lid is closed`. Open the lid to resume |
+| macOS asks whether MacDroidSync may access the Downloads folder | Incoming files are saved there; allow it once. Denying it makes every transfer end with `Failed: …` in the menu and a refusal on the phone |
+| A shared photo differs from the original by a few bytes near the end | That is Android removing the GPS metadata, see *Android strips location metadata* above. The rest of the file is identical |
+| *Send to Mac* does not appear in the share sheet | Some apps only share a preview instead of the file. Try sharing from the gallery or a file manager |
+| Sharing from Finder appears to do nothing | Requests are dropped in `~/Library/Application Support/MacDroidSync/share-requests/`. If they pile up there, the app is not running; if they show up under `~/Library/Containers/pl.wojas.MacDroidSync.ShareExtension/…` instead, the extension is an old build that resolved the path inside its sandbox container: rebuild and re-run `pluginkit -a` |
+| MacDroidSync is missing from the Share menu | The extension has to be registered and enabled once, see *The Share menu needs one setup step*. Until then use *Send to Android* in the Services menu or *Send files to phone…* in the menu bar |
+| *Send to Android* is missing from the Services menu | Run `/System/Library/CoreServices/pbs -flush` and open the app once. Services are indexed per app bundle, so a bundle that moved has to be picked up again |
+| The menu says `Missing: <file>` | The file was moved or deleted while it waited in the queue. Only paths are queued, so share it again from its new location |
+| A file transfer stops halfway | The Mac deletes its partial file and the phone keeps the file queued, so it is sent again from the start on the next connection. Three unanswered attempts drop it with a notification |
 | The clipboard window never seems to do its job | It needs window focus. The log line `Bridge window focus: true` followed by `Bridge acting on focus` is the healthy case; `Bridge acting on timeout` means the skin denied focus and the clipboard may come back empty |
 
 ## Layout
 
 ```
-macos/    Swift package: MacDroidSyncCore (protocol, crypto, server, pasteboard) + the menu bar app
-android/  Gradle project: Kotlin foreground service, transparent clipboard window, pairing screen
+macos/    Swift package: MacDroidSyncCore (protocol, crypto, server, pasteboard, file transfer both
+          ways, outgoing queue) plus the menu bar app, its notifications, the Services provider
+          and the Share extension bundled into Contents/PlugIns
+android/  Gradle project: Kotlin foreground service, transparent clipboard window, share target,
+          file outbox, MediaStore writer for incoming files, pairing screen
 PROTOCOL.md  wire format, crypto, cross platform test vectors
 ```

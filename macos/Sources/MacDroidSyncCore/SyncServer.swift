@@ -12,6 +12,18 @@ public final class SyncServer {
     public var onFailure: ((String) -> Void)?
     /// Fired with the port once the listener is up and advertising itself.
     public var onListening: ((UInt16) -> Void)?
+    /// Name, bytes received so far and the announced total of an incoming file.
+    public var onFileProgress: ((String, Int64, Int64) -> Void)?
+    /// A file arrived complete and is now sitting at this location.
+    public var onFileReceived: ((URL, String) -> Void)?
+    /// Name and reason of a file that did not make it.
+    public var onFileFailed: ((String, String) -> Void)?
+    /// Name, bytes sent so far and the total of a file going to the phone.
+    public var onOutgoingProgress: ((String, Int64, Int64) -> Void)?
+    /// The phone confirmed a file and told us where it saved it.
+    public var onFileSent: ((String, String) -> Void)?
+    /// Name and reason of a file the phone did not take.
+    public var onFileSendFailed: ((String, String) -> Void)?
 
     public private(set) var state: PeerState = .disconnected {
         didSet {
@@ -23,6 +35,8 @@ public final class SyncServer {
 
     public private(set) var connectedDeviceName: String?
     public private(set) var port: UInt16
+    /// Where files coming from the phone are saved, `~/Downloads` by default.
+    public let destinationDirectory: URL
 
     private let queue = DispatchQueue(label: "\(Log.subsystem).server")
     private let settings: SyncConfiguration
@@ -30,9 +44,13 @@ public final class SyncServer {
     private var session: PeerSession?
     private var isSuspended = false
 
-    public init(settings: SyncConfiguration = Settings.shared) {
+    public init(
+        settings: SyncConfiguration = Settings.shared,
+        destinationDirectory: URL = FileReceiver.downloadsDirectory
+    ) {
         self.settings = settings
         self.port = settings.port
+        self.destinationDirectory = destinationDirectory
     }
 
     public var isConnected: Bool {
@@ -175,6 +193,7 @@ public final class SyncServer {
             queue: queue
         )
         self.session = session
+        session.fileSink = FileReceiver(directory: destinationDirectory)
         state = .connecting
 
         session.onAuthenticated = { [weak self, weak session] deviceName in
@@ -191,6 +210,24 @@ public final class SyncServer {
         }
         session.onRoundTrip = { [weak self] milliseconds in
             DispatchQueue.main.async { self?.onRoundTrip?(milliseconds) }
+        }
+        session.onFileProgress = { [weak self] name, received, total in
+            DispatchQueue.main.async { self?.onFileProgress?(name, received, total) }
+        }
+        session.onFileReceived = { [weak self] url, name in
+            DispatchQueue.main.async { self?.onFileReceived?(url, name) }
+        }
+        session.onFileFailed = { [weak self] name, reason in
+            DispatchQueue.main.async { self?.onFileFailed?(name, reason) }
+        }
+        session.onOutgoingProgress = { [weak self] name, sent, total in
+            DispatchQueue.main.async { self?.onOutgoingProgress?(name, sent, total) }
+        }
+        session.onFileSent = { [weak self] name, path in
+            DispatchQueue.main.async { self?.onFileSent?(name, path) }
+        }
+        session.onFileSendFailed = { [weak self] name, reason in
+            DispatchQueue.main.async { self?.onFileSendFailed?(name, reason) }
         }
         session.onEnd = { [weak self, weak session] _ in
             guard let self, self.session === session else { return }
@@ -217,6 +254,23 @@ public final class SyncServer {
                 return false
             }
         }
+    }
+
+    /// True when the file is on its way. A failure to even start (no phone, file
+    /// gone, over the size limit) comes back as the thrown reason so the caller
+    /// can show it and decide whether to keep the item queued.
+    public func sendFile(url: URL) throws -> Bool {
+        try queue.sync {
+            guard let session, session.isAuthenticated else { return false }
+            guard !session.isSendingFile else { return false }
+            try session.startSendingFile(url: url)
+            return true
+        }
+    }
+
+    /// Whether a transfer to the phone is currently in flight.
+    public var isSendingFile: Bool {
+        queue.sync { session?.isSendingFile == true }
     }
 
     @discardableResult

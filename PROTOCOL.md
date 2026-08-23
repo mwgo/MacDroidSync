@@ -58,10 +58,19 @@ The plaintext of every sealed frame is a JSON object. Absent fields are omitted.
 | `deviceId` | string | stable random id of the device |
 | `challenge` | string | base64 of the 32 challenge bytes |
 | `token` | int | correlates `ping` with `pong`, always fits in a signed 64 bit integer |
-| `reason` | string | free form detail for `bye` |
+| `reason` | string | free form detail for `bye` and for a refused file |
+| `fileId` | string | id of one file transfer, shared by its four messages |
+| `name` | string | file name chosen by the sender (**untrusted**) |
+| `size` | int | file size in bytes, announced in `file-offer` |
+| `mime` | string | MIME type, informational |
+| `sha256` | string | lowercase hex SHA-256 of the whole file, sent in `file-end` |
+| `data` | string | base64 of one `file-chunk` payload |
+| `ok` | bool | verdict in `file-ack` |
+| `path` | string | where the receiver saved the file (`file-ack` with `ok`) |
 
 Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
-`request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`.
+`request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`, `file-offer`, `file-chunk`,
+`file-end`, `file-ack`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
 that connection (replay and reordering protection).
@@ -100,7 +109,48 @@ client                                        server (macOS)
   Both sides remember the SHA-256 of the last applied text.
 * Clipboard payloads above 512 KiB are skipped instead of being transferred.
 
-## 5. Cross platform test vectors
+## 5. File transfer
+
+Files travel over the same session and go **both ways**. The sender streams,
+the receiver writes: macOS saves into `~/Downloads`, Android into the public
+`Download` folder (through MediaStore, so no storage permission is involved).
+
+```
+sender                                         receiver
+  |-- file-offer {fileId,name,size,mime} ------>|  a refusal is an immediate file-ack
+  |-- file-chunk {fileId,data} x N ------------>|  appended to a partial file
+  |-- file-end   {fileId,sha256} -------------->|  checksum, then published atomically
+  |<-- file-ack  {fileId,ok,path|reason} -------|
+```
+
+* One transfer at a time **per direction**, so a file can go each way at once; a
+  new `file-offer` supersedes an unfinished one in that direction.
+* Chunk payload: **192 KiB** of raw bytes, which stays well below the frame limit
+  once base64 adds a third.
+* Maximum file size: **512 MiB**. A larger `file-offer` is refused before any
+  byte is transferred.
+* Nothing incomplete is ever published. macOS writes to
+  `<name>.macdroidsync-part` next to the destination and renames it (same volume,
+  so the rename is atomic); Android inserts a MediaStore item with `IS_PENDING`
+  and only clears that flag at the end. Either way the file is only published
+  once `sha256` matches and the byte count equals the announced `size`; anything
+  else removes it and answers `file-ack { ok: false, reason }`.
+* The name is chosen by the sender and therefore untrusted: the receiver strips
+  directories, `..`, control characters and excessive length, then avoids
+  collisions (`photo.jpg` becomes `photo (2).jpg` on macOS, `photo (1).jpg` on
+  Android, which MediaStore handles itself).
+* The sender may keep a few chunks in flight (macOS uses eight) instead of
+  waiting for each one to reach the network; the connection preserves order, so
+  `file-end` simply queues behind the last chunk.
+* `file-ack { ok: false }` at any point ends the transfer: the sender stops
+  sending the remaining chunks.
+* A connection that drops mid transfer deletes the partial file on the receiver.
+  The sender keeps the file queued and sends it again from the beginning: Android
+  keeps a copy in its cache, macOS keeps the path in `outbox.json`.
+* A sender that gets no `file-ack` within 60 s of `file-end` gives up on that
+  attempt and retries later.
+
+## 6. Cross platform test vectors
 
 Both the Swift and the Kotlin test suite assert these values, which keeps the two
 implementations byte compatible.
@@ -119,4 +169,11 @@ complete frame      0000004d02
                     53ee74cf645d5e54bcd32aa4545e08dd3481b931abaaf9610008bdd6e02f3ac8
                     13e9ab23b25e59c926edff17cc448bc0
                     2664ab0c4cacf5f707397bd2ac6c1e3c
+```
+
+The file checksum has its own vector, which pins down the hex format as well:
+
+```
+file content        MacDroidSync file transfer v1     (29 bytes, UTF-8, no newline)
+sha256 (hex)        4f3a7edaac1dc9e52ee41243f6f5d0dec1229bea078dde437c84054b019901c3
 ```

@@ -1,3 +1,4 @@
+import CryptoKit
 import Network
 import XCTest
 @testable import MacDroidSyncCore
@@ -8,16 +9,21 @@ import XCTest
 final class SyncServerTests: XCTestCase {
     private var server: SyncServer!
     private var configuration: TestConfiguration!
+    private var downloads: URL!
 
     override func setUp() {
         super.setUp()
         configuration = TestConfiguration(port: Self.freePort(), pairingCode: "TEST-PAIR-CODE-0001")
-        server = SyncServer(settings: configuration)
+        downloads = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacDroidSyncServerTests-\(UUID().uuidString)")
+        server = SyncServer(settings: configuration, destinationDirectory: downloads)
     }
 
     override func tearDown() {
         server.stop()
         server = nil
+        try? FileManager.default.removeItem(at: downloads)
+        downloads = nil
         super.tearDown()
     }
 
@@ -143,11 +149,190 @@ final class SyncServerTests: XCTestCase {
         second.close()
     }
 
+    func testFileFromThePhoneLandsInTheDestinationDirectory() throws {
+        let peer = try connectedPeer()
+
+        // Two chunks on purpose: the receiver has to stitch them back together.
+        let payload = Data((0 ..< 5_000).map { UInt8($0 % 251) })
+        let digest = payload.sha256Hex
+
+        let received = expectation(description: "file received")
+        var savedURL: URL?
+        server.onFileReceived = { url, name in
+            XCTAssertEqual(name, "holiday.bin")
+            savedURL = url
+            received.fulfill()
+        }
+        let acknowledged = expectation(description: "phone told the transfer succeeded")
+        peer.onMessage = { message in
+            guard message.type == MessageType.fileAck else { return }
+            XCTAssertEqual(message.ok, true)
+            XCTAssertEqual(message.name, "holiday.bin")
+            XCTAssertNotNil(message.path)
+            acknowledged.fulfill()
+        }
+
+        peer.send(type: MessageType.fileOffer, fileId: "f1", name: "holiday.bin", size: Int64(payload.count), mime: "application/octet-stream")
+        peer.send(type: MessageType.fileChunk, fileId: "f1", data: payload.prefix(3_000).base64EncodedString())
+        peer.send(type: MessageType.fileChunk, fileId: "f1", data: payload.dropFirst(3_000).base64EncodedString())
+        peer.send(type: MessageType.fileEnd, fileId: "f1", sha256: digest)
+
+        wait(for: [received, acknowledged], timeout: 10)
+        let url = try XCTUnwrap(savedURL)
+        XCTAssertEqual(url.deletingLastPathComponent().standardizedFileURL, downloads.standardizedFileURL)
+        XCTAssertEqual(try Data(contentsOf: url), payload)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: downloads.path),
+            ["holiday.bin"],
+            "nothing partial may survive a successful transfer"
+        )
+        peer.close()
+    }
+
+    func testCorruptedFileIsRefusedAndLeavesNothingBehind() throws {
+        let peer = try connectedPeer()
+
+        let failed = expectation(description: "transfer reported as failed")
+        server.onFileFailed = { name, reason in
+            XCTAssertEqual(name, "broken.bin")
+            XCTAssertFalse(reason.isEmpty)
+            failed.fulfill()
+        }
+        let refused = expectation(description: "phone told the transfer failed")
+        peer.onMessage = { message in
+            guard message.type == MessageType.fileAck else { return }
+            XCTAssertEqual(message.ok, false)
+            XCTAssertNil(message.path)
+            refused.fulfill()
+        }
+
+        peer.send(type: MessageType.fileOffer, fileId: "f2", name: "broken.bin", size: 3)
+        peer.send(type: MessageType.fileChunk, fileId: "f2", data: Data([1, 2, 3]).base64EncodedString())
+        peer.send(type: MessageType.fileEnd, fileId: "f2", sha256: String(repeating: "0", count: 64))
+
+        wait(for: [failed, refused], timeout: 10)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: downloads.path), [])
+        peer.close()
+    }
+
+    func testOversizedOfferIsRefusedBeforeAnyBytesArrive() throws {
+        let peer = try connectedPeer()
+
+        let refused = expectation(description: "offer refused")
+        peer.onMessage = { message in
+            guard message.type == MessageType.fileAck else { return }
+            XCTAssertEqual(message.ok, false)
+            refused.fulfill()
+        }
+        peer.send(type: MessageType.fileOffer, fileId: "f3", name: "huge.zip", size: Wire.maxFileBytes + 1)
+
+        wait(for: [refused], timeout: 10)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: downloads.appendingPathComponent("huge.zip").path))
+        peer.close()
+    }
+
+    func testFileSentToThePhoneArrivesComplete() throws {
+        let peer = try connectedPeer()
+
+        let payload = Data((0 ..< (Wire.fileChunkBytes * 2 + 777)).map { UInt8($0 % 251) })
+        let source = try temporaryFile(named: "from-the-mac.bin", contents: payload)
+
+        let arrived = expectation(description: "the phone assembled the file")
+        peer.onFileComplete = { name, data, checksum in
+            XCTAssertEqual(name, "from-the-mac.bin")
+            XCTAssertEqual(data, payload)
+            XCTAssertEqual(checksum, payload.sha256Hex, "the checksum must cover the whole file")
+            arrived.fulfill()
+        }
+        let confirmed = expectation(description: "the Mac learned it was saved")
+        server.onFileSent = { name, path in
+            XCTAssertEqual(name, "from-the-mac.bin")
+            XCTAssertEqual(path, "Download/from-the-mac.bin")
+            confirmed.fulfill()
+        }
+
+        XCTAssertTrue(try server.sendFile(url: source))
+        wait(for: [arrived, confirmed], timeout: 15)
+        XCTAssertFalse(server.isSendingFile, "the session is free for the next file")
+        XCTAssertEqual(peer.fileEndCount, 1, "file-end must be sent exactly once")
+        peer.close()
+    }
+
+    func testPhoneRefusalStopsTheTransfer() throws {
+        let peer = try connectedPeer()
+        peer.refuseFiles = true
+
+        // Big enough that stopping early is visible in the byte count.
+        let payload = Data(repeating: 7, count: Wire.fileChunkBytes * 20)
+        let source = try temporaryFile(named: "unwanted.bin", contents: payload)
+
+        let refused = expectation(description: "the Mac was told no")
+        server.onFileSendFailed = { name, reason in
+            XCTAssertEqual(name, "unwanted.bin")
+            XCTAssertEqual(reason, "the phone has no room")
+            refused.fulfill()
+        }
+
+        XCTAssertTrue(try server.sendFile(url: source))
+        wait(for: [refused], timeout: 15)
+        XCTAssertLessThan(peer.receivedFileBytes, payload.count, "the remaining chunks must not be sent")
+        XCTAssertFalse(server.isSendingFile)
+        peer.close()
+    }
+
+    func testSendingAMissingFileFailsBeforeAnythingIsSent() throws {
+        let peer = try connectedPeer()
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacDroidSyncMissing-\(UUID().uuidString).bin")
+
+        XCTAssertThrowsError(try server.sendFile(url: missing)) { error in
+            guard case FileTransferError.missingFile = error else {
+                return XCTFail("expected a missing file, got \(error)")
+            }
+        }
+        XCTAssertFalse(server.isSendingFile)
+        peer.close()
+    }
+
+    func testNothingIsSentWithoutAPhone() throws {
+        let listening = expectation(description: "listener ready")
+        server.onListening = { _ in listening.fulfill() }
+        server.start()
+        wait(for: [listening], timeout: 5)
+
+        let source = try temporaryFile(named: "queued.bin", contents: Data([1, 2, 3]))
+        XCTAssertFalse(try server.sendFile(url: source), "queueing is the caller's job")
+    }
+
     func testClamshellStateIsReadable() {
         // Nil on a desktop Mac, a real value on anything with a lid: either way
         // this must not throw or hang.
         let closed = PowerMonitor.isClamshellClosed()
         Log.info("Clamshell state during the test: \(String(describing: closed))")
+    }
+
+    private func temporaryFile(named name: String, contents: Data) throws -> URL {
+        let url = downloads.appendingPathComponent("outgoing-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let file = url.appendingPathComponent(name)
+        try contents.write(to: file)
+        return file
+    }
+
+    /// Starts the server, connects a peer and returns once the handshake is done.
+    private func connectedPeer() throws -> TestPeer {
+        let listening = expectation(description: "listener ready")
+        server.onListening = { _ in listening.fulfill() }
+        let connected = expectation(description: "authenticated")
+        server.onStateChange = { if $0 == .connected { connected.fulfill() } }
+
+        server.start()
+        wait(for: [listening], timeout: 5)
+
+        let peer = TestPeer(port: configuration.port, pairingCode: configuration.pairingCode)
+        peer.start()
+        wait(for: [connected], timeout: 5)
+        return peer
     }
 
     /// Asks the kernel for an unused port so parallel runs do not collide.
@@ -191,6 +376,15 @@ private final class TestConfiguration: SyncConfiguration {
 /// every message it receives.
 private final class TestPeer {
     var onMessage: ((Message) -> Void)?
+    /// Name, bytes and checksum of a file the Mac sent us.
+    var onFileComplete: ((String, Data, String?) -> Void)?
+    /// Turns every offer down, like a phone with no space left.
+    var refuseFiles = false
+
+    private(set) var receivedFileBytes = 0
+    private(set) var fileEndCount = 0
+    private var incomingName: String?
+    private var incomingData = Data()
 
     private let codec: FrameCodec
     private let connection: NWConnection
@@ -215,7 +409,21 @@ private final class TestPeer {
         connection.cancel()
     }
 
-    func send(type: String, text: String? = nil, challenge: String? = nil, token: UInt64? = nil) {
+    func send(
+        type: String,
+        text: String? = nil,
+        challenge: String? = nil,
+        token: UInt64? = nil,
+        fileId: String? = nil,
+        name: String? = nil,
+        size: Int64? = nil,
+        mime: String? = nil,
+        sha256: String? = nil,
+        data: String? = nil,
+        ok: Bool? = nil,
+        path: String? = nil,
+        reason: String? = nil
+    ) {
         let message = Message(
             seq: codec.nextSequence(),
             type: type,
@@ -223,10 +431,54 @@ private final class TestPeer {
             device: "Test Phone",
             deviceId: "test-phone-1",
             challenge: challenge,
-            token: token
+            token: token,
+            reason: reason,
+            fileId: fileId,
+            name: name,
+            size: size,
+            mime: mime,
+            sha256: sha256,
+            data: data,
+            ok: ok,
+            path: path
         )
         guard let body = try? codec.seal(try message.encoded()) else { return }
         connection.send(content: Framing.frame(kind: .encrypted, body: body), completion: .idempotent)
+    }
+
+    /// Minimal receiving side of the file protocol, enough to check that the Mac
+    /// sends a complete and correct file.
+    private func handleFileMessage(_ message: Message) {
+        switch message.type {
+        case MessageType.fileOffer:
+            guard !refuseFiles else {
+                send(type: MessageType.fileAck, fileId: message.fileId, name: message.name, ok: false, reason: "the phone has no room")
+                return
+            }
+            incomingName = message.name
+            incomingData = Data()
+            receivedFileBytes = 0
+        case MessageType.fileChunk:
+            guard let encoded = message.data, let chunk = Data(base64Encoded: encoded) else { return }
+            incomingData.append(chunk)
+            receivedFileBytes = incomingData.count
+        case MessageType.fileEnd:
+            fileEndCount += 1
+            guard let name = incomingName else { return }
+            let data = incomingData
+            incomingName = nil
+            incomingData = Data()
+            send(
+                type: MessageType.fileAck,
+                fileId: message.fileId,
+                name: name,
+                ok: true,
+                path: "Download/\(name)"
+            )
+            onFileComplete?(name, data, message.sha256)
+        default:
+            break
+        }
     }
 
     private func receive() {
@@ -251,11 +503,18 @@ private final class TestPeer {
                         if message.type == MessageType.ping {
                             self.send(type: MessageType.pong, token: message.token)
                         }
+                        self.handleFileMessage(message)
                     }
                 }
             }
             if error != nil || isComplete { return }
             self.receive()
         }
+    }
+}
+
+private extension Data {
+    var sha256Hex: String {
+        SHA256.hash(data: self).map { String(format: "%02x", $0) }.joined()
     }
 }

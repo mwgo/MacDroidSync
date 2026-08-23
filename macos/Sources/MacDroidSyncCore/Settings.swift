@@ -129,9 +129,24 @@ public final class Settings: SyncConfiguration {
 }
 
 public enum AppPaths {
+    /// The real home directory, even from inside an app sandbox.
+    ///
+    /// This matters for the Share extension: it runs sandboxed, and there both
+    /// `NSHomeDirectory()` and the `FileManager` search paths point into its own
+    /// container, so writing "Application Support" would land in
+    /// `~/Library/Containers/…` where the app never looks. `getpwuid` is not
+    /// redirected, and the entitlement grants access to that path.
+    public static var homeDirectory: URL {
+        if let entry = getpwuid(getuid()), let directory = entry.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: directory), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
     public static var supportDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("MacDroidSync", isDirectory: true)
+        homeDirectory
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+            .appendingPathComponent("MacDroidSync", isDirectory: true)
     }
 
     @discardableResult

@@ -6,6 +6,7 @@ import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.OutputStream
 import java.net.Socket
+import java.util.Collections
 
 /**
  * One TCP session with the Mac: handshake, framing and the blocking read loop.
@@ -23,12 +24,27 @@ class PeerConnection(
         fun onClipboard(text: String)
         fun onClipboardRequested()
         fun onPing(macName: String)
+        /** Verdict of the Mac on a file we sent; [path] is set when [ok]. */
+        fun onFileAck(fileId: String, ok: Boolean, path: String?, reason: String?)
+        /** Progress of a file arriving from the Mac. */
+        fun onIncomingProgress(name: String, received: Long, total: Long)
+        fun onFileReceived(name: String, saved: IncomingFiles.Saved)
+        fun onFileRefused(name: String, reason: String)
     }
+
+    /** Where files coming from the Mac are written; without it they are refused. */
+    var fileSink: FileSink? = null
 
     private val codec = FrameCodec(pairingCode)
     private val input = DataInputStream(BufferedInputStream(socket.getInputStream()))
     private val output: OutputStream = socket.getOutputStream()
     private val sendLock = Any()
+
+    /** Files the Mac turned down, so the remaining chunks are not sent. */
+    private val refused = Collections.synchronizedSet(mutableSetOf<String>())
+
+    private var incoming: FileOffer? = null
+    private var lastProgressAt = 0L
 
     @Volatile
     var isAuthenticated = false
@@ -53,6 +69,60 @@ class PeerConnection(
 
     fun requestClipboard() {
         send(Message(type = MessageType.REQUEST_CLIPBOARD, seq = codec.nextSequence()))
+    }
+
+    /**
+     * Streams one staged file to the Mac: offer, chunks, end. Blocking, so it
+     * belongs on an IO thread, and it must not run on the thread that owns
+     * [runLoop] because the file-ack arrives there.
+     *
+     * Returns false when the Mac turned the file down mid flight, in which case
+     * the remaining chunks are never sent.
+     */
+    fun sendFile(item: Outbox.Item, fileId: String, onProgress: (Long, Long) -> Unit): Boolean {
+        val size = item.size
+        val checksum = Outbox.sha256(item.file)
+        send(
+            Message(
+                type = MessageType.FILE_OFFER,
+                seq = codec.nextSequence(),
+                fileId = fileId,
+                name = item.name,
+                size = size,
+                mime = item.mime,
+            )
+        )
+
+        var sent = 0L
+        item.file.inputStream().use { stream ->
+            val buffer = ByteArray(Wire.FILE_CHUNK_BYTES)
+            while (true) {
+                if (refused.contains(fileId)) return false
+                val read = stream.read(buffer)
+                if (read < 0) break
+                send(
+                    Message(
+                        type = MessageType.FILE_CHUNK,
+                        seq = codec.nextSequence(),
+                        fileId = fileId,
+                        data = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP),
+                    )
+                )
+                sent += read
+                onProgress(sent, size)
+            }
+        }
+        if (refused.contains(fileId)) return false
+
+        send(
+            Message(
+                type = MessageType.FILE_END,
+                seq = codec.nextSequence(),
+                fileId = fileId,
+                sha256 = checksum,
+            )
+        )
+        return true
     }
 
     /** Keeps the session alive while nothing else is being sent. */
@@ -143,6 +213,15 @@ class PeerConnection(
                 listener.onPing(macName)
             }
             MessageType.PONG, MessageType.HEARTBEAT -> Unit
+            MessageType.FILE_ACK -> {
+                val fileId = message.fileId.orEmpty()
+                val ok = message.ok == true
+                if (!ok) refused.add(fileId)
+                listener.onFileAck(fileId, ok, message.path, message.reason)
+            }
+            MessageType.FILE_OFFER -> handleFileOffer(message, listener)
+            MessageType.FILE_CHUNK -> handleFileChunk(message, listener)
+            MessageType.FILE_END -> handleFileEnd(message, listener)
             MessageType.BYE -> {
                 Log.i(TAG, "Mac said goodbye: ${message.reason}")
                 close()
@@ -151,8 +230,100 @@ class PeerConnection(
         }
     }
 
+    // region Incoming files
+
+    private fun handleFileOffer(message: Message, listener: Listener) {
+        val offer = FileOffer(
+            id = message.fileId ?: "",
+            name = message.name ?: "file",
+            size = message.size ?: 0,
+            mime = message.mime,
+        )
+        val sink = fileSink
+        if (sink == null) {
+            refuse(offer, "this phone has nowhere to save files", listener)
+            return
+        }
+        try {
+            sink.begin(offer)
+            incoming = offer
+            lastProgressAt = 0L
+            reportIncomingProgress(sink, offer, listener, force = true)
+        } catch (error: Exception) {
+            refuse(offer, error.message ?: "the file was refused", listener)
+        }
+    }
+
+    private fun handleFileChunk(message: Message, listener: Listener) {
+        val offer = incoming ?: return
+        val sink = fileSink ?: return
+        val encoded = message.data
+        if (encoded == null) {
+            incoming = null
+            sink.abort()
+            refuse(offer, "malformed chunk", listener)
+            return
+        }
+        try {
+            sink.append(Base64.decode(encoded, Base64.DEFAULT))
+            reportIncomingProgress(sink, offer, listener)
+        } catch (error: Exception) {
+            incoming = null
+            refuse(offer, error.message ?: "the chunk could not be written", listener)
+        }
+    }
+
+    private fun handleFileEnd(message: Message, listener: Listener) {
+        val offer = incoming ?: return
+        val sink = fileSink ?: return
+        incoming = null
+        try {
+            val saved = sink.finish(message.sha256)
+            send(
+                Message(
+                    type = MessageType.FILE_ACK,
+                    seq = codec.nextSequence(),
+                    fileId = offer.id.ifEmpty { null },
+                    name = offer.name,
+                    ok = true,
+                    path = saved.path,
+                )
+            )
+            listener.onFileReceived(offer.name, saved)
+        } catch (error: Exception) {
+            refuse(offer, error.message ?: "the file could not be saved", listener)
+        }
+    }
+
+    /** Tells the Mac to stop sending and why. */
+    private fun refuse(offer: FileOffer, reason: String, listener: Listener) {
+        Log.w(TAG, "Refused ${offer.name}: $reason")
+        send(
+            Message(
+                type = MessageType.FILE_ACK,
+                seq = codec.nextSequence(),
+                reason = reason,
+                fileId = offer.id.ifEmpty { null },
+                name = offer.name,
+                ok = false,
+            )
+        )
+        listener.onFileRefused(offer.name, reason)
+    }
+
+    /** Throttled, otherwise a fast transfer would rebuild the notification hundreds of times. */
+    private fun reportIncomingProgress(sink: FileSink, offer: FileOffer, listener: Listener, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastProgressAt < PROGRESS_INTERVAL_MS) return
+        lastProgressAt = now
+        listener.onIncomingProgress(offer.name, sink.receivedBytes, offer.size)
+    }
+
+    // endregion
+
     companion object {
         private const val TAG = Prefs.TAG
+        private const val PROGRESS_INTERVAL_MS = 500L
 
         /** Only used by the unit tests, mirrors the base64 helper of the Mac side. */
         fun encodeChallenge(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)

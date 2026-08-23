@@ -22,6 +22,15 @@
         <item name="android:textColor">?attr/colorPrimary</item>
     </style>
 
+    <!-- ShareActivity has no UI of its own: it stages the shared files and shows
+         a toast, so its window stays invisible. -->
+    <style name="Theme.ShareTarget" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+
     <!-- Fully transparent, animation free window used by ClipboardBridgeActivity.
          It must be an actual window (not windowNoDisplay) because Android grants
          clipboard access based on window focus. -->

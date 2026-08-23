@@ -21,6 +21,21 @@ public final class PeerSession {
     public var onClipboardRequested: (() -> Void)?
     public var onRoundTrip: ((Double) -> Void)?
     public var onEnd: ((Error?) -> Void)?
+    /// Name, bytes received so far and the announced total of the file in flight.
+    public var onFileProgress: ((String, Int64, Int64) -> Void)?
+    /// Final location and name of a file that arrived complete.
+    public var onFileReceived: ((URL, String) -> Void)?
+    /// Name and reason of a file that did not make it.
+    public var onFileFailed: ((String, String) -> Void)?
+    /// Name, bytes sent so far and the total of the file going to the phone.
+    public var onOutgoingProgress: ((String, Int64, Int64) -> Void)?
+    /// Name of a file the phone confirmed, plus where it saved it.
+    public var onFileSent: ((String, String) -> Void)?
+    /// Name and reason of a file the phone did not take.
+    public var onFileSendFailed: ((String, String) -> Void)?
+
+    /// Where incoming files are written; without a sink they are refused.
+    public var fileSink: FileSink?
 
     public private(set) var remoteDeviceName: String?
     public private(set) var isAuthenticated = false
@@ -38,6 +53,13 @@ public final class PeerSession {
     private var pendingPings: [UInt64: Date] = [:]
     private var timer: DispatchSourceTimer?
     private var isClosed = false
+    private var incomingFile: FileOffer?
+    private var lastProgressReport = Date.distantPast
+    private var outgoing: FileSender?
+    private var chunksInFlight = 0
+    private var lastOutgoingReport = Date.distantPast
+    /// When `file-end` went out, so a phone that never answers cannot stall the queue.
+    private var awaitingAckSince: Date?
 
     public init(
         connection: NWConnection,
@@ -131,6 +153,17 @@ public final class PeerSession {
         timer?.cancel()
         timer = nil
         connection.stateUpdateHandler = nil
+        if let interrupted = incomingFile {
+            incomingFile = nil
+            fileSink?.abort()
+            onFileFailed?(interrupted.name, "the connection dropped mid transfer")
+        }
+        if let sending = outgoing {
+            outgoing = nil
+            awaitingAckSince = nil
+            sending.cancel()
+            onFileSendFailed?(sending.name, "the connection dropped mid transfer")
+        }
         if let error {
             Log.info("Session with \(remoteDeviceName ?? remoteDescription) ended: \(error.localizedDescription)")
         } else {
@@ -156,13 +189,19 @@ public final class PeerSession {
         try send(Message(seq: codec.nextSequence(), type: MessageType.ping, token: token))
     }
 
-    private func send(_ message: Message) throws {
+    /// `whenProcessed` fires once the frame has actually been handed to the
+    /// network, which is what paces the outgoing file pump.
+    private func send(_ message: Message, whenProcessed: (() -> Void)? = nil) throws {
         guard !isClosed else { return }
         let body = try codec.seal(try message.encoded())
         let frame = Framing.frame(kind: .encrypted, body: body)
         lastSend = Date()
         connection.send(content: frame, completion: .contentProcessed { [weak self] error in
-            if let error { self?.finish(error: error) }
+            if let error {
+                self?.finish(error: error)
+                return
+            }
+            whenProcessed?()
         })
         Log.debug("-> \(message.type) seq=\(message.seq)")
     }
@@ -277,12 +316,225 @@ public final class PeerSession {
             onRoundTrip?(Date().timeIntervalSince(sentAt) * 1000)
         case MessageType.heartbeat:
             break
+        case MessageType.fileOffer:
+            try handleFileOffer(message)
+        case MessageType.fileChunk:
+            try handleFileChunk(message)
+        case MessageType.fileEnd:
+            try handleFileEnd(message)
+        case MessageType.fileAck:
+            handleFileAck(message)
         case MessageType.bye:
             Log.info("Peer said goodbye: \(message.reason ?? "no reason")")
             connection.cancel()
         default:
             Log.info("Ignoring unknown message type \(message.type)")
         }
+    }
+
+    // MARK: - Outgoing files
+
+    public var isSendingFile: Bool { outgoing != nil }
+
+    /// Starts streaming `url` to the phone. Must be called on the session queue.
+    /// Throws when the file cannot be sent at all; a phone side refusal arrives
+    /// later through `onFileSendFailed`.
+    public func startSendingFile(url: URL) throws {
+        guard isAuthenticated, !isClosed else { throw FileTransferError.refusedByPeer("no phone connected") }
+        guard outgoing == nil else { throw FileTransferError.refusedByPeer("another file is still going out") }
+
+        let sender = try FileSender(url: url)
+        outgoing = sender
+        chunksInFlight = 0
+        lastOutgoingReport = .distantPast
+        awaitingAckSince = nil
+        Log.info("Sending \(sender.name) (\(ByteCountFormatter.string(fromByteCount: sender.size, countStyle: .file)))")
+        do {
+            try send(Message(
+                seq: codec.nextSequence(),
+                type: MessageType.fileOffer,
+                fileId: sender.id,
+                name: sender.name,
+                size: sender.size,
+                mime: sender.mime
+            ))
+        } catch {
+            outgoing = nil
+            sender.cancel()
+            throw error
+        }
+        reportOutgoingProgress(force: true)
+        pumpChunks()
+    }
+
+    /// Keeps up to `Wire.fileSendWindow` chunks in flight: enough to stop waiting
+    /// for a full round trip per chunk, few enough that memory stays bounded no
+    /// matter how large the file is. The connection preserves order, so `file-end`
+    /// can be queued right behind the last chunk.
+    private func pumpChunks() {
+        guard let sender = outgoing, !sender.isCancelled, !isClosed else { return }
+        // The last chunk's completion calls back in here after `file-end` has
+        // already gone out; without this the frame would be sent twice.
+        guard awaitingAckSince == nil else { return }
+        while chunksInFlight < Wire.fileSendWindow {
+            do {
+                guard let chunk = try sender.nextChunk() else {
+                    try send(Message(
+                        seq: codec.nextSequence(),
+                        type: MessageType.fileEnd,
+                        fileId: sender.id,
+                        sha256: sender.checksum()
+                    ))
+                    sender.close()
+                    awaitingAckSince = Date()
+                    return
+                }
+                chunksInFlight += 1
+                try send(
+                    Message(
+                        seq: codec.nextSequence(),
+                        type: MessageType.fileChunk,
+                        fileId: sender.id,
+                        data: chunk.base64EncodedString()
+                    ),
+                    whenProcessed: { [weak self] in
+                        guard let self else { return }
+                        self.chunksInFlight -= 1
+                        self.reportOutgoingProgress()
+                        self.pumpChunks()
+                    }
+                )
+            } catch {
+                failOutgoing(reason: error.localizedDescription)
+                return
+            }
+        }
+    }
+
+    private func handleFileAck(_ message: Message) {
+        guard let sender = outgoing, message.fileId == nil || message.fileId == sender.id else {
+            Log.info("Ignoring a file-ack that belongs to no transfer of ours")
+            return
+        }
+        outgoing = nil
+        awaitingAckSince = nil
+        sender.cancel()
+
+        if message.ok == true {
+            let path = message.path ?? ""
+            Log.info("The phone saved \(sender.name)\(path.isEmpty ? "" : " as \(path)")")
+            onFileSent?(sender.name, path)
+        } else {
+            let reason = message.reason ?? "the phone refused the file"
+            Log.error("The phone refused \(sender.name): \(reason)")
+            onFileSendFailed?(sender.name, reason)
+        }
+    }
+
+    private func failOutgoing(reason: String) {
+        guard let sender = outgoing else { return }
+        outgoing = nil
+        awaitingAckSince = nil
+        sender.cancel()
+        Log.error("Sending \(sender.name) failed: \(reason)")
+        onFileSendFailed?(sender.name, reason)
+    }
+
+    private func reportOutgoingProgress(force: Bool = false) {
+        guard let sender = outgoing else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastOutgoingReport) >= 0.2 else { return }
+        lastOutgoingReport = now
+        onOutgoingProgress?(sender.name, sender.sentBytes, sender.size)
+    }
+
+    // MARK: - Incoming files
+
+    private func handleFileOffer(_ message: Message) throws {
+        let offer = FileOffer(
+            id: message.fileId ?? UUID().uuidString,
+            name: message.name ?? "file",
+            size: message.size ?? 0,
+            mime: message.mime
+        )
+        guard let sink = fileSink else {
+            try rejectFile(offer, reason: "this Mac has nowhere to save files")
+            return
+        }
+        do {
+            try sink.begin(offer)
+            incomingFile = offer
+            lastProgressReport = .distantPast
+            reportProgress(force: true)
+        } catch {
+            try rejectFile(offer, reason: error.localizedDescription)
+        }
+    }
+
+    private func handleFileChunk(_ message: Message) throws {
+        guard let offer = incomingFile, let sink = fileSink else {
+            Log.info("Ignoring a file-chunk arriving outside a transfer")
+            return
+        }
+        guard let encoded = message.data, let chunk = Data(base64Encoded: encoded) else {
+            incomingFile = nil
+            sink.abort()
+            try rejectFile(offer, reason: "malformed chunk")
+            return
+        }
+        do {
+            try sink.append(chunk)
+            reportProgress()
+        } catch {
+            incomingFile = nil
+            try rejectFile(offer, reason: error.localizedDescription)
+        }
+    }
+
+    private func handleFileEnd(_ message: Message) throws {
+        guard let offer = incomingFile, let sink = fileSink else {
+            Log.info("Ignoring a file-end arriving outside a transfer")
+            return
+        }
+        incomingFile = nil
+        do {
+            let url = try sink.finish(sha256: message.sha256)
+            try send(Message(
+                seq: codec.nextSequence(),
+                type: MessageType.fileAck,
+                fileId: offer.id,
+                name: offer.name,
+                ok: true,
+                path: url.path
+            ))
+            onFileReceived?(url, offer.name)
+        } catch {
+            try rejectFile(offer, reason: error.localizedDescription)
+        }
+    }
+
+    /// Tells the phone the transfer is off, which also stops it from sending the
+    /// remaining chunks.
+    private func rejectFile(_ offer: FileOffer, reason: String) throws {
+        Log.error("Refused \(offer.name): \(reason)")
+        try send(Message(
+            seq: codec.nextSequence(),
+            type: MessageType.fileAck,
+            reason: reason,
+            fileId: offer.id,
+            name: offer.name,
+            ok: false
+        ))
+        onFileFailed?(offer.name, reason)
+    }
+
+    /// Throttled so a fast transfer does not flood the menu with redraws.
+    private func reportProgress(force: Bool = false) {
+        guard let offer = incomingFile, let sink = fileSink else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastProgressReport) >= 0.2 else { return }
+        lastProgressReport = now
+        onFileProgress?(offer.name, sink.receivedBytes, offer.size)
     }
 
     // MARK: - Liveness
@@ -307,6 +559,9 @@ public final class PeerSession {
         }
         if isAuthenticated, now.timeIntervalSince(lastSend) >= Wire.heartbeatInterval {
             try? send(Message(seq: codec.nextSequence(), type: MessageType.heartbeat))
+        }
+        if let since = awaitingAckSince, now.timeIntervalSince(since) > Wire.fileAckTimeout {
+            failOutgoing(reason: "the phone never confirmed the transfer")
         }
         pendingPings = pendingPings.filter { now.timeIntervalSince($0.value) < 30 }
     }

@@ -27,11 +27,37 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>MacDroidSync</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>MacDroidSync saves the files you share from your Android phone into your Downloads folder.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>MacDroidSync needs the local network to send your clipboard to your Android phone over Wi-Fi.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_macdroidsync._tcp</string>
+    </array>
+    <!-- Adds "Send to Android" to the Services menu and to the Finder context
+         menu whenever files are selected. Unlike the Share extension in
+         Contents/PlugIns, this works with an ad-hoc signature. -->
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>Send to Android</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>sendToAndroid</string>
+            <key>NSPortName</key>
+            <string>MacDroidSync</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>public.file-url</string>
+                <string>NSFilenamesPboardType</string>
+            </array>
+            <key>NSRequiredContext</key>
+            <dict/>
+        </dict>
     </array>
 </dict>
 </plist>

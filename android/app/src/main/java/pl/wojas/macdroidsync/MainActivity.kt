@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import pl.wojas.macdroidsync.databinding.ActivityMainBinding
 
@@ -23,6 +24,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: Prefs
+    private lateinit var outbox: Outbox
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refreshPermissionButtons() }
@@ -38,6 +40,7 @@ class MainActivity : AppCompatActivity() {
                 !prefs.syncEnabled -> getString(R.string.status_sync_off)
                 else -> getString(R.string.status_connecting)
             }
+            refreshQueuedFiles()
         }
     }
 
@@ -47,6 +50,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         applyWindowInsets()
         prefs = Prefs(this)
+        outbox = Outbox(this)
 
         binding.pairingCodeInput.setText(prefs.pairingCode)
         binding.hostInput.setText(prefs.manualHost)
@@ -89,6 +93,7 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         refreshPermissionButtons()
+        refreshQueuedFiles()
         if (prefs.syncEnabled) {
             SyncService.start(this, SyncService.ACTION_QUERY_STATUS)
         } else {
@@ -122,6 +127,15 @@ class MainActivity : AppCompatActivity() {
         }
         binding.statusText.text = getString(R.string.status_connecting)
         SyncService.start(this, if (reconnect) SyncService.ACTION_RECONNECT else SyncService.ACTION_START)
+    }
+
+    /** Files still staged in the cache, waiting for the Mac to show up. */
+    private fun refreshQueuedFiles() {
+        val queued = outbox.items().size
+        binding.queuedFilesText.isVisible = queued > 0
+        if (queued > 0) {
+            binding.queuedFilesText.text = getString(R.string.status_queued_files, queued)
+        }
     }
 
     private fun sendClipboardNow() {

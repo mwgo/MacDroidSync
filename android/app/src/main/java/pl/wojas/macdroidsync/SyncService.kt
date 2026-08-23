@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +25,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Long lived foreground service that owns the connection to the Mac.
@@ -40,11 +43,19 @@ class SyncService : Service() {
     private lateinit var discovery: Discovery
     private lateinit var connectivity: ConnectivityManager
     private lateinit var ringer: Ringer
+    private lateinit var outbox: Outbox
+    private lateinit var incomingFiles: IncomingFiles
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val retryTrigger = Channel<Unit>(Channel.CONFLATED)
 
+    /** file-ack the Mac still owes us, keyed by the id used on the wire. */
+    private val pendingAcks = ConcurrentHashMap<String, CompletableDeferred<FileVerdict>>()
+    /** How often a queued file has been tried, so a stuck one cannot loop forever. */
+    private val attempts = ConcurrentHashMap<String, Int>()
+
     private var loopJob: Job? = null
+    private var drainJob: Job? = null
 
     @Volatile
     private var connection: PeerConnection? = null
@@ -73,6 +84,9 @@ class SyncService : Service() {
         discovery = Discovery(this)
         connectivity = getSystemService(ConnectivityManager::class.java)
         ringer = Ringer(this)
+        outbox = Outbox(this)
+        incomingFiles = IncomingFiles(this)
+        scope.launch { outbox.sweepIncomplete() }
 
         notifications.createChannels()
         showIdle()
@@ -96,11 +110,18 @@ class SyncService : Service() {
                 retryTrigger.trySend(Unit)
             }
             ACTION_SEND_CLIPBOARD -> sendClipboardToMac(intent.getStringExtra(EXTRA_TEXT).orEmpty())
+            ACTION_SEND_FILES -> {
+                // The files are already staged in the cache by ShareActivity.
+                retryTrigger.trySend(Unit)
+                drainOutbox()
+            }
             ACTION_QUERY_STATUS -> broadcastStatus()
             ACTION_SILENCE -> silenceRing()
         }
 
-        if (prefs.syncEnabled) startConnectionLoop() else showIdle()
+        // A shared file keeps the service connecting even with clipboard sync off:
+        // the user asked for that transfer explicitly.
+        if (prefs.syncEnabled || hasQueuedFiles()) startConnectionLoop() else showIdle()
         return START_STICKY
     }
 
@@ -121,7 +142,7 @@ class SyncService : Service() {
         loopJob = scope.launch {
             var failures = 0
             while (isActive) {
-                if (!prefs.syncEnabled) break
+                if (!prefs.syncEnabled && !hasQueuedFiles()) break
                 val connected = attemptConnection()
                 failures = if (connected) 0 else failures + 1
                 val wait = BACKOFF_MS[minOf(failures, BACKOFF_MS.lastIndex)]
@@ -167,6 +188,7 @@ class SyncService : Service() {
                 deviceName = deviceName(),
                 deviceId = prefs.deviceId,
             )
+            peer.fileSink = incomingFiles
             connection = peer
 
             val heartbeat = scope.launch {
@@ -187,6 +209,13 @@ class SyncService : Service() {
             runCatching { socket.close() }
             connection = null
             connectedMac = null
+            pendingAcks.values.forEach { it.complete(FileVerdict(ok = false, detail = null, delivered = false)) }
+            pendingAcks.clear()
+            // A file that was still arriving is thrown away, so Download never
+            // keeps a half written item; the Mac queues it again.
+            incomingFiles.abort()
+            notifications.cancel(NotificationCenter.ID_TRANSFER)
+            notifications.cancel(NotificationCenter.ID_INCOMING)
             showIdle()
         }
         return established
@@ -197,6 +226,7 @@ class SyncService : Service() {
             Log.i(TAG, "Authenticated with $macName")
             connectedMac = macName
             showConnected(macName)
+            drainOutbox()
         }
 
         override fun onClipboard(text: String) {
@@ -212,6 +242,103 @@ class SyncService : Service() {
             notifications.showPing(macName)
             ringer.start()
         }
+
+        override fun onFileAck(fileId: String, ok: Boolean, path: String?, reason: String?) {
+            Log.i(TAG, "File $fileId ${if (ok) "saved as $path" else "refused: $reason"}")
+            pendingAcks.remove(fileId)?.complete(FileVerdict(ok = ok, detail = reason ?: path))
+        }
+
+        override fun onIncomingProgress(name: String, received: Long, total: Long) {
+            notifications.showIncomingTransfer(name, received, total)
+        }
+
+        override fun onFileReceived(name: String, saved: IncomingFiles.Saved) {
+            notifications.cancel(NotificationCenter.ID_INCOMING)
+            notifications.showFileReceived(saved)
+        }
+
+        override fun onFileRefused(name: String, reason: String) {
+            notifications.cancel(NotificationCenter.ID_INCOMING)
+            notifications.showFileResult(name, ok = false, detail = reason)
+        }
+    }
+
+    // endregion
+
+    // region Files
+
+    /** What the Mac said about one file; [delivered] is false when nothing came back. */
+    private data class FileVerdict(val ok: Boolean, val detail: String?, val delivered: Boolean = true)
+
+    private fun hasQueuedFiles(): Boolean = !outbox.isEmpty()
+
+    /**
+     * Sends the queued files one by one. Only one drain runs at a time; it stops
+     * as soon as the queue is empty or the connection is gone, and whatever is
+     * left stays in the cache for the next connection.
+     */
+    private fun drainOutbox() {
+        if (drainJob?.isActive == true) return
+        drainJob = scope.launch {
+            while (isActive) {
+                val peer = connection?.takeIf { it.isAuthenticated } ?: break
+                val item = outbox.items().firstOrNull() ?: break
+                if (!sendFile(peer, item)) break
+            }
+            notifications.cancel(NotificationCenter.ID_TRANSFER)
+            // Without clipboard sync the connection only existed for the queue.
+            if (!prefs.syncEnabled && outbox.isEmpty()) {
+                Log.i(TAG, "Queue is empty and sync is off, disconnecting")
+                connection?.close()
+            }
+        }
+    }
+
+    /** Returns false when the drain should stop, for example a dead connection. */
+    private suspend fun sendFile(peer: PeerConnection, item: Outbox.Item): Boolean {
+        val fileId = UUID.randomUUID().toString()
+        val ack = CompletableDeferred<FileVerdict>()
+        pendingAcks[fileId] = ack
+        val queued = (outbox.items().size - 1).coerceAtLeast(0)
+        var lastShownAt = 0L
+
+        try {
+            notifications.showTransfer(item.name, 0, item.size, queued)
+            peer.sendFile(item, fileId) { sent, total ->
+                val now = System.currentTimeMillis()
+                if (now - lastShownAt >= PROGRESS_INTERVAL_MS || sent == total) {
+                    lastShownAt = now
+                    notifications.showTransfer(item.name, sent, total, queued)
+                }
+            }
+        } catch (error: Exception) {
+            pendingAcks.remove(fileId)
+            Log.w(TAG, "Sending ${item.name} failed, it stays in the queue", error)
+            return false
+        }
+
+        val verdict = withTimeoutOrNull(ACK_TIMEOUT_MS) { ack.await() }
+        pendingAcks.remove(fileId)
+
+        if (verdict == null || !verdict.delivered) {
+            val tries = attempts.merge(item.file.path, 1, Int::plus) ?: 1
+            if (tries >= MAX_ATTEMPTS) {
+                Log.w(TAG, "Giving up on ${item.name} after $tries attempts")
+                attempts.remove(item.file.path)
+                outbox.remove(item)
+                notifications.showFileResult(item.name, ok = false, detail = getString(R.string.file_error_no_answer))
+                return true
+            }
+            Log.i(TAG, "No answer for ${item.name}, keeping it queued (attempt $tries)")
+            return false
+        }
+
+        attempts.remove(item.file.path)
+        // Either it landed on the Mac or the Mac refused it; both are final, so
+        // the staged copy goes away and the queue keeps moving.
+        outbox.remove(item)
+        notifications.showFileResult(item.name, verdict.ok, verdict.detail)
+        return true
     }
 
     // endregion
@@ -294,6 +421,8 @@ class SyncService : Service() {
 
     private fun stopEverything() {
         ringer.stop()
+        drainJob?.cancel()
+        drainJob = null
         loopJob?.cancel()
         loopJob = null
         connection?.close()
@@ -304,6 +433,8 @@ class SyncService : Service() {
         notifications.cancel(NotificationCenter.ID_IDLE)
         notifications.cancel(NotificationCenter.ID_ACTIVE)
         notifications.cancel(NotificationCenter.ID_PING)
+        notifications.cancel(NotificationCenter.ID_TRANSFER)
+        notifications.cancel(NotificationCenter.ID_INCOMING)
         stopSelf()
     }
 
@@ -340,6 +471,7 @@ class SyncService : Service() {
         const val ACTION_STOP = "pl.wojas.macdroidsync.STOP"
         const val ACTION_RECONNECT = "pl.wojas.macdroidsync.RECONNECT"
         const val ACTION_SEND_CLIPBOARD = "pl.wojas.macdroidsync.SEND_CLIPBOARD"
+        const val ACTION_SEND_FILES = "pl.wojas.macdroidsync.SEND_FILES"
         const val ACTION_QUERY_STATUS = "pl.wojas.macdroidsync.QUERY_STATUS"
         const val ACTION_SILENCE = "pl.wojas.macdroidsync.SILENCE"
 
@@ -352,6 +484,9 @@ class SyncService : Service() {
         private const val CONNECT_TIMEOUT_MS = 5_000
         private const val DISCOVERY_TIMEOUT_MS = 6_000L
         private const val HEARTBEAT_CHECK_MS = 5_000L
+        private const val ACK_TIMEOUT_MS = 60_000L
+        private const val PROGRESS_INTERVAL_MS = 500L
+        private const val MAX_ATTEMPTS = 3
         private val BACKOFF_MS = longArrayOf(1_000, 2_000, 5_000, 10_000, 30_000)
 
         fun start(context: Context, action: String = ACTION_START) {

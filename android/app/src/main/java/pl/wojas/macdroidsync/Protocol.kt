@@ -11,6 +11,11 @@ object Wire {
     const val MAX_FRAME_SIZE = 4 * 1024 * 1024
     const val MAX_CLIPBOARD_BYTES = 512 * 1024
 
+    /** Raw bytes per file-chunk; base64 grows it by a third. */
+    const val FILE_CHUNK_BYTES = 192 * 1024
+    /** The Mac refuses anything bigger, so there is no point in starting. */
+    const val MAX_FILE_BYTES = 512L * 1024 * 1024
+
     const val HEARTBEAT_INTERVAL_MS = 15_000L
     const val RECEIVE_TIMEOUT_MS = 30_000L
 
@@ -29,6 +34,10 @@ object MessageType {
     const val PONG = "pong"
     const val HEARTBEAT = "heartbeat"
     const val BYE = "bye"
+    const val FILE_OFFER = "file-offer"
+    const val FILE_CHUNK = "file-chunk"
+    const val FILE_END = "file-end"
+    const val FILE_ACK = "file-ack"
 }
 
 /** One protocol message; absent fields are left out of the JSON payload. */
@@ -43,6 +52,16 @@ data class Message(
     val challenge: String? = null,
     val token: Long? = null,
     val reason: String? = null,
+    // File transfer, see PROTOCOL.md section 6.
+    val fileId: String? = null,
+    val name: String? = null,
+    val size: Long? = null,
+    val mime: String? = null,
+    val sha256: String? = null,
+    /** Base64 of one file-chunk payload. */
+    val data: String? = null,
+    val ok: Boolean? = null,
+    val path: String? = null,
 ) {
     fun toBytes(): ByteArray {
         val json = JSONObject()
@@ -56,6 +75,14 @@ data class Message(
         challenge?.let { json.put("challenge", it) }
         token?.let { json.put("token", it) }
         reason?.let { json.put("reason", it) }
+        fileId?.let { json.put("fileId", it) }
+        name?.let { json.put("name", it) }
+        size?.let { json.put("size", it) }
+        mime?.let { json.put("mime", it) }
+        sha256?.let { json.put("sha256", it) }
+        data?.let { json.put("data", it) }
+        ok?.let { json.put("ok", it) }
+        path?.let { json.put("path", it) }
         return json.toString().toByteArray(Charsets.UTF_8)
     }
 
@@ -73,6 +100,14 @@ data class Message(
                 challenge = json.optStringOrNull("challenge"),
                 token = if (json.has("token")) json.optLong("token") else null,
                 reason = json.optStringOrNull("reason"),
+                fileId = json.optStringOrNull("fileId"),
+                name = json.optStringOrNull("name"),
+                size = if (json.has("size")) json.optLong("size") else null,
+                mime = json.optStringOrNull("mime"),
+                sha256 = json.optStringOrNull("sha256"),
+                data = json.optStringOrNull("data"),
+                ok = if (json.has("ok")) json.optBoolean("ok") else null,
+                path = json.optStringOrNull("path"),
             )
         }
 

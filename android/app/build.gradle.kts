@@ -17,6 +17,8 @@ android {
 
     buildFeatures {
         viewBinding = true
+        // BuildConfig.DEBUG gates the share intent diagnostics.
+        buildConfig = true
     }
 
     compileOptions {
