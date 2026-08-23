@@ -29,6 +29,13 @@ class MainActivity : AppCompatActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refreshPermissionButtons() }
 
+    private val nearbyPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            refreshPermissionButtons()
+            // The beacon could not start without it, so try again now.
+            if (granted && prefs.beaconEnabled) SyncService.start(this, SyncService.ACTION_START)
+        }
+
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val connected = intent.getBooleanExtra(SyncService.EXTRA_CONNECTED, false)
@@ -40,6 +47,8 @@ class MainActivity : AppCompatActivity() {
                 !prefs.syncEnabled -> getString(R.string.status_sync_off)
                 else -> getString(R.string.status_connecting)
             }
+            // Locking is only possible over a live session, unlike the beacon.
+            binding.lockNowButton.isEnabled = connected
             refreshQueuedFiles()
         }
     }
@@ -56,12 +65,21 @@ class MainActivity : AppCompatActivity() {
         binding.hostInput.setText(prefs.manualHost)
         binding.portInput.setText(prefs.port.toString())
         binding.syncSwitch.isChecked = prefs.syncEnabled
+        binding.beaconSwitch.isChecked = prefs.beaconEnabled
 
         binding.saveButton.setOnClickListener { save(reconnect = true) }
-        binding.syncSwitch.setOnCheckedChangeListener { _, _ -> save(reconnect = true) }
+        binding.syncSwitch.setOnCheckedChangeListener { _, _ -> applySwitches(reconnect = true) }
+        binding.beaconSwitch.setOnCheckedChangeListener { _, checked ->
+            // Asking straight away: the switch does nothing without it.
+            if (checked && !hasNearbyPermission()) requestNearby()
+            applySwitches(reconnect = false)
+        }
         binding.sendClipboardButton.setOnClickListener { sendClipboardNow() }
+        binding.lockNowButton.setOnClickListener { lockTheMac() }
+        binding.disconnectButton.setOnClickListener { disconnect() }
         binding.notificationsButton.setOnClickListener { requestNotifications() }
         binding.overlayButton.setOnClickListener { requestOverlay() }
+        binding.nearbyButton.setOnClickListener { requestNearby() }
     }
 
     /**
@@ -95,9 +113,11 @@ class MainActivity : AppCompatActivity() {
         refreshPermissionButtons()
         refreshQueuedFiles()
         if (prefs.syncEnabled) {
+            // The answer arrives as a broadcast and settles the Lock Now button.
             SyncService.start(this, SyncService.ACTION_QUERY_STATUS)
         } else {
             binding.statusText.text = getString(R.string.status_sync_off)
+            binding.lockNowButton.isEnabled = false
         }
     }
 
@@ -106,22 +126,35 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
     }
 
+    /** Save and connect: the text fields are committed only from here. */
     private fun save(reconnect: Boolean) {
-        val code = binding.pairingCodeInput.text.toString()
         val port = binding.portInput.text.toString().toIntOrNull() ?: Wire.DEFAULT_PORT
-
-        prefs.pairingCode = code
+        prefs.pairingCode = binding.pairingCodeInput.text.toString()
         prefs.manualHost = binding.hostInput.text.toString()
         prefs.port = port.coerceIn(1024, 65535)
-        prefs.syncEnabled = binding.syncSwitch.isChecked
         binding.portInput.setText(prefs.port.toString())
+        applySwitches(reconnect)
+    }
+
+    /**
+     * Flipping a switch or pressing Disconnect writes **only** what those
+     * controls own. The pairing code, the host and the port belong to the text
+     * fields and to the Save button: committing whatever happens to be on screen
+     * from an unrelated tap would quietly overwrite a working pairing with a
+     * half typed one.
+     */
+    private fun applySwitches(reconnect: Boolean) {
+        prefs.syncEnabled = binding.syncSwitch.isChecked
+        prefs.beaconEnabled = binding.beaconSwitch.isChecked
+        refreshPermissionButtons()
 
         if (!prefs.syncEnabled) {
+            // The beacon rides along with the sync, so this stops both.
             SyncService.stop(this)
             binding.statusText.text = getString(R.string.status_sync_off)
             return
         }
-        if (CryptoBox.normalize(code).length < MIN_CODE_LENGTH) {
+        if (CryptoBox.normalize(prefs.pairingCode).length < MIN_CODE_LENGTH) {
             binding.statusText.text = getString(R.string.status_missing_code)
             return
         }
@@ -136,6 +169,22 @@ class MainActivity : AppCompatActivity() {
         if (queued > 0) {
             binding.queuedFilesText.text = getString(R.string.status_queued_files, queued)
         }
+    }
+
+    private fun lockTheMac() {
+        SyncService.start(this, SyncService.ACTION_LOCK_MAC)
+    }
+
+    /** Ends the clipboard sync; the presence beacon keeps running on its own. */
+    private fun disconnect() {
+        binding.lockNowButton.isEnabled = false
+        if (binding.syncSwitch.isChecked) {
+            // The switch owns this state, and its listener does the saving.
+            binding.syncSwitch.isChecked = false
+        } else {
+            SyncService.stop(this)
+        }
+        // Note it does not touch the pairing code: see applySwitches.
     }
 
     private fun sendClipboardNow() {
@@ -161,6 +210,17 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun requestNearby() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        if (hasNearbyPermission()) {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+            )
+        } else {
+            nearbyPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE)
+        }
+    }
+
     private fun requestOverlay() {
         startActivity(
             Intent(
@@ -171,6 +231,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshPermissionButtons() {
+        val nearby = hasNearbyPermission()
+        binding.nearbyState.setText(if (nearby) R.string.permission_granted else R.string.permission_missing)
+        binding.nearbyButton.setText(
+            if (nearby) R.string.permission_open_settings else R.string.permission_grant
+        )
+        refreshBeaconHint(hasPermission = nearby)
+
         val notifications = hasNotificationPermission()
         binding.notificationsState.setText(if (notifications) R.string.permission_granted else R.string.permission_missing)
         binding.notificationsButton.setText(
@@ -183,6 +250,29 @@ class MainActivity : AppCompatActivity() {
             if (overlay) R.string.permission_open_settings else R.string.permission_grant
         )
     }
+
+    /**
+     * The beacon switch on its own is not enough: it needs the Nearby devices
+     * permission, and it only broadcasts while the clipboard sync is on. Both
+     * are worth saying out loud, because either one leaves the Mac unable to
+     * lock and the switch looking as if it works.
+     */
+    private fun refreshBeaconHint(hasPermission: Boolean) {
+        val message = when {
+            !binding.beaconSwitch.isChecked -> null
+            !hasPermission -> getString(R.string.autolock_needs_permission)
+            !binding.syncSwitch.isChecked -> getString(R.string.autolock_needs_sync)
+            else -> null
+        }
+        binding.beaconHint.isVisible = message != null
+        message?.let { binding.beaconHint.text = it }
+    }
+
+    /** Broadcasting the beacon is a runtime permission from Android 12 on. */
+    private fun hasNearbyPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) ==
+            PackageManager.PERMISSION_GRANTED
 
     private fun hasNotificationPermission(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||

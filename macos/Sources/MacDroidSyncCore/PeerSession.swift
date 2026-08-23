@@ -33,6 +33,15 @@ public final class PeerSession {
     public var onFileSent: ((String, String) -> Void)?
     /// Name and reason of a file the phone did not take.
     public var onFileSendFailed: ((String, String) -> Void)?
+    /// Whether the phone is broadcasting its presence beacon. Reported from
+    /// `hello` and again whenever the switch on the phone is flipped, because
+    /// otherwise the Mac could not tell "the user turned the feature off" apart
+    /// from "the user walked away".
+    public var onPresencePreference: ((Bool) -> Void)?
+    /// The phone asked for this Mac to be locked right now. Deliberately not
+    /// tied to the auto lock: locking is the safe direction, and the button on
+    /// the phone has to work whether or not the automatic feature is on.
+    public var onLockRequested: (() -> Void)?
 
     /// Where incoming files are written; without a sink they are refused.
     public var fileSink: FileSink?
@@ -297,6 +306,10 @@ public final class PeerSession {
             ))
             Log.info("Authenticated with \(remoteDeviceName!) (\(remoteDescription))")
             onAuthenticated?(remoteDeviceName!)
+            if let beacon = message.beacon {
+                Log.info("Phone says its presence beacon is \(beacon ? "on" : "off")")
+                onPresencePreference?(beacon)
+            }
             return
         }
 
@@ -324,6 +337,13 @@ public final class PeerSession {
             try handleFileEnd(message)
         case MessageType.fileAck:
             handleFileAck(message)
+        case MessageType.presence:
+            guard let beacon = message.beacon else { return }
+            Log.info("Phone turned its presence beacon \(beacon ? "on" : "off")")
+            onPresencePreference?(beacon)
+        case MessageType.lock:
+            Log.info("Phone asked to lock the screen")
+            onLockRequested?()
         case MessageType.bye:
             Log.info("Peer said goodbye: \(message.reason ?? "no reason")")
             connection.cancel()

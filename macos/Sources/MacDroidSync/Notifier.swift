@@ -67,10 +67,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(content)
     }
 
-    private func post(_ content: UNMutableNotificationContent) {
+    private func post(_ content: UNMutableNotificationContent, identifier: String = UUID().uuidString) {
         guard isAvailable, isAuthorized else { return }
         let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
+            identifier: identifier,
             content: content,
             trigger: nil
         )

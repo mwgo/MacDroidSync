@@ -162,3 +162,53 @@ final class ShareInboxTests: XCTestCase {
         wait(for: [fired], timeout: 5)
     }
 }
+
+/// How the app reacts to what the keychain says about the pairing code.
+///
+/// This exists because of a real incident: a read that landed exactly as the
+/// system went to sleep came back unsuccessful, the app read that as "no code
+/// stored yet", generated a fresh one over the good one and silently broke the
+/// pairing with the phone. Nothing here may ever answer `generate` for a read
+/// that merely failed.
+final class PairingCodeResolutionTests: XCTestCase {
+
+    func testAStoredCodeIsUsed() {
+        XCTAssertEqual(
+            Settings.resolve(.found("ABCD-EFGH-JKLM-NPQR"), fallback: nil),
+            .use("ABCD-EFGH-JKLM-NPQR")
+        )
+    }
+
+    func testTheStoredCodeWinsOverTheFallbackFile() {
+        XCTAssertEqual(
+            Settings.resolve(.found("FROM-KEYCHAIN"), fallback: "FROM-FILE"),
+            .use("FROM-KEYCHAIN")
+        )
+    }
+
+    func testNothingStoredAnywhereGeneratesACode() {
+        XCTAssertEqual(Settings.resolve(.absent, fallback: nil), .generate)
+        XCTAssertEqual(Settings.resolve(.absent, fallback: ""), .generate)
+        // An item that is there but empty is as good as none.
+        XCTAssertEqual(Settings.resolve(.found(""), fallback: nil), .generate)
+    }
+
+    func testTheFallbackFileIsUsedWhenTheKeychainHasNothing() {
+        XCTAssertEqual(Settings.resolve(.absent, fallback: "FROM-FILE"), .use("FROM-FILE"))
+    }
+
+    /// The regression itself.
+    func testAFailedReadNeverGeneratesANewPairing() {
+        for status in [OSStatus(-25308), OSStatus(-128), OSStatus(-34018), errSecInteractionNotAllowed] {
+            XCTAssertEqual(
+                Settings.resolve(.failed(status), fallback: nil),
+                .unavailable(status),
+                "a failed read must never overwrite the pairing"
+            )
+        }
+    }
+
+    func testAFailedReadStillPrefersTheFallbackFile() {
+        XCTAssertEqual(Settings.resolve(.failed(-25308), fallback: "FROM-FILE"), .use("FROM-FILE"))
+    }
+}

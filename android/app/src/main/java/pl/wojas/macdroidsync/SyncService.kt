@@ -22,6 +22,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -45,6 +46,7 @@ class SyncService : Service() {
     private lateinit var ringer: Ringer
     private lateinit var outbox: Outbox
     private lateinit var incomingFiles: IncomingFiles
+    private lateinit var beacon: PresenceAdvertiser
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val retryTrigger = Channel<Unit>(Channel.CONFLATED)
@@ -64,6 +66,9 @@ class SyncService : Service() {
     private var connectedMac: String? = null
 
     private var foregroundId = NotificationCenter.ID_IDLE
+
+    /** Last beacon state the Mac was told about, so only changes are sent. */
+    private var announcedBeacon: Boolean? = null
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -86,6 +91,8 @@ class SyncService : Service() {
         ringer = Ringer(this)
         outbox = Outbox(this)
         incomingFiles = IncomingFiles(this)
+        beacon = PresenceAdvertiser(this)
+        announcedBeacon = beaconWanted
         scope.launch { outbox.sweepIncomplete() }
 
         notifications.createChannels()
@@ -98,11 +105,15 @@ class SyncService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The beacon is independent of the clipboard sync, so it is settled
+        // before anything else and survives a "stop the sync" request.
+        updateBeacon()
+
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.i(TAG, "Stop requested")
                 prefs.syncEnabled = false
-                stopEverything()
+                stopWithGoodbye()
                 return START_NOT_STICKY
             }
             ACTION_RECONNECT -> {
@@ -115,19 +126,23 @@ class SyncService : Service() {
                 retryTrigger.trySend(Unit)
                 drainOutbox()
             }
+            ACTION_LOCK_MAC -> lockTheMac()
             ACTION_QUERY_STATUS -> broadcastStatus()
             ACTION_SILENCE -> silenceRing()
         }
 
         // A shared file keeps the service connecting even with clipboard sync off:
-        // the user asked for that transfer explicitly.
+        // the user asked for that transfer explicitly. The beacon on its own
+        // never opens a connection - it needs no Mac on the network.
         if (prefs.syncEnabled || hasQueuedFiles()) startConnectionLoop() else showIdle()
+        announceBeaconIfChanged()
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        beacon.stop()
         ringer.stop()
         runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
         connection?.close()
@@ -187,6 +202,7 @@ class SyncService : Service() {
                 pairingCode = pairingCode,
                 deviceName = deviceName(),
                 deviceId = prefs.deviceId,
+                beaconEnabled = beaconWanted,
             )
             peer.fileSink = incomingFiles
             connection = peer
@@ -343,6 +359,67 @@ class SyncService : Service() {
 
     // endregion
 
+    // region Presence beacon
+
+    /**
+     * Whether this phone should be broadcasting at all. The beacon rides along
+     * with the clipboard sync: switching the sync off switches the radio off too.
+     */
+    private val beaconWanted: Boolean
+        get() = prefs.beaconEnabled && prefs.syncEnabled
+
+    /** Starts or stops the radio to match the switches. */
+    private fun updateBeacon() {
+        if (beaconWanted) beacon.start(prefs.pairingCode) else beacon.stop()
+    }
+
+    /**
+     * Tells the Mac that the switch moved. That message matters: a beacon which
+     * simply disappears looks exactly like the user walking away, and the Mac
+     * would lock the screen of someone sitting right in front of it.
+     *
+     * Called at the end of the command, after any reconnect has already dropped
+     * the session: sending into a socket that the same command is closing would
+     * only ever fail, and the handshake of the next connection carries the state
+     * anyway.
+     */
+    private fun announceBeaconIfChanged() {
+        val enabled = beaconWanted
+        if (announcedBeacon == enabled) return
+        announcedBeacon = enabled
+
+        val peer = connection?.takeIf { it.isAuthenticated }
+        if (peer == null) {
+            Log.i(TAG, "Presence beacon ${if (enabled) "on" else "off"}, no Mac connected to tell")
+            return
+        }
+        scope.launch {
+            runCatching { peer.sendPresence(enabled) }
+                .onFailure { Log.w(TAG, "Could not tell the Mac about the beacon: ${it.message}") }
+        }
+    }
+
+    /**
+     * Sends the manual lock. Deliberately unrelated to [Prefs.beaconEnabled]: the
+     * user pressed a button, which is a clearer signal than any measurement.
+     */
+    private fun lockTheMac() {
+        val peer = connection?.takeIf { it.isAuthenticated }
+        if (peer == null) {
+            Log.i(TAG, "No Mac connected, cannot lock it")
+            broadcastStatus(message = getString(R.string.status_lock_no_mac))
+            return
+        }
+        // onStartCommand runs on the main thread, socket writes must not.
+        scope.launch {
+            runCatching { peer.sendLockRequest() }
+                .onSuccess { Log.i(TAG, "Asked the Mac to lock its screen") }
+                .onFailure { Log.w(TAG, "Could not ask the Mac to lock", it) }
+        }
+    }
+
+    // endregion
+
     // region Clipboard
 
     /**
@@ -419,7 +496,34 @@ class SyncService : Service() {
         }
     }
 
+    /**
+     * Shuts down, but not before the Mac has been told that the beacon is going
+     * away. Skipping that message would leave the Mac watching for a beacon that
+     * is never coming back, which is indistinguishable from the user walking
+     * off - and it would lock the screen of someone sitting right there.
+     *
+     * The write cannot happen on this thread, so the teardown waits for it, with
+     * a short timeout in case the socket is already dead.
+     */
+    private fun stopWithGoodbye() {
+        val peer = connection?.takeIf { it.isAuthenticated }
+        if (peer == null || announcedBeacon != true) {
+            stopEverything()
+            return
+        }
+        announcedBeacon = false
+        scope.launch {
+            withTimeoutOrNull(GOODBYE_TIMEOUT_MS) {
+                runCatching { peer.sendPresence(false) }
+                    .onSuccess { Log.i(TAG, "Told the Mac the beacon is going away") }
+                    .onFailure { Log.w(TAG, "Could not tell the Mac: ${it.message}") }
+            }
+            withContext(Dispatchers.Main) { stopEverything() }
+        }
+    }
+
     private fun stopEverything() {
+        beacon.stop()
         ringer.stop()
         drainJob?.cancel()
         drainJob = null
@@ -474,6 +578,7 @@ class SyncService : Service() {
         const val ACTION_SEND_FILES = "pl.wojas.macdroidsync.SEND_FILES"
         const val ACTION_QUERY_STATUS = "pl.wojas.macdroidsync.QUERY_STATUS"
         const val ACTION_SILENCE = "pl.wojas.macdroidsync.SILENCE"
+        const val ACTION_LOCK_MAC = "pl.wojas.macdroidsync.LOCK_MAC"
 
         const val BROADCAST_STATUS = "pl.wojas.macdroidsync.STATUS"
         const val EXTRA_TEXT = "text"
@@ -486,6 +591,7 @@ class SyncService : Service() {
         private const val HEARTBEAT_CHECK_MS = 5_000L
         private const val ACK_TIMEOUT_MS = 60_000L
         private const val PROGRESS_INTERVAL_MS = 500L
+        private const val GOODBYE_TIMEOUT_MS = 2_000L
         private const val MAX_ATTEMPTS = 3
         private val BACKOFF_MS = longArrayOf(1_000, 2_000, 5_000, 10_000, 30_000)
 

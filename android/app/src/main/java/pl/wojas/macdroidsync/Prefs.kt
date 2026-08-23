@@ -33,6 +33,16 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean(KEY_SYNC_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_SYNC_ENABLED, value).apply()
 
+    /**
+     * Whether this phone broadcasts the presence beacon the Mac uses to lock
+     * itself when the user walks away. Only takes effect while [syncEnabled] is
+     * on: the beacon rides along with the sync rather than keeping the service
+     * alive on its own.
+     */
+    var beaconEnabled: Boolean
+        get() = prefs.getBoolean(KEY_BEACON_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_BEACON_ENABLED, value).apply()
+
     /** Stable id of this phone, generated on first use. */
     val deviceId: String
         get() = prefs.getString(KEY_DEVICE_ID, null) ?: UUID.randomUUID().toString().also {
@@ -61,6 +71,7 @@ class Prefs(context: Context) {
         private const val KEY_HOST = "manualHost"
         private const val KEY_PORT = "port"
         private const val KEY_SYNC_ENABLED = "syncEnabled"
+        private const val KEY_BEACON_ENABLED = "beaconEnabled"
         private const val KEY_DEVICE_ID = "deviceId"
     }
 }

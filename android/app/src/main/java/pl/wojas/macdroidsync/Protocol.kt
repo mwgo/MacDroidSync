@@ -38,6 +38,8 @@ object MessageType {
     const val FILE_CHUNK = "file-chunk"
     const val FILE_END = "file-end"
     const val FILE_ACK = "file-ack"
+    const val PRESENCE = "presence"
+    const val LOCK = "lock"
 }
 
 /** One protocol message; absent fields are left out of the JSON payload. */
@@ -62,6 +64,11 @@ data class Message(
     val data: String? = null,
     val ok: Boolean? = null,
     val path: String? = null,
+    /**
+     * Presence beacon, see PROTOCOL.md section 7: whether this phone is
+     * broadcasting it. Carried by hello and by presence.
+     */
+    val beacon: Boolean? = null,
 ) {
     fun toBytes(): ByteArray {
         val json = JSONObject()
@@ -83,6 +90,7 @@ data class Message(
         data?.let { json.put("data", it) }
         ok?.let { json.put("ok", it) }
         path?.let { json.put("path", it) }
+        beacon?.let { json.put("beacon", it) }
         return json.toString().toByteArray(Charsets.UTF_8)
     }
 
@@ -108,6 +116,7 @@ data class Message(
                 data = json.optStringOrNull("data"),
                 ok = if (json.has("ok")) json.optBoolean("ok") else null,
                 path = json.optStringOrNull("path"),
+                beacon = if (json.has("beacon")) json.optBoolean("beacon") else null,
             )
         }
 

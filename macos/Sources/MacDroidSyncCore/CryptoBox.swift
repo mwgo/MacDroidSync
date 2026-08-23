@@ -20,12 +20,18 @@ public enum CryptoBox {
     }
 
     public static func deriveKey(pairingCode: String) -> SymmetricKey {
+        deriveKey(pairingCode: pairingCode, info: hkdfInfo, outputByteCount: 32)
+    }
+
+    /// Same pairing code, different purpose: `info` separates the channel key
+    /// from the presence beacon material (see `PresenceBeacon`).
+    public static func deriveKey(pairingCode: String, info: Data, outputByteCount: Int) -> SymmetricKey {
         let material = SymmetricKey(data: Data(normalize(pairingCode: pairingCode).utf8))
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: material,
             salt: hkdfSalt,
-            info: hkdfInfo,
-            outputByteCount: 32
+            info: info,
+            outputByteCount: outputByteCount
         )
     }
 

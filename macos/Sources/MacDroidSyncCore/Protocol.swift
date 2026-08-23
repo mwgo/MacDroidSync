@@ -50,6 +50,8 @@ public enum MessageType {
     public static let fileChunk = "file-chunk"
     public static let fileEnd = "file-end"
     public static let fileAck = "file-ack"
+    public static let presence = "presence"
+    public static let lock = "lock"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.
@@ -74,6 +76,9 @@ public struct Message: Codable {
     public var data: String?
     public var ok: Bool?
     public var path: String?
+    /// Presence beacon, see PROTOCOL.md section 7: whether the phone is
+    /// broadcasting it. Carried by `hello` and by `presence`.
+    public var beacon: Bool?
 
     public init(
         v: Int = Wire.version,
@@ -93,7 +98,8 @@ public struct Message: Codable {
         sha256: String? = nil,
         data: String? = nil,
         ok: Bool? = nil,
-        path: String? = nil
+        path: String? = nil,
+        beacon: Bool? = nil
     ) {
         self.v = v
         self.seq = seq
@@ -113,6 +119,7 @@ public struct Message: Codable {
         self.data = data
         self.ok = ok
         self.path = path
+        self.beacon = beacon
     }
 
     public static func now() -> Int64 {

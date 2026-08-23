@@ -18,6 +18,21 @@
         android:maxSdkVersion="28" />
     <!-- Lets the service open the transparent clipboard window from the background. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Broadcasting the presence beacon the Mac measures to decide whether the
+         user walked away. Nothing is ever scanned or connected to from here, so
+         no location permission is involved. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <!-- The app is perfectly usable on a phone without Bluetooth LE; only the
+         auto lock needs it. -->
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
 
     <application
         android:allowBackup="false"

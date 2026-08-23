@@ -18,6 +18,8 @@ class PeerConnection(
     pairingCode: String,
     private val deviceName: String,
     private val deviceId: String,
+    /** State of the presence beacon at handshake time, see [sendPresence]. */
+    private val beaconEnabled: Boolean = false,
 ) {
     interface Listener {
         fun onAuthenticated(macName: String)
@@ -61,6 +63,23 @@ class PeerConnection(
             val frame = readFrame() ?: break
             handle(frame.first, frame.second, listener)
         }
+    }
+
+    /**
+     * Tells the Mac whether the presence beacon is on. Without this the Mac
+     * could not tell "the user switched the feature off" apart from "the user
+     * walked away", and would lock the screen of someone sitting right there.
+     */
+    fun sendPresence(enabled: Boolean) {
+        send(Message(type = MessageType.PRESENCE, seq = codec.nextSequence(), beacon = enabled))
+    }
+
+    /**
+     * Asks the Mac to lock its screen now. Independent of the presence beacon:
+     * the button works whether or not the automatic locking is switched on.
+     */
+    fun sendLockRequest() {
+        send(Message(type = MessageType.LOCK, seq = codec.nextSequence()))
     }
 
     fun sendClipboard(text: String) {
@@ -188,6 +207,7 @@ class PeerConnection(
                     challenge = challenge,
                     device = deviceName,
                     deviceId = deviceId,
+                    beacon = beaconEnabled,
                 )
             )
             return

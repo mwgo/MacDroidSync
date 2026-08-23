@@ -105,6 +105,18 @@ class NotificationCenter(private val context: Context) {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                 ),
             )
+            // Always offered, whether or not the automatic locking is on: it is
+            // a button the user pressed, not a guess about where they are.
+            .addAction(
+                R.drawable.ic_stat_sync,
+                context.getString(R.string.notification_action_lock),
+                PendingIntent.getService(
+                    context,
+                    REQUEST_LOCK,
+                    Intent(context, SyncService::class.java).setAction(SyncService.ACTION_LOCK_MAC),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
             .addAction(
                 R.drawable.ic_stat_sync,
                 context.getString(R.string.notification_action_disconnect),
@@ -288,5 +300,6 @@ class NotificationCenter(private val context: Context) {
         private const val REQUEST_APPLY = 4
         private const val REQUEST_SILENCE = 5
         private const val REQUEST_OPEN = 6
+        private const val REQUEST_LOCK = 7
     }
 }

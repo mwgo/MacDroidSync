@@ -19,6 +19,7 @@
 
     <string name="section_permissions">Permissions</string>
     <string name="permission_notifications">Notifications</string>
+    <string name="permission_nearby">Nearby devices</string>
     <string name="permission_overlay">Display over other apps</string>
     <string name="permission_overlay_explanation">Android only lets an app touch the clipboard while it has a window on screen. MacDroidSync opens an invisible window for a fraction of a second, which requires this permission.</string>
     <string name="permission_granted">Granted</string>
@@ -66,6 +67,15 @@
     <string name="file_error_no_answer">The Mac never confirmed the transfer</string>
 
     <string name="share_label">Send to Mac</string>
+    <string name="lock_now">Lock Now</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="notification_action_lock">Lock Now</string>
+    <string name="status_lock_no_mac">No Mac connected, nothing to lock</string>
+    <string name="section_autolock">Auto lock the Mac</string>
+    <string name="autolock_switch">Lock the Mac when I walk away</string>
+    <string name="autolock_explanation">While the clipboard sync is on, the phone broadcasts a short Bluetooth signal every quarter of a second. The Mac averages its strength and locks its screen once the average says you have left, which also means the Mac needs this switched on in its own menu. Nothing is scanned and nothing is connected to; the signal carries no data beyond a token derived from the pairing code.</string>
+    <string name="autolock_needs_sync">Turn the clipboard sync on: the beacon only broadcasts while it is running.</string>
+    <string name="autolock_needs_permission">Grant Nearby devices below, otherwise the phone cannot broadcast.</string>
     <string name="share_hint">Share any file with MacDroidSync to drop it in the Mac\'s Downloads folder.</string>
     <string name="share_queued_one">%1$s is on its way to the Mac</string>
     <string name="share_queued_many">%1$d files are on their way to the Mac</string>

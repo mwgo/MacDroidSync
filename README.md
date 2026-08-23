@@ -167,6 +167,62 @@ tappable notification instead of being applied automatically.
   picks them up within milliseconds and starts sending. Because it is sandboxed, that path is resolved
   from the real home directory (`getpwuid`) instead of the usual `FileManager` search paths: those are
   redirected into `~/Library/Containers/…`, where the app would never find the requests.
+* **Locking the Mac when you walk away.** While the clipboard sync is on, the phone broadcasts a
+  Bluetooth LE beacon every 250 ms; the
+  Mac measures the signal strength of each packet and locks its screen once the **average** says you have
+  left. Both sides have to agree: the switch *Lock the Mac when I walk away* on the phone, which needs the
+  *Nearby devices* permission and the clipboard sync switched on, and *Lock when the phone leaves* in
+  the Mac's menu, which asks for Bluetooth access the first time it is turned on. The beacon rides along
+  with the sync rather than running on its own, so switching the sync off - from the switch, the
+  **Disconnect** button or the notification - stops the broadcast as well. The phone says so over the
+  session before it goes, so the Mac disarms instead of reading the silence as a departure. The beacon needs no Wi-Fi, no pairing over Bluetooth
+  and no connection of any kind - it is one 31 byte advertisement, and nothing is ever scanned or
+  connected to from the phone.
+  Signal strength is far too noisy to act on directly, so nothing is decided from a single reading: the
+  Mac averages the last 20 seconds, starts a 20 second countdown once that average drops below -80 dBm
+  (or once no packet arrives for 15 s at all), and needs -72 dBm to consider you back. In practice the
+  screen locks roughly 25 to 40 seconds after you leave the room, and a hand over the phone or a body
+  walking past does nothing at all. For the whole countdown a panel sits in the middle of the screen
+  showing the seconds left, with a **Don't lock** button. It is a non-activating panel, so it never takes
+  focus from what you are doing, and it keeps no clock of its own: the number it shows comes from the
+  same state machine that decides on the lock.
+  **Don't lock** does not pause the feature for a fixed stretch. It means "I am here, my phone is not":
+  the Mac goes back to square one and locks nothing at all until it has seen the phone again, at which
+  point the auto lock resumes as usual. For a real pause there is *Pause auto lock for an hour* in the
+  menu.
+  **The Mac never locks itself for a phone it has not seen.** Bluetooth off on either side, a mismatched
+  pairing code, a phone that never had the switch on: all of them mean the feature simply stays idle. It
+  also stays out of the way while the Mac is asleep, while the lid is closed and while the screen is
+  already locked.
+* **What the radio actually delivers.** Measured on this pair (Samsung SM-S931B next to a MacBook Pro,
+  phone on the desk, 2.9 minutes): **0.40 readings a second**, arriving in bursts of a few packets 0.29 s
+  apart separated by quiet spells - median gap 0.29 s, 90th percentile 6.3 s, **worst 7.2 s**. macOS duty
+  cycles its own scan, so that pattern is the platform, not the phone; the 15 s "beacon lost" threshold is
+  sized against it with roughly double the margin, and a false lock would need 35 s of total silence.
+  In the same run a **stationary** phone produced readings from -51 to -91 dBm, a spread of **40 dB**,
+  while the average stayed put at -63.5. That gap between one reading and the average is the whole reason
+  this feature averages at all.
+* **Calibrating the distance.** dBm readings differ by more than ten between radios, rooms and pockets,
+  so the menu shows the live average (`Phone: -63 dBm (near)`): walk to where you want the lock to happen
+  and read the number. *Sensitivity* offers three presets - **Fast** (10 s window, -75 dBm, 10 s grace),
+  **Balanced** (the default above) and **Cautious** (30 s window, -85 dBm, 45 s grace) - and
+  *Away threshold…* takes a single dBm value while keeping the preset's hysteresis. Both are under
+  *Lock when the phone leaves* in the menu bar.
+* **Locking the Mac by hand.** **Lock Now** in the Android app, both as a button in the main window and
+  as an action on the ongoing notification, locks the Mac straight away. It works whether or not the
+  automatic locking is switched on and regardless of the beacon, because it is a button press rather
+  than a guess about where you are; all it needs is the encrypted session, so the button is greyed out
+  while no Mac is connected. **Disconnect** next to it ends the clipboard sync, and with it the beacon.
+* **Turning the beacon off tells the Mac.** A beacon that just disappears is indistinguishable from a user
+  walking away, so anything that stops the broadcast - the beacon switch, the sync switch, Disconnect -
+  first sends a `presence` message over the encrypted session, and the Mac disarms immediately. The one
+  corner: if the switch is flipped while the phone is not connected to the Mac over Wi-Fi, the Mac sees
+  the beacon vanish and locks **once** before disarming for good.
+* **What the beacon gives away.** The advertisement carries a 128 bit service UUID derived from the
+  pairing code plus a token that only works for 30 seconds, so no other phone can arm the auto lock and a
+  recorded packet cannot keep the Mac unlocked later. The UUID itself is constant, which means anyone
+  scanning nearby can tell that *the same* device is present again; it is derived through a separate HKDF
+  purpose, so it reveals nothing about the key that encrypts the clipboard.
 * **Android strips location metadata from shared media.** When a photo or video comes from the gallery,
   Android hands out a copy with the GPS tags zeroed out unless the app holds the media location
   permission. MacDroidSync deliberately asks for no storage permission at all, so what arrives on the Mac
@@ -220,9 +276,11 @@ does not exist in release builds):
 ```bash
 adb shell am broadcast --include-stopped-packages \
     -n pl.wojas.macdroidsync/.DebugConfigReceiver -a pl.wojas.macdroidsync.DEBUG_CONFIG \
-    --es code PMNS-M99F-8KN8-U9EN --es host 10.0.2.2 --ei port 47831 --ez enabled true
+    --es code PMNS-M99F-8KN8-U9EN --es host 10.0.2.2 --ei port 47831 --ez enabled true --ez beacon true
 adb shell am broadcast --include-stopped-packages \
     -n pl.wojas.macdroidsync/.DebugConfigReceiver -a pl.wojas.macdroidsync.DEBUG_CONFIG --es bridge read
+adb shell am broadcast --include-stopped-packages \
+    -n pl.wojas.macdroidsync/.DebugConfigReceiver -a pl.wojas.macdroidsync.DEBUG_CONFIG --ez lock true
 adb logcat -s MacDroidSync
 ```
 

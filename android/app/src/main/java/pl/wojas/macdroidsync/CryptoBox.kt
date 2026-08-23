@@ -21,11 +21,18 @@ object CryptoBox {
         pairingCode.uppercase().filter { it.isLetterOrDigit() }
 
     fun deriveKey(pairingCode: String): ByteArray =
+        deriveKey(pairingCode, HKDF_INFO, 32)
+
+    /**
+     * Same pairing code, different purpose: [info] separates the channel key
+     * from the presence beacon material (see [PresenceBeacon]).
+     */
+    fun deriveKey(pairingCode: String, info: ByteArray, length: Int): ByteArray =
         hkdfSha256(
             ikm = normalize(pairingCode).toByteArray(Charsets.UTF_8),
             salt = HKDF_SALT,
-            info = HKDF_INFO,
-            length = 32,
+            info = info,
+            length = length,
         )
 
     fun seal(plaintext: ByteArray, key: ByteArray, nonce: ByteArray): ByteArray {

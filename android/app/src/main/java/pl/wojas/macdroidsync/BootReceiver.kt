@@ -5,7 +5,11 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 
-/** Brings the sync back after a reboot, but only if the user had it enabled. */
+/**
+ * Brings the sync back after a reboot, but only if the user had it enabled.
+ * That also covers the presence beacon, which only broadcasts while the sync is
+ * on.
+ */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return

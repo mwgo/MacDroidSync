@@ -29,6 +29,9 @@
     <string>MacDroidSync</string>
     <key>NSDownloadsFolderUsageDescription</key>
     <string>MacDroidSync saves the files you share from your Android phone into your Downloads folder.</string>
+    <!-- Without this key macOS refuses the Bluetooth LE scan the auto lock needs. -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>MacDroidSync listens for the presence beacon of your Android phone so it can lock this Mac when you walk away.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>MacDroidSync needs the local network to send your clipboard to your Android phone over Wi-Fi.</string>
     <key>NSBonjourServices</key>

@@ -22,6 +22,10 @@ public final class Settings: SyncConfiguration {
         static let port = "port"
         static let deviceId = "deviceId"
         static let pairedDeviceName = "pairedDeviceName"
+        static let autoLockEnabled = "autoLockEnabled"
+        static let autoLockPreset = "autoLockPreset"
+        static let autoLockAwayThreshold = "autoLockAwayThreshold"
+        static let autoLockSnoozeUntil = "autoLockSnoozeUntil"
     }
 
     private let defaults = UserDefaults.standard
@@ -30,6 +34,12 @@ public final class Settings: SyncConfiguration {
     /// Guards the lazy generation of the pairing code against two threads
     /// racing to create two different codes.
     private let pairingLock = NSLock()
+    /// The keychain read behind `pairingCode` can take seconds the first time,
+    /// and the menu bar asks for the code often, so the answer is kept. Its own
+    /// lock, held for nanoseconds, means `knownPairingCode` can never end up
+    /// waiting behind a slow keychain read.
+    private var cachedPairingCode: String?
+    private let cacheLock = NSLock()
 
     private init() {}
 
@@ -64,10 +74,24 @@ public final class Settings: SyncConfiguration {
         get {
             pairingLock.lock()
             defer { pairingLock.unlock() }
-            if let code = keychain.read() ?? readFallback(), !code.isEmpty { return code }
-            let generated = CryptoBox.generatePairingCode()
-            persist(pairingCode: generated)
-            return generated
+            if let known = knownPairingCode { return known }
+
+            switch Self.resolve(keychain.read(), fallback: readFallback()) {
+            case .use(let code):
+                remember(pairingCode: code)
+                return code
+            case .generate:
+                let generated = CryptoBox.generatePairingCode()
+                persist(pairingCode: generated)
+                Log.info("No pairing code stored yet, generated one")
+                return generated
+            case .unavailable(let status):
+                Log.error(
+                    "Could not read the pairing code (OSStatus \(status)). "
+                    + "Keeping the stored one instead of minting a new pairing."
+                )
+                return ""
+            }
         }
         set {
             pairingLock.lock()
@@ -84,12 +108,109 @@ public final class Settings: SyncConfiguration {
         return code
     }
 
+    /// The code if it is already in hand, without ever touching the keychain.
+    /// Callers on the main thread use this instead of `pairingCode`.
+    public var knownPairingCode: String? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return cachedPairingCode
+    }
+
+    private func remember(pairingCode code: String) {
+        cacheLock.lock()
+        cachedPairingCode = code
+        cacheLock.unlock()
+    }
+
     private func persist(pairingCode code: String) {
+        remember(pairingCode: code)
         if keychain.write(code) {
             try? FileManager.default.removeItem(at: fallbackURL)
         } else {
             writeFallback(code)
         }
+    }
+
+    /// What to do about the pairing code, given what the keychain said.
+    ///
+    /// The distinction that matters is between "there is no item" and "the read
+    /// failed". Treating a failure as "no code yet" mints a fresh code **over a
+    /// perfectly good one** and silently breaks the pairing with the phone: the
+    /// clipboard, the files and the presence beacon all stop working until the
+    /// user pairs again. That is exactly what happened once, when a read landed
+    /// in the moment the system was going to sleep.
+    enum Resolution: Equatable {
+        case use(String)
+        case generate
+        case unavailable(OSStatus)
+    }
+
+    static func resolve(_ outcome: KeychainOutcome, fallback: String?) -> Resolution {
+        if case .found(let code) = outcome, !code.isEmpty { return .use(code) }
+        if let fallback, !fallback.isEmpty { return .use(fallback) }
+        switch outcome {
+        case .absent:
+            return .generate
+        case .failed(let status):
+            // No fallback and no answer: refuse rather than overwrite.
+            return .unavailable(status)
+        case .found:
+            // An empty item is as good as none.
+            return .generate
+        }
+    }
+
+    // MARK: - Auto lock
+
+    /// Off until the user asks for it: starting the scanner is what triggers the
+    /// system's Bluetooth prompt, and the RSSI threshold wants calibrating.
+    public var autoLockEnabled: Bool {
+        get { defaults.bool(forKey: Keys.autoLockEnabled) }
+        set { defaults.set(newValue, forKey: Keys.autoLockEnabled) }
+    }
+
+    /// Name of the chosen preset; anything unknown falls back to balanced.
+    public var autoLockPreset: String {
+        get { defaults.string(forKey: Keys.autoLockPreset) ?? "Balanced" }
+        set { defaults.set(newValue, forKey: Keys.autoLockPreset) }
+    }
+
+    /// Manual override of the away threshold in dBm, 0 meaning "use the preset".
+    /// Radios differ by more than ten dB, so this is the one number worth
+    /// tuning after watching the live reading in the menu.
+    public var autoLockAwayThreshold: Double {
+        get { defaults.double(forKey: Keys.autoLockAwayThreshold) }
+        set { defaults.set(newValue, forKey: Keys.autoLockAwayThreshold) }
+    }
+
+    /// The preset with the override applied, ready for `PresenceScanner`.
+    public var presenceSettings: PresenceSettings {
+        var settings: PresenceSettings
+        switch autoLockPreset {
+        case "Fast": settings = .fast
+        case "Cautious": settings = .cautious
+        default: settings = .balanced
+        }
+        let override = autoLockAwayThreshold
+        if override < 0 {
+            // The hysteresis gap of the preset is kept, so a custom threshold
+            // still cannot make the state flap.
+            let gap = settings.nearThreshold - settings.awayThreshold
+            settings.awayThreshold = override
+            settings.nearThreshold = override + gap
+        }
+        return settings
+    }
+
+    /// While this is in the future the auto lock stays out of the way.
+    public var autoLockSnoozeUntil: Date? {
+        get {
+            let stored = defaults.double(forKey: Keys.autoLockSnoozeUntil)
+            guard stored > 0 else { return nil }
+            let date = Date(timeIntervalSince1970: stored)
+            return date > Date() ? date : nil
+        }
+        set { defaults.set(newValue?.timeIntervalSince1970 ?? 0, forKey: Keys.autoLockSnoozeUntil) }
     }
 
     // MARK: - Launch at login
@@ -157,6 +278,15 @@ public enum AppPaths {
     }
 }
 
+/// What one keychain read found. `absent` and `failed` look the same to a
+/// caller that only gets an optional back, and telling them apart is what keeps
+/// a transient failure from overwriting the pairing code.
+enum KeychainOutcome: Equatable {
+    case found(String)
+    case absent
+    case failed(OSStatus)
+}
+
 /// Minimal generic password wrapper.
 struct KeychainStore {
     let service: String
@@ -170,15 +300,24 @@ struct KeychainStore {
         ]
     }
 
-    func read() -> String? {
+    func read() -> KeychainOutcome {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        switch status {
+        case errSecSuccess:
+            guard let data = result as? Data, let text = String(data: data, encoding: .utf8) else {
+                return .failed(status)
+            }
+            return .found(text)
+        case errSecItemNotFound:
+            return .absent
+        default:
+            return .failed(status)
+        }
     }
 
     @discardableResult

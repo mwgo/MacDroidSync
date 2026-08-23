@@ -13,6 +13,16 @@ import android.util.Log
  *       -a pl.wojas.macdroidsync.DEBUG_CONFIG \
  *       --es code ABCD-EFGH-JKLM-NPQR --es host 10.0.2.2 --ei port 47831 --ez enabled true
  *
+ * The presence beacon has its own flag, so the auto lock can be exercised
+ * without the screen:
+ *
+ *   ... --ez beacon true
+ *
+ * And it can ask the Mac to lock its screen, the same thing the Lock Now button
+ * and the notification action do:
+ *
+ *   ... --ez lock true
+ *
  * It can also open the transparent clipboard window, which is otherwise only
  * reachable from the notification action:
  *
@@ -32,20 +42,29 @@ class DebugConfigReceiver : BroadcastReceiver() {
             return
         }
 
+        if (intent.getBooleanExtra("lock", false)) {
+            Log.i(Prefs.TAG, "Debug: asking the Mac to lock")
+            SyncService.start(context, SyncService.ACTION_LOCK_MAC)
+            return
+        }
+
         val prefs = Prefs(context)
         intent.getStringExtra("code")?.let { prefs.pairingCode = it }
         intent.getStringExtra("host")?.let { prefs.manualHost = it }
         if (intent.hasExtra("port")) prefs.port = intent.getIntExtra("port", Wire.DEFAULT_PORT)
         if (intent.hasExtra("enabled")) prefs.syncEnabled = intent.getBooleanExtra("enabled", false)
+        if (intent.hasExtra("beacon")) prefs.beaconEnabled = intent.getBooleanExtra("beacon", false)
 
         Log.i(
             Prefs.TAG,
             "Debug config: host='${prefs.manualHost}' port=${prefs.port} " +
-                "enabled=${prefs.syncEnabled} codeLength=${prefs.pairingCode.length}",
+                "enabled=${prefs.syncEnabled} beacon=${prefs.beaconEnabled} " +
+                "codeLength=${prefs.pairingCode.length}",
         )
         if (prefs.syncEnabled) {
             SyncService.start(context, SyncService.ACTION_RECONNECT)
         } else {
+            // ACTION_STOP ends the sync; the service stays for the beacon.
             SyncService.stop(context)
         }
     }

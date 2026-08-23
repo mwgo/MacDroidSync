@@ -24,6 +24,10 @@ public final class SyncServer {
     public var onFileSent: ((String, String) -> Void)?
     /// Name and reason of a file the phone did not take.
     public var onFileSendFailed: ((String, String) -> Void)?
+    /// The phone told us whether its presence beacon is switched on.
+    public var onPresencePreference: ((Bool) -> Void)?
+    /// The phone pressed "Lock Now".
+    public var onLockRequested: (() -> Void)?
 
     public private(set) var state: PeerState = .disconnected {
         didSet {
@@ -185,9 +189,19 @@ public final class SyncServer {
             session = nil
         }
 
+        // An empty code means the keychain would not answer. Refusing plainly
+        // beats accepting and failing the handshake with "the pairing code does
+        // not match", which sends the user looking for a problem that is not there.
+        let code = settings.pairingCode
+        guard !code.isEmpty else {
+            Log.error("Refusing the connection: the pairing code is not available")
+            connection.cancel()
+            return
+        }
+
         let session = PeerSession(
             connection: connection,
-            pairingCode: settings.pairingCode,
+            pairingCode: code,
             localDeviceName: settings.deviceName,
             localDeviceId: settings.deviceId,
             queue: queue
@@ -228,6 +242,12 @@ public final class SyncServer {
         }
         session.onFileSendFailed = { [weak self] name, reason in
             DispatchQueue.main.async { self?.onFileSendFailed?(name, reason) }
+        }
+        session.onPresencePreference = { [weak self] enabled in
+            DispatchQueue.main.async { self?.onPresencePreference?(enabled) }
+        }
+        session.onLockRequested = { [weak self] in
+            DispatchQueue.main.async { self?.onLockRequested?() }
         }
         session.onEnd = { [weak self, weak session] _ in
             guard let self, self.session === session else { return }
