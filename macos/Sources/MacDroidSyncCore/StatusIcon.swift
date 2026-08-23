@@ -1,8 +1,16 @@
 import AppKit
 
-/// Maps the connection state onto the menu bar icon. SF Symbols with a badge on
-/// the clipboard glyph do not exist on macOS, so nearby symbols are used and the
-/// icon is additionally dimmed or tinted.
+/// Maps the connection state onto the menu bar icon.
+///
+/// Two arrows pointing opposite ways, matching the application icon: the
+/// clipboard, the files and the presence all travel both ways. The state shows
+/// in the weight of the glyph - outline while nothing is connected, enclosed and
+/// filled once it is - and in the alpha below, because a menu bar icon has no
+/// room for a badge.
+///
+/// Each state names several symbols and takes the first one the system actually
+/// has, so a name withdrawn by a future macOS degrades to a near neighbour
+/// instead of leaving the menu bar blank.
 public enum StatusIcon {
     public static func image(for state: PeerState) -> NSImage? {
         let image = symbol(for: state)
@@ -40,15 +48,26 @@ public enum StatusIcon {
         let candidates: [String]
         switch state {
         case .disconnected, .connecting:
-            candidates = ["clipboard", "list.clipboard", "doc.on.clipboard"]
+            candidates = ["arrow.left.arrow.right", "arrow.left.and.right", "arrow.left.arrow.right.circle"]
         case .connected:
-            candidates = ["clipboard.fill", "list.clipboard.fill", "doc.on.clipboard.fill"]
+            candidates = [
+                "arrow.left.arrow.right.circle.fill",
+                "arrow.left.arrow.right.square.fill",
+                "arrow.left.arrow.right",
+            ]
+        // Deliberately a different glyph rather than a different weight: the
+        // transfer only shows as a flash of a few tenths of a second, and a
+        // change too subtle to notice would be no signal at all.
         case .transferring:
-            candidates = ["doc.on.clipboard.fill", "checkmark.circle.fill", "clipboard.fill"]
+            candidates = [
+                "arrow.triangle.2.circlepath.circle.fill",
+                "arrow.triangle.2.circlepath",
+                "arrow.left.arrow.right.square.fill",
+            ]
         case .suspended:
-            candidates = ["moon.zzz.fill", "moon.zzz", "clipboard"]
+            candidates = ["moon.zzz.fill", "moon.zzz", "arrow.left.arrow.right"]
         case .error:
-            candidates = ["exclamationmark.triangle.fill", "clipboard"]
+            candidates = ["exclamationmark.triangle.fill", "arrow.left.arrow.right"]
         }
         let description = accessibilityDescription(for: state)
         for name in candidates {

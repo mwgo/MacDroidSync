@@ -48,7 +48,7 @@ open build/MacDroidSync.app
 ```
 
 `build.sh` produces `build/MacDroidSync.app` in release configuration; pass `debug` for a debug build.
-Once it is open, a clipboard icon appears in the menu bar.
+Once it is open, an icon of two arrows pointing opposite ways appears in the menu bar.
 
 To follow what it is doing, run the binary inside the bundle with logs on stdout:
 
@@ -57,7 +57,9 @@ MDS_VERBOSE=1 build/MacDroidSync.app/Contents/MacOS/MacDroidSync
 ```
 
 The app has no Dock icon and no window, but it does carry an application icon (Finder, Login Items,
-notifications): the same clipboard artwork as the Android launcher icon. `Resources/AppIcon.svg` is the
+notifications): two arrows one above the other, pointing opposite ways, the same artwork as the Android
+launcher icon. The clipboard it replaces described only the first thing this app ever did; everything it
+carries now - the clipboard, the files, the presence - travels both ways. `Resources/AppIcon.svg` is the
 source; regenerate the bundled `Resources/AppIcon.icns` after editing it with
 
 ```bash
@@ -66,7 +68,8 @@ swift Tools/make-app-icon.swift
 ```
 
 The menu bar itself stays on monochrome SF Symbols, because that icon has to change with the connection
-state and follow the menu bar tint.
+state and follow the menu bar tint. They are the same two arrows, drawn thin while nothing is connected
+and enclosed in a filled circle once it is.
 
 The menu carries the state and the things worth doing from the menu bar; everything that is set once
 lives in *Settings…* instead:
@@ -109,10 +112,10 @@ The menu bar icon reflects the connection:
 
 | State | Icon |
 |---|---|
-| waiting for the phone | outlined clipboard, dimmed |
-| connecting / handshake | outlined clipboard, full strength |
-| connected | filled clipboard |
-| clipboard moving | brief flash |
+| waiting for the phone | thin two way arrows, dimmed |
+| connecting / handshake | thin two way arrows, full strength |
+| connected | two way arrows in a filled circle |
+| clipboard or a file moving | brief flash of the circular sync arrows |
 | suspended (lid closed, or the Mac asleep) | dimmed moon |
 | error (port taken, listener failed) | red warning triangle, details in the menu |
 
