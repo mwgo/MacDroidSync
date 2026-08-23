@@ -10,7 +10,6 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
-import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -429,7 +428,7 @@ class SyncService : Service() {
      * user gets a tappable notification instead.
      */
     private fun applyClipboard(text: String) {
-        if (Settings.canDrawOverlays(this)) {
+        if (Permissions.canDrawOverlays(this)) {
             runCatching { startActivity(ClipboardBridgeActivity.writeIntent(this, text)) }
                 .onFailure {
                     Log.w(TAG, "Could not open the clipboard window", it)
@@ -442,7 +441,7 @@ class SyncService : Service() {
     }
 
     private fun openBridgeToRead() {
-        if (!Settings.canDrawOverlays(this)) return
+        if (!Permissions.canDrawOverlays(this)) return
         runCatching { startActivity(ClipboardBridgeActivity.readIntent(this)) }
     }
 

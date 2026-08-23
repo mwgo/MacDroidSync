@@ -75,7 +75,7 @@
     <string name="autolock_switch">Lock the Mac when I walk away</string>
     <string name="autolock_explanation">While the clipboard sync is on, the phone broadcasts a short Bluetooth signal every quarter of a second. The Mac averages its strength and locks its screen once the average says you have left, which also means the Mac needs this switched on in its own menu. Nothing is scanned and nothing is connected to; the signal carries no data beyond a token derived from the pairing code.</string>
     <string name="autolock_needs_sync">Turn the clipboard sync on: the beacon only broadcasts while it is running.</string>
-    <string name="autolock_needs_permission">Grant Nearby devices below, otherwise the phone cannot broadcast.</string>
+    <string name="autolock_needs_permission">Grant Nearby devices in Settings, otherwise the phone cannot broadcast. Tap here to open it.</string>
     <string name="share_hint">Share any file with MacDroidSync to drop it in the Mac\'s Downloads folder.</string>
     <string name="share_queued_one">%1$s is on its way to the Mac</string>
     <string name="share_queued_many">%1$d files are on their way to the Mac</string>
@@ -86,4 +86,19 @@
     <string name="status_queued_files">%1$d file(s) waiting for the Mac</string>
 
     <string name="toast_clipboard_empty">The clipboard is empty</string>
+    <string name="menu_settings">Settings</string>
+    <string name="menu_about">About</string>
+    <string name="title_settings">Settings</string>
+    <string name="title_about">About</string>
+
+    <string name="section_connection">Connection</string>
+    <string name="settings_saved">Saved, reconnecting to the Mac…</string>
+    <string name="settings_saved_sync_off">Saved. Turn the clipboard sync on to connect.</string>
+    <string name="about_tagline">Clipboard, files and presence between this phone and your Mac, over your own Wi-Fi.</string>
+    <string name="about_version">Version %1$s</string>
+    <string name="about_author">Free software by Marcin Wojas</string>
+    <string name="about_free">MacDroidSync costs nothing, carries no advertising and sends nothing anywhere except to the Mac you paired it with.</string>
+    <string name="about_licence_heading">MIT Licence</string>
+    <string name="about_protocol">The wire format, the key derivation and the cross platform test vectors are documented in PROTOCOL.md in the source repository.</string>
+    <string name="about_licence">Copyright (c) 2026 Marcin Wojas\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.</string>
 </resources>

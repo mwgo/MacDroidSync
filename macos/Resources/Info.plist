@@ -25,8 +25,9 @@
     <!-- Menu bar only application: no Dock icon, no main window. -->
     <key>LSUIElement</key>
     <true/>
+    <!-- Shown at the bottom of the About panel. -->
     <key>NSHumanReadableCopyright</key>
-    <string>MacDroidSync</string>
+    <string>© 2026 Marcin Wojas</string>
     <key>NSDownloadsFolderUsageDescription</key>
     <string>MacDroidSync saves the files you share from your Android phone into your Downloads folder.</string>
     <!-- Without this key macOS refuses the Bluetooth LE scan the auto lock needs. -->

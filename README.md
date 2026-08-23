@@ -68,7 +68,8 @@ swift Tools/make-app-icon.swift
 The menu bar itself stays on monochrome SF Symbols, because that icon has to change with the connection
 state and follow the menu bar tint.
 
-Everything lives in the menu:
+The menu carries the state and the things worth doing from the menu bar; everything that is set once
+lives in *Settings…* instead:
 
 | Menu item | What it does |
 |---|---|
@@ -80,9 +81,29 @@ Everything lives in the menu:
 | `Sending photo.jpg - 45%` | outgoing transfer, then `Sent: …` or `Queued: 3 files` |
 | `Received: <file>` | the file that arrived last; selecting it reveals the file in Finder |
 | `Open Downloads folder` | opens the folder incoming files are saved to |
-| `Pairing code…` | shows the code, copies it, or generates a new one |
-| `Port…` | changes the listening port (both sides must match) |
-| `Launch at login` | registers the app as a login item |
+| `Lock when the phone leaves` | the automatic locking, with the live reading `Phone: -58 dBm (near)` under it |
+| `Pause auto lock for an hour` | gets the automatic locking out of the way for a while |
+| `Settings…` (⌘,) | the settings window, see below |
+| `About MacDroidSync` | author, licence and the version that is actually running |
+
+#### The settings window
+
+Two tabs, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
+other shortcuts there:
+
+| Tab | What is in it |
+|---|---|
+| **General** | the pairing code with *Copy* and *Regenerate…*, the listening port, *Launch at login*, and where incoming files are saved |
+| **Auto lock** | the *Lock when the phone leaves* switch, the three sensitivity presets with their numbers spelled out, the away threshold in dBm, the live reading next to it, and the pause |
+
+The window and the menu show the same settings from two sides and stay in step: switching the automatic
+locking off in one is visible in the other straight away. A value typed into a field takes effect on
+*Return* or on the button next to it - never on the way out of the field - so closing the window
+abandons a half typed port instead of applying it.
+
+Being a menu bar app, MacDroidSync has no menu bar of its own to show. It installs one anyway, without
+displaying it, because that is what dispatches ⌘C, ⌘V, ⌘A and ⌘W to the settings window - without it a
+window in which you paste a pairing code would not accept a paste.
 
 The menu bar icon reflects the connection:
 
@@ -103,13 +124,17 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 ~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Then open the app once and:
+Then open the app once and, in *Settings* in the toolbar menu:
 
-1. Type the **pairing code** from the Mac menu (case and dashes do not matter).
+1. Type the **pairing code** from the Mac's settings window (case and dashes do not matter).
 2. Leave *Mac address* empty to find the Mac over Bonjour, or type an address if discovery is blocked
    (client isolation on the access point, a VPN, or the emulator, where the host is `10.0.2.2`).
 3. Grant **notifications** and **display over other apps**.
-4. Turn on *Keep the clipboard in sync*.
+4. Press *Save and reconnect*, go back, and turn on *Keep the clipboard in sync*.
+
+The main screen keeps only what is used day to day: the connection state, the two switches, *Send
+clipboard to the Mac*, *Lock Now* and *Disconnect*. The pairing, the address, the port and the
+permissions live in *Settings*; *About* names the author and the licence.
 
 To send a file, share it from any app (*Share* → *Send to Mac*). That works whether or not clipboard sync
 is on: a shared file is an explicit request, so the app connects for it and goes back to idle afterwards.
@@ -203,11 +228,12 @@ tappable notification instead of being applied automatically.
   while the average stayed put at -63.5. That gap between one reading and the average is the whole reason
   this feature averages at all.
 * **Calibrating the distance.** dBm readings differ by more than ten between radios, rooms and pockets,
-  so the menu shows the live average (`Phone: -63 dBm (near)`): walk to where you want the lock to happen
-  and read the number. *Sensitivity* offers three presets - **Fast** (10 s window, -75 dBm, 10 s grace),
-  **Balanced** (the default above) and **Cautious** (30 s window, -85 dBm, 45 s grace) - and
-  *Away threshold…* takes a single dBm value while keeping the preset's hysteresis. Both are under
-  *Lock when the phone leaves* in the menu bar.
+  so both the menu and the *Auto lock* tab show the live average (`Phone: -63 dBm (near)`): walk to where
+  you want the lock to happen and read the number. The tab is the place to do it, because the threshold
+  field and the reading it is compared against sit next to each other. *Sensitivity* offers three presets
+  - **Fast** (10 s window, -75 dBm, 10 s grace), **Balanced** (the default above) and **Cautious** (30 s
+  window, -85 dBm, 45 s grace) - and *Away threshold* takes a single dBm value while keeping the preset's
+  hysteresis.
 * **Locking the Mac by hand.** **Lock Now** in the Android app, both as a button in the main window and
   as an action on the ongoing notification, locks the Mac straight away. It works whether or not the
   automatic locking is switched on and regardless of the beacon, because it is a button press rather
@@ -294,7 +320,7 @@ adb logcat -s MacDroidSync
 | `Sync is on` but nothing happens after a reboot | Android does not always allow starting a foreground service from the background. Open the app once |
 | Incoming clipboard arrives as a notification instead of being applied | *Display over other apps* is not granted |
 | On the emulator the clipboard seems to bounce between host and guest | The emulator mirrors the guest clipboard onto the host by itself; that is an emulator feature, not this app |
-| Port already in use | Another process holds 47831; change it under `Port…` and in the Android app |
+| Port already in use | Another process holds 47831; change it in *Settings…*, tab *General*, and in the Android app |
 | A rebuild changes nothing | `build.sh` always writes `macos/build/MacDroidSync.app`. If you moved the app to `/Applications`, copy the fresh bundle over it again: `cp -R macos/build/MacDroidSync.app /Applications/` |
 | The phone shows no icon although the Mac is awake | If the Mac runs docked with the lid closed, the sync is suspended by design; the Mac menu says `Suspended, the lid is closed`. Open the lid to resume |
 | macOS asks whether MacDroidSync may access the Downloads folder | Incoming files are saved there; allow it once. Denying it makes every transfer end with `Failed: …` in the menu and a refusal on the phone |
@@ -314,6 +340,12 @@ macos/    Swift package: MacDroidSyncCore (protocol, crypto, server, pasteboard,
           ways, outgoing queue) plus the menu bar app, its notifications, the Services provider
           and the Share extension bundled into Contents/PlugIns
 android/  Gradle project: Kotlin foreground service, transparent clipboard window, share target,
-          file outbox, MediaStore writer for incoming files, pairing screen
+          file outbox, MediaStore writer for incoming files, main screen plus settings and about
 PROTOCOL.md  wire format, crypto, cross platform test vectors
 ```
+
+## Licence
+
+MacDroidSync is free software by **Marcin Wojas**, released under the **MIT licence**; the full text is
+in [LICENSE](LICENSE). It costs nothing, carries no advertising and sends nothing anywhere except to the
+Mac and the phone you paired with each other.

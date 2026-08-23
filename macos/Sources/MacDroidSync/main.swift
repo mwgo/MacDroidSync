@@ -6,6 +6,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.info("MacDroidSync starting, device \(Settings.shared.deviceName)")
+        // Never drawn - the app is an accessory - but it is what makes Cmd-C,
+        // Cmd-V and Cmd-W work inside the settings window.
+        AppMenu.install()
         controller = MenuBarController()
         // Make sure a pairing code exists before the first phone shows up. The
         // first keychain read can block for a moment, so keep it off the main

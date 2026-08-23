@@ -52,6 +52,19 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/title_settings"
+            android:parentActivityName=".MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".AboutActivity"
+            android:exported="false"
+            android:label="@string/title_about"
+            android:parentActivityName=".MainActivity" />
+
         <!-- The transparent window that briefly takes focus so that Android lets
              us read from and write to the system clipboard. -->
         <activity

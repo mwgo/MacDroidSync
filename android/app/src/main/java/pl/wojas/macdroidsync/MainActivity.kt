@@ -5,33 +5,30 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
+import android.view.Menu
+import android.view.MenuItem
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
-import androidx.core.view.updatePadding
 import pl.wojas.macdroidsync.databinding.ActivityMainBinding
 
-/** Pairing, permissions and the on/off switch for the clipboard sync. */
-class MainActivity : AppCompatActivity() {
+/**
+ * The state of the sync and the handful of things worth doing every day.
+ *
+ * The switches live here because they are state, not configuration; the pairing,
+ * the connection details and the permissions live behind Settings in the toolbar.
+ */
+class MainActivity : ScreenActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: Prefs
     private lateinit var outbox: Outbox
 
-    private val notificationPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { refreshPermissionButtons() }
-
     private val nearbyPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            refreshPermissionButtons()
+            refreshBeaconHint()
             // The beacon could not start without it, so try again now.
             if (granted && prefs.beaconEnabled) SyncService.start(this, SyncService.ACTION_START)
         }
@@ -57,49 +54,41 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        applyWindowInsets()
+        useToolbar(binding.toolbar)
+        padFromInsets(binding.content)
         prefs = Prefs(this)
         outbox = Outbox(this)
 
-        binding.pairingCodeInput.setText(prefs.pairingCode)
-        binding.hostInput.setText(prefs.manualHost)
-        binding.portInput.setText(prefs.port.toString())
         binding.syncSwitch.isChecked = prefs.syncEnabled
         binding.beaconSwitch.isChecked = prefs.beaconEnabled
 
-        binding.saveButton.setOnClickListener { save(reconnect = true) }
         binding.syncSwitch.setOnCheckedChangeListener { _, _ -> applySwitches(reconnect = true) }
         binding.beaconSwitch.setOnCheckedChangeListener { _, checked ->
             // Asking straight away: the switch does nothing without it.
-            if (checked && !hasNearbyPermission()) requestNearby()
+            if (checked && !Permissions.hasNearby(this)) requestNearby()
             applySwitches(reconnect = false)
         }
         binding.sendClipboardButton.setOnClickListener { sendClipboardNow() }
         binding.lockNowButton.setOnClickListener { lockTheMac() }
         binding.disconnectButton.setOnClickListener { disconnect() }
-        binding.notificationsButton.setOnClickListener { requestNotifications() }
-        binding.overlayButton.setOnClickListener { requestOverlay() }
-        binding.nearbyButton.setOnClickListener { requestNearby() }
+        binding.beaconHint.setOnClickListener { openSettings() }
     }
 
-    /**
-     * Android 15 and newer draw every window edge to edge. The app bar takes care
-     * of the status bar through fitsSystemWindows; this keeps the scrolling content
-     * clear of the navigation bar and, more importantly, of the keyboard.
-     */
-    private fun applyWindowInsets() {
-        ViewCompat.setOnApplyWindowInsetsListener(binding.content) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
-            // Padding on the scrolling container only; the 16dp gutter lives in the
-            // layout, on the child, so it is never overwritten here.
-            view.updatePadding(
-                left = bars.left,
-                right = bars.right,
-                bottom = maxOf(bars.bottom, keyboard.bottom),
-            )
-            insets
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_settings -> {
+            openSettings()
+            true
         }
+        R.id.action_about -> {
+            startActivity(Intent(this, AboutActivity::class.java))
+            true
+        }
+        else -> super.onOptionsItemSelected(item)
     }
 
     override fun onResume() {
@@ -110,7 +99,9 @@ class MainActivity : AppCompatActivity() {
             IntentFilter(SyncService.BROADCAST_STATUS),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
-        refreshPermissionButtons()
+        // A permission may well have been granted on the settings screen while
+        // this one was in the background.
+        refreshBeaconHint()
         refreshQueuedFiles()
         if (prefs.syncEnabled) {
             // The answer arrives as a broadcast and settles the Lock Now button.
@@ -126,27 +117,17 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
     }
 
-    /** Save and connect: the text fields are committed only from here. */
-    private fun save(reconnect: Boolean) {
-        val port = binding.portInput.text.toString().toIntOrNull() ?: Wire.DEFAULT_PORT
-        prefs.pairingCode = binding.pairingCodeInput.text.toString()
-        prefs.manualHost = binding.hostInput.text.toString()
-        prefs.port = port.coerceIn(1024, 65535)
-        binding.portInput.setText(prefs.port.toString())
-        applySwitches(reconnect)
-    }
-
     /**
      * Flipping a switch or pressing Disconnect writes **only** what those
-     * controls own. The pairing code, the host and the port belong to the text
-     * fields and to the Save button: committing whatever happens to be on screen
-     * from an unrelated tap would quietly overwrite a working pairing with a
-     * half typed one.
+     * controls own. The pairing code, the host and the port belong to the
+     * settings screen and to its Save button: committing whatever happens to be
+     * on screen from an unrelated tap would quietly overwrite a working pairing
+     * with a half typed one.
      */
     private fun applySwitches(reconnect: Boolean) {
         prefs.syncEnabled = binding.syncSwitch.isChecked
         prefs.beaconEnabled = binding.beaconSwitch.isChecked
-        refreshPermissionButtons()
+        refreshBeaconHint()
 
         if (!prefs.syncEnabled) {
             // The beacon rides along with the sync, so this stops both.
@@ -171,11 +152,39 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * The beacon switch on its own is not enough: it needs the Nearby devices
+     * permission, and it only broadcasts while the clipboard sync is on. Both are
+     * worth saying out loud, because either one leaves the Mac unable to lock and
+     * the switch looking as if it works. The permission now lives a screen away,
+     * so the hint is the way there.
+     */
+    private fun refreshBeaconHint() {
+        val message = when {
+            !binding.beaconSwitch.isChecked -> null
+            !Permissions.hasNearby(this) -> getString(R.string.autolock_needs_permission)
+            !binding.syncSwitch.isChecked -> getString(R.string.autolock_needs_sync)
+            else -> null
+        }
+        binding.beaconHint.isVisible = message != null
+        message?.let { binding.beaconHint.text = it }
+    }
+
+    private fun openSettings() {
+        startActivity(SettingsActivity.intent(this))
+    }
+
+    private fun requestNearby() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        if (Permissions.hasNearby(this)) return
+        nearbyPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE)
+    }
+
     private fun lockTheMac() {
         SyncService.start(this, SyncService.ACTION_LOCK_MAC)
     }
 
-    /** Ends the clipboard sync; the presence beacon keeps running on its own. */
+    /** Ends the clipboard sync, and with it the presence beacon. */
     private fun disconnect() {
         binding.lockNowButton.isEnabled = false
         if (binding.syncSwitch.isChecked) {
@@ -190,94 +199,6 @@ class MainActivity : AppCompatActivity() {
     private fun sendClipboardNow() {
         startActivity(ClipboardBridgeActivity.readIntent(this))
     }
-
-    private fun requestNotifications() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            openAppNotificationSettings()
-            return
-        }
-        if (hasNotificationPermission()) {
-            openAppNotificationSettings()
-        } else {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
-
-    private fun openAppNotificationSettings() {
-        startActivity(
-            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-        )
-    }
-
-    private fun requestNearby() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        if (hasNearbyPermission()) {
-            startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
-            )
-        } else {
-            nearbyPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE)
-        }
-    }
-
-    private fun requestOverlay() {
-        startActivity(
-            Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName"),
-            )
-        )
-    }
-
-    private fun refreshPermissionButtons() {
-        val nearby = hasNearbyPermission()
-        binding.nearbyState.setText(if (nearby) R.string.permission_granted else R.string.permission_missing)
-        binding.nearbyButton.setText(
-            if (nearby) R.string.permission_open_settings else R.string.permission_grant
-        )
-        refreshBeaconHint(hasPermission = nearby)
-
-        val notifications = hasNotificationPermission()
-        binding.notificationsState.setText(if (notifications) R.string.permission_granted else R.string.permission_missing)
-        binding.notificationsButton.setText(
-            if (notifications) R.string.permission_open_settings else R.string.permission_grant
-        )
-
-        val overlay = Settings.canDrawOverlays(this)
-        binding.overlayState.setText(if (overlay) R.string.permission_granted else R.string.permission_missing)
-        binding.overlayButton.setText(
-            if (overlay) R.string.permission_open_settings else R.string.permission_grant
-        )
-    }
-
-    /**
-     * The beacon switch on its own is not enough: it needs the Nearby devices
-     * permission, and it only broadcasts while the clipboard sync is on. Both
-     * are worth saying out loud, because either one leaves the Mac unable to
-     * lock and the switch looking as if it works.
-     */
-    private fun refreshBeaconHint(hasPermission: Boolean) {
-        val message = when {
-            !binding.beaconSwitch.isChecked -> null
-            !hasPermission -> getString(R.string.autolock_needs_permission)
-            !binding.syncSwitch.isChecked -> getString(R.string.autolock_needs_sync)
-            else -> null
-        }
-        binding.beaconHint.isVisible = message != null
-        message?.let { binding.beaconHint.text = it }
-    }
-
-    /** Broadcasting the beacon is a runtime permission from Android 12 on. */
-    private fun hasNearbyPermission(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) ==
-            PackageManager.PERMISSION_GRANTED
-
-    private fun hasNotificationPermission(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
 
     companion object {
         private const val MIN_CODE_LENGTH = 8

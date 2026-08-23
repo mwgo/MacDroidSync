@@ -23,15 +23,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let outgoingMenuItem = NSMenuItem(title: "No files sent yet", action: nil, keyEquivalent: "")
     private let fileMenuItem = NSMenuItem(title: "No files received yet", action: #selector(revealLastFile), keyEquivalent: "")
     private let downloadsMenuItem = NSMenuItem(title: "Open Downloads folder", action: #selector(openDownloads), keyEquivalent: "")
-    private let launchAtLoginMenuItem = NSMenuItem(title: "Launch at login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
     private let autoLockMenuItem = NSMenuItem(title: "Lock when the phone leaves", action: #selector(toggleAutoLock), keyEquivalent: "")
     private let presenceMenuItem = NSMenuItem(title: "Auto lock is off", action: nil, keyEquivalent: "")
-    private let sensitivityMenuItem = NSMenuItem(title: "Sensitivity", action: nil, keyEquivalent: "")
-    private let thresholdMenuItem = NSMenuItem(title: "Away threshold…", action: #selector(changeAwayThreshold), keyEquivalent: "")
     private let snoozeMenuItem = NSMenuItem(title: "Pause auto lock for an hour", action: #selector(toggleSnooze), keyEquivalent: "")
+    private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
+    private let aboutMenuItem = NSMenuItem(title: "About MacDroidSync", action: #selector(showAbout(_:)), keyEquivalent: "")
+    private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
 
     private let notifier = Notifier()
     private let countdown = LockCountdownWindow()
+    /// Built on first use: the window is the exception in a menu bar app, not
+    /// something every session needs.
+    private var settingsWindow: SettingsWindowController?
     private lazy var serviceProvider = ServiceProvider { [weak self] urls in
         self?.enqueue(files: urls)
     }
@@ -86,6 +89,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         shareWatcher = nil
         snoozeWorkItem?.cancel()
         countdown.hide()
+        settingsWindow?.close()
         lockStateObservers.forEach(DistributedNotificationCenter.default().removeObserver)
         lockStateObservers.removeAll()
         presence.stop()
@@ -99,17 +103,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private func buildMenu() {
         statusMenuItem.isEnabled = false
         lastSentMenuItem.isEnabled = false
-
         outgoingMenuItem.isEnabled = false
+        presenceMenuItem.isEnabled = false
 
         for item in [
             pingMenuItem, sendMenuItem, sendFilesMenuItem, fileMenuItem, downloadsMenuItem,
-            launchAtLoginMenuItem, autoLockMenuItem, thresholdMenuItem, snoozeMenuItem,
+            autoLockMenuItem, snoozeMenuItem, settingsMenuItem, aboutMenuItem, quitMenuItem,
         ] {
             item.target = self
         }
-        presenceMenuItem.isEnabled = false
 
+        // What the menu carries is state and the handful of things worth doing
+        // from the menu bar. Everything that is set once and then left alone
+        // lives in the settings window instead.
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
         menu.addItem(pingMenuItem)
@@ -121,50 +127,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(fileMenuItem)
         menu.addItem(downloadsMenuItem)
         menu.addItem(.separator())
-
         menu.addItem(autoLockMenuItem)
         menu.addItem(presenceMenuItem)
-        menu.addItem(sensitivityMenuItem)
-        sensitivityMenuItem.submenu = buildSensitivityMenu()
-        menu.addItem(thresholdMenuItem)
         menu.addItem(snoozeMenuItem)
         menu.addItem(.separator())
-
-        let pairingItem = NSMenuItem(title: "Pairing code…", action: #selector(showPairingCode), keyEquivalent: "")
-        pairingItem.target = self
-        menu.addItem(pairingItem)
-
-        let portItem = NSMenuItem(title: "Port…", action: #selector(changePort), keyEquivalent: "")
-        portItem.target = self
-        menu.addItem(portItem)
-
-        menu.addItem(launchAtLoginMenuItem)
+        menu.addItem(settingsMenuItem)
+        menu.addItem(aboutMenuItem)
         menu.addItem(.separator())
-
-        let quitItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
+        menu.addItem(quitMenuItem)
 
         menu.delegate = self
         statusItem.menu = menu
         statusItem.button?.imageScaling = .scaleProportionallyDown
-    }
-
-    /// The three presets from the plan; the numbers live in PresenceSettings.
-    private func buildSensitivityMenu() -> NSMenu {
-        let submenu = NSMenu()
-        for preset in [PresenceSettings.fast, .balanced, .cautious] {
-            guard let name = preset.presetName else { continue }
-            let item = NSMenuItem(title: name, action: #selector(chooseSensitivity(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = name
-            item.toolTip = String(
-                format: "Away below %.0f dBm, back at %.0f dBm, %.0f s window, locks after %.0f s",
-                preset.awayThreshold, preset.nearThreshold, preset.window, preset.grace
-            )
-            submenu.addItem(item)
-        }
-        return submenu
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -205,26 +179,25 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         fileMenuItem.isEnabled = lastReceivedFile != nil
         downloadsMenuItem.title = "Open \(server.destinationDirectory.lastPathComponent) folder"
 
-        launchAtLoginMenuItem.state = settings.launchAtLoginEnabled ? .on : .off
-
         let autoLock = settings.autoLockEnabled
         autoLockMenuItem.state = autoLock ? .on : .off
         presenceMenuItem.title = autoLockSummary
         presenceMenuItem.toolTip = presence.state == .unarmed && autoLock
             ? "The screen is never locked until the phone has been seen at least once."
             : nil
-        sensitivityMenuItem.isEnabled = autoLock
-        thresholdMenuItem.isEnabled = autoLock
         snoozeMenuItem.isEnabled = autoLock
         snoozeMenuItem.title = settings.autoLockSnoozeUntil == nil
             ? "Pause auto lock for an hour"
             : "Resume auto lock"
-        let preset = settings.autoLockPreset
-        sensitivityMenuItem.submenu?.items.forEach { $0.state = $0.title == preset ? .on : .off }
+
+        // The window shows the same settings from the other side, so it is
+        // refreshed from the one place that already knows they changed.
+        settingsWindow?.refresh()
     }
 
     /// The live reading is the only practical way to calibrate the threshold:
-    /// walk away and watch what the menu says.
+    /// walk away and watch what it says. The settings window shows the same line
+    /// next to the threshold field, which is where the calibrating happens.
     private var autoLockSummary: String {
         guard settings.autoLockEnabled else { return "Auto lock is off" }
         if let until = settings.autoLockSnoozeUntil {
@@ -680,59 +653,47 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         NSWorkspace.shared.open(server.destinationDirectory)
     }
 
-    @objc private func showPairingCode() {
-        NSApp.activate()
-        let alert = NSAlert()
-        alert.messageText = "Pairing code"
-        alert.informativeText = """
-            Enter this code in the Android app:
+    // MARK: - Settings and About
 
-            \(settings.pairingCode)
-
-            The code is the shared secret used to encrypt every clipboard transfer.
-            """
-        alert.addButton(withTitle: "Copy")
-        alert.addButton(withTitle: "Regenerate")
-        alert.addButton(withTitle: "Close")
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            let code = settings.pairingCode
-            watcher.suppress(text: code)
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(code, forType: .string)
-        case .alertSecondButtonReturn:
-            let code = settings.regeneratePairingCode()
-            server.restart()
-            // The beacon UUID is derived from the code, so the scan has to be
-            // pointed at the new one.
-            updatePresenceScanning()
-            showAlert(title: "New pairing code", message: "\(code)\n\nEnter it in the Android app to reconnect.")
-        default:
-            break
+    @objc private func showSettings(_ sender: Any?) {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(hooks: makeSettingsHooks())
         }
+        settingsWindow?.present()
     }
 
-    @objc private func changePort() {
-        NSApp.activate()
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
-        field.stringValue = String(settings.port)
+    @objc private func showAbout(_ sender: Any?) {
+        AboutPanel.show()
+    }
 
-        let alert = NSAlert()
-        alert.messageText = "Listening port"
-        alert.informativeText = "Both apps must use the same port. Default is \(Wire.defaultPort)."
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Apply")
-        alert.addButton(withTitle: "Cancel")
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        guard let value = UInt16(field.stringValue.trimmingCharacters(in: .whitespaces)), value >= 1024 else {
-            showAlert(title: "Invalid port", message: "Use a number between 1024 and 65535.")
-            return
-        }
-        settings.port = value
-        server.restart()
-        refreshMenuTitles()
+    /// The window changes settings; these are the paths that make a change take
+    /// effect, and they are the same ones the menu uses.
+    private func makeSettingsHooks() -> SettingsHooks {
+        SettingsHooks(
+            applyPort: { [weak self] port in
+                guard let self else { return }
+                self.settings.port = port
+                self.server.restart()
+                self.refreshMenuTitles()
+            },
+            regeneratePairingCode: { [weak self] in
+                guard let self else { return "" }
+                let code = self.settings.regeneratePairingCode()
+                self.server.restart()
+                // The beacon UUID is derived from the code, so the scan has to
+                // be pointed at the new one.
+                self.updatePresenceScanning()
+                return code
+            },
+            autoLockChanged: { [weak self] in self?.updatePresenceScanning() },
+            toggleSnooze: { [weak self] in self?.toggleSnooze() },
+            liveReading: { [weak self] in self?.autoLockSummary ?? "" },
+            downloadsPath: { [weak self] in self?.server.destinationDirectory.path ?? "" },
+            revealDownloads: { [weak self] in
+                guard let self else { return }
+                NSWorkspace.shared.open(self.server.destinationDirectory)
+            }
+        )
     }
 
     // MARK: - Auto lock actions
@@ -753,55 +714,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         updatePresenceScanning()
     }
 
-    @objc private func chooseSensitivity(_ item: NSMenuItem) {
-        guard let name = item.representedObject as? String else { return }
-        settings.autoLockPreset = name
-        // A preset brings its own thresholds, so any manual value is dropped.
-        settings.autoLockAwayThreshold = 0
-        Log.info("Auto lock sensitivity set to \(name)")
-        updatePresenceScanning()
-    }
-
-    @objc private func changeAwayThreshold() {
-        NSApp.activate()
-        let current = settings.presenceSettings
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
-        field.stringValue = String(format: "%.0f", current.awayThreshold)
-
-        let alert = NSAlert()
-        alert.messageText = "Away threshold"
-        alert.informativeText = """
-            The Mac starts the countdown once the average signal falls below this             value in dBm. Watch the live reading in the menu while you walk away             to find the number that fits your desk.
-
-            \(livePreview)
-            Preset \(settings.autoLockPreset): \(String(format: "%.0f dBm", current.awayThreshold))
-            """
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Apply")
-        alert.addButton(withTitle: "Use the preset")
-        alert.addButton(withTitle: "Cancel")
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            let text = field.stringValue.trimmingCharacters(in: .whitespaces)
-            guard let value = Double(text), value < 0, value > -110 else {
-                showAlert(title: "Invalid threshold", message: "Use a value between -110 and -1 dBm.")
-                return
-            }
-            settings.autoLockAwayThreshold = value
-        case .alertSecondButtonReturn:
-            settings.autoLockAwayThreshold = 0
-        default:
-            return
-        }
-        updatePresenceScanning()
-    }
-
-    private var livePreview: String {
-        guard let mean = presence.meanRSSI else { return "No reading from the phone right now." }
-        return String(format: "Right now the phone averages %.0f dBm.", mean)
-    }
-
     @objc private func toggleSnooze() {
         if settings.autoLockSnoozeUntil == nil {
             snooze(for: 3600)
@@ -810,19 +722,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             snoozeWorkItem?.cancel()
             updatePresenceScanning()
         }
-    }
-
-    @objc private func toggleLaunchAtLogin() {
-        let enable = !settings.launchAtLoginEnabled
-        do {
-            try settings.setLaunchAtLogin(enable)
-        } catch {
-            showAlert(
-                title: "Could not update the login item",
-                message: "\(error.localizedDescription)\n\nMove MacDroidSync.app to /Applications and try again."
-            )
-        }
-        refreshMenuTitles()
     }
 
     @objc private func quit() {
