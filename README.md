@@ -12,6 +12,10 @@ Clipboard sharing between macOS and Android over Wi-Fi, in the spirit of KDE Con
   menu, *Send to Android* in the Services menu, or *Send files to phone…* in the menu bar, and the file
   lands in the phone's Download folder. Files shared while the other device is away wait in a queue and
   are delivered on the next connection.
+* **Camera photos follow the phone.** Photos and videos taken on the phone are added to a `MacDroidSync`
+  album in the Mac's Photos library, byte for byte - EXIF and geotag included. Edits and deletions on the
+  phone are followed too, the window is bounded by a date and a number of days, and nothing is imported
+  before you have seen a report of what would move. Off until switched on; see *Photo sync* below.
 * **The status bar icon on Android only exists while a Mac is connected.** No connection, no icon.
 * **Ping** the phone straight from the Mac menu and get the round trip time.
 
@@ -141,9 +145,14 @@ Then open the app once and, in *Settings* in the toolbar menu:
 3. Grant **notifications** and **display over other apps**.
 4. Press *Save and reconnect*, go back, and turn on *Keep the clipboard in sync*.
 
-The main screen keeps only what is used day to day: the connection state, the two switches, *Send
-clipboard to the Mac*, *Lock Now* and *Disconnect*. The pairing, the address, the port and the
-permissions live in *Settings*; *About* names the author and the licence.
+For the photo sync, also in *Settings*: grant **Photos and videos** and **Photo locations**, set the date
+to start from and how many days back to look, then turn on *Send camera photos and videos to the Mac* on
+the main screen. The line under the two date fields spells out the resulting cut-off, because two bounds
+that both say "nothing older than this" do not add up to an obvious answer.
+
+The main screen keeps only what is used day to day: the connection state, the three switches, *Send
+clipboard to the Mac*, *Sync photos now*, *Lock Now* and *Disconnect*. The pairing, the address, the port,
+the photo window and the permissions live in *Settings*; *About* names the author and the licence.
 
 To send a file, share it from any app (*Share* → *Send to Mac*). That works whether or not clipboard sync
 is on: a shared file is an explicit request, so the app connects for it and goes back to idle afterwards.
@@ -194,6 +203,11 @@ the old asset and is lost with it. A photo you delete on the Mac never comes bac
 edits it afterwards. Items larger than the limit (2 GiB by default) are listed with the reason and never
 sent, because the protocol has no resume and a transfer that restarts from zero on every hiccup does not
 finish.
+
+**It stays out of the way.** A photo arriving is background work, so it reports on its own line -
+`Photos: 412 imported`, or the name and percentage while one is in flight. It deliberately does **not**
+raise a notification and does **not** appear under `Received: …` in the menu: that line belongs to files
+you asked for, and a holiday's worth of photos would bury it.
 
 **Why it can be trusted not to delete.** Four independent guards, each of which alone would stop the bad
 case: the phone declares the window it used and the Mac never recomputes it; a manifest that lost a page
@@ -429,10 +443,12 @@ adb logcat -s MacDroidSync
 
 ```
 macos/    Swift package: MacDroidSyncCore (protocol, crypto, server, pasteboard, file transfer both
-          ways, outgoing queue) plus the menu bar app, its notifications, the Services provider
-          and the Share extension bundled into Contents/PlugIns
+          ways, outgoing queue, photo delta and index, Photos library behind one protocol) plus the
+          menu bar app, its notifications, the Services provider and the Share extension bundled
+          into Contents/PlugIns
 android/  Gradle project: Kotlin foreground service, transparent clipboard window, share target,
-          file outbox, MediaStore writer for incoming files, main screen plus settings and about
+          file outbox, MediaStore writer for incoming files, camera folder scanner and photo ledger,
+          main screen plus settings and about
 PROTOCOL.md  wire format, crypto, cross platform test vectors
 ```
 
