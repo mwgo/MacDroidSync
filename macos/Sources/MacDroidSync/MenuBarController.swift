@@ -29,7 +29,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let presenceMenuItem = NSMenuItem(title: "Auto lock is off", action: nil, keyEquivalent: "")
     private let snoozeMenuItem = NSMenuItem(title: "Pause auto lock for an hour", action: #selector(toggleSnooze), keyEquivalent: "")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
-    private let aboutMenuItem = NSMenuItem(title: "About MacDroidSync", action: #selector(showAbout(_:)), keyEquivalent: "")
     private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
 
     private let notifier = Notifier()
@@ -118,7 +117,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         for item in [
             pingMenuItem, sendMenuItem, sendFilesMenuItem, fileMenuItem, downloadsMenuItem,
-            autoLockMenuItem, snoozeMenuItem, settingsMenuItem, aboutMenuItem, quitMenuItem,
+            autoLockMenuItem, snoozeMenuItem, settingsMenuItem, quitMenuItem,
         ] {
             item.target = self
         }
@@ -142,7 +141,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(snoozeMenuItem)
         menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
-        menu.addItem(aboutMenuItem)
         menu.addItem(.separator())
         menu.addItem(quitMenuItem)
 
@@ -676,17 +674,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         NSWorkspace.shared.open(server.destinationDirectory)
     }
 
-    // MARK: - Settings and About
+    // MARK: - Settings
 
     @objc private func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
             settingsWindow = SettingsWindowController(hooks: makeSettingsHooks())
         }
         settingsWindow?.present()
-    }
-
-    @objc private func showAbout(_ sender: Any?) {
-        AboutPanel.show()
     }
 
     /// The window changes settings; these are the paths that make a change take

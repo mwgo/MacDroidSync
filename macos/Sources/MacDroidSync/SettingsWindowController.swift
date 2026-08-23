@@ -450,7 +450,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let tabs = NSTabView()
         tabs.translatesAutoresizingMaskIntoConstraints = false
 
-        let bodies = [pad(buildGeneralTab()), pad(buildAutoLockTab()), pad(buildSafeNetworksTab())]
+        let bodies = [
+            pad(buildGeneralTab()), pad(buildAutoLockTab()),
+            pad(buildSafeNetworksTab()), pad(buildAboutTab()),
+        ]
 
         let general = NSTabViewItem(identifier: "general")
         general.label = "General"
@@ -467,7 +470,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         networks.view = bodies[2]
         tabs.addTabViewItem(networks)
 
-        // One width for both tabs, so switching them does not make the window
+        let about = NSTabViewItem(identifier: "about")
+        about.label = "About"
+        about.view = bodies[3]
+        tabs.addTabViewItem(about)
+
+        // One width for every tab, so switching them does not make the window
         // jump sideways; the height follows whichever tab is showing.
         bodyWidth = bodies.map { $0.fittingSize.width }.max() ?? 0
         tabs.widthAnchor.constraint(greaterThanOrEqualToConstant: bodyWidth).isActive = true
@@ -623,6 +631,76 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         return stack
     }
 
+    /// The About tab: what used to be the system About panel, now the last card
+    /// here because it is read once and never touched again. Every particular
+    /// comes out of the bundle, so none of them can drift away from what was
+    /// actually built.
+    private func buildAboutTab() -> NSView {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let name = info["CFBundleName"] as? String ?? "MacDroidSync"
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        let copyright = info["NSHumanReadableCopyright"] as? String ?? ""
+
+        let icon = NSImageView(image: NSApp.applicationIconImage)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 64),
+            icon.heightAnchor.constraint(equalToConstant: 64),
+        ])
+
+        let title = label(name)
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        let versionLabel = label("Version \(version) (build \(build))")
+        versionLabel.font = .systemFont(ofSize: 11)
+        versionLabel.textColor = .secondaryLabelColor
+
+        let names = NSStackView(views: [title, versionLabel])
+        names.orientation = .vertical
+        names.alignment = .leading
+        names.spacing = 2
+
+        // The icon is too tall to sit on a shared baseline with the text next to
+        // it, which is what `row` gives; this one centres instead.
+        let heading = NSStackView(views: [icon, names])
+        heading.orientation = .horizontal
+        heading.alignment = .centerY
+        heading.spacing = 12
+
+        let author = label("Free software by Marcin Wojas")
+        author.font = .systemFont(ofSize: 12, weight: .semibold)
+
+        // Every tab shares the widest one's width, so this text may as well use
+        // the room instead of wrapping where the narrow grids need it to.
+        let aboutWidth: CGFloat = 420
+
+        let stack = NSStackView(views: [
+            heading,
+            hint(
+                "Clipboard, files and presence between this Mac and an Android phone, over your own Wi-Fi.",
+                width: aboutWidth
+            ),
+            separator(),
+            author,
+            hint(
+                "MacDroidSync costs nothing, carries no advertising and sends nothing anywhere except to "
+                + "the phone you paired it with.",
+                width: aboutWidth
+            ),
+            hint("MIT Licence. \(copyright)", width: aboutWidth),
+            hint(
+                "The wire format, the key derivation and the cross platform test vectors are documented in "
+                + "PROTOCOL.md in the source repository.",
+                width: aboutWidth
+            ),
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        return stack
+    }
+
     // MARK: - Building blocks
 
     private func configure(_ grid: NSGridView) -> NSGridView {
@@ -659,12 +737,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         NSTextField(labelWithString: text)
     }
 
-    private func hint(_ text: String, indent: CGFloat = 0) -> NSView {
+    private func hint(_ text: String, indent: CGFloat = 0, width: CGFloat = 340) -> NSView {
         let field = NSTextField(wrappingLabelWithString: text)
         field.font = .systemFont(ofSize: 11)
         field.textColor = .secondaryLabelColor
         field.isSelectable = false
-        field.preferredMaxLayoutWidth = 340 - indent
+        field.preferredMaxLayoutWidth = width - indent
         guard indent > 0 else { return field }
         let container = NSView()
         container.addSubview(field)

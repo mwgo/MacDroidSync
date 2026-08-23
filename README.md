@@ -87,11 +87,10 @@ lives in *Settings…* instead:
 | `Lock when the phone leaves` | the automatic locking, with the live reading `Phone: -58 dBm (near)` under it |
 | `Pause auto lock for an hour` | gets the automatic locking out of the way for a while |
 | `Settings…` (⌘,) | the settings window, see below |
-| `About MacDroidSync` | author, licence and the version that is actually running |
 
 #### The settings window
 
-Three tabs, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
+Four tabs, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
 other shortcuts there:
 
 | Tab | What is in it |
@@ -99,6 +98,7 @@ other shortcuts there:
 | **General** | the pairing code with *Copy* and *Regenerate…*, the listening port, *Launch at login*, and where incoming files are saved |
 | **Auto lock** | the *Lock when the phone leaves* switch, the three sensitivity presets with their numbers spelled out, the away threshold in dBm, the live reading next to it, and the pause |
 | **Safe networks** | the networks on which the Mac does not lock itself, with **+** adding the one it is on, and the identifier of that network under the list; see *Safe networks* below |
+| **About** | the icon, the version and build actually running, the author, the licence and where the protocol is written down |
 
 The window and the menu show the same settings from two sides and stay in step: switching the automatic
 locking off in one is visible in the other straight away. A value typed into a field takes effect on
