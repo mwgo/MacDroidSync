@@ -30,6 +30,12 @@
     <string>© 2026 Marcin Wojas</string>
     <key>NSDownloadsFolderUsageDescription</key>
     <string>MacDroidSync saves the files you share from your Android phone into your Downloads folder.</string>
+    <!-- Read and write access, not add-only: the photo sync has to look up what
+         it has already imported and remove what you delete on the phone, and
+         add-only cannot even fetch an asset. Missing this key does not deny the
+         app, it terminates it. -->
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>MacDroidSync adds the photos and videos from your Android phone to your Photos library, and removes the ones you delete on the phone once you confirm.</string>
     <!-- Without this key macOS refuses the Bluetooth LE scan the auto lock needs. -->
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>MacDroidSync listens for the presence beacon of your Android phone so it can lock this Mac when you walk away.</string>

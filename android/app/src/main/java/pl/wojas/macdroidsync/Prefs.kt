@@ -43,6 +43,50 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean(KEY_BEACON_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_BEACON_ENABLED, value).apply()
 
+    /**
+     * Whether the camera folder is described to the Mac at all. Off until it is
+     * turned on: this is the switch the feature is required to have.
+     */
+    var photoSyncEnabled: Boolean
+        get() = prefs.getBoolean(KEY_PHOTO_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_PHOTO_ENABLED, value).apply()
+
+    /**
+     * Nothing taken before this is ever synced. Milliseconds; zero means "no date
+     * of its own", in which case the day count below is the only bound.
+     */
+    var photoStartDate: Long
+        get() = prefs.getLong(KEY_PHOTO_START, 0)
+        set(value) = prefs.edit().putLong(KEY_PHOTO_START, value).apply()
+
+    /**
+     * How far back to look, in days. This is the fuse: with a start date set to
+     * 2005, it is still this number that decides, because the effective bound is
+     * the later of the two.
+     */
+    var photoLastDays: Int
+        get() = prefs.getInt(KEY_PHOTO_DAYS, 30)
+        set(value) = prefs.edit().putInt(KEY_PHOTO_DAYS, value.coerceIn(1, 3650)).apply()
+
+    /** How often a cycle runs while the sync is connected. */
+    var photoIntervalMinutes: Int
+        get() = prefs.getInt(KEY_PHOTO_INTERVAL, 30)
+        set(value) = prefs.edit().putInt(KEY_PHOTO_INTERVAL, value.coerceIn(5, 1440)).apply()
+
+    /**
+     * The largest single item worth starting. There is no resume in the protocol,
+     * so anything bigger than this restarts from zero on every dropped
+     * connection; past a couple of gigabytes that simply never finishes.
+     */
+    var photoMaxItemBytes: Long
+        get() = prefs.getLong(KEY_PHOTO_MAX_ITEM, Wire.MAX_PHOTO_BYTES)
+        set(value) = prefs.edit().putLong(KEY_PHOTO_MAX_ITEM, value).apply()
+
+    /** When the last cycle ran, so the interval survives a restart. */
+    var lastPhotoCycleAt: Long
+        get() = prefs.getLong(KEY_PHOTO_LAST_CYCLE, 0)
+        set(value) = prefs.edit().putLong(KEY_PHOTO_LAST_CYCLE, value).apply()
+
     /** Stable id of this phone, generated on first use. */
     val deviceId: String
         get() = prefs.getString(KEY_DEVICE_ID, null) ?: UUID.randomUUID().toString().also {
@@ -73,5 +117,11 @@ class Prefs(context: Context) {
         private const val KEY_SYNC_ENABLED = "syncEnabled"
         private const val KEY_BEACON_ENABLED = "beaconEnabled"
         private const val KEY_DEVICE_ID = "deviceId"
+        private const val KEY_PHOTO_ENABLED = "photoSyncEnabled"
+        private const val KEY_PHOTO_START = "photoStartDate"
+        private const val KEY_PHOTO_DAYS = "photoLastDays"
+        private const val KEY_PHOTO_INTERVAL = "photoIntervalMinutes"
+        private const val KEY_PHOTO_MAX_ITEM = "photoMaxItemBytes"
+        private const val KEY_PHOTO_LAST_CYCLE = "lastPhotoCycleAt"
     }
 }

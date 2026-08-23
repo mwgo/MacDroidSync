@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -222,6 +223,188 @@
                 android:layout_height="wrap_content"
                 android:paddingTop="8dp"
                 android:text="@string/permission_overlay_explanation"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?android:attr/textColorSecondary" />
+
+            <TextView
+                style="@style/SectionHeading"
+                android:text="@string/section_photos" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingBottom="8dp"
+                android:text="@string/photos_explanation"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?android:attr/textColorSecondary" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/photos_start_label"
+                app:helperText="@string/photos_start_helper"
+                app:helperTextEnabled="true">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/photoStartInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:autofillHints=""
+                    android:imeOptions="actionNext"
+                    android:importantForAutofill="no"
+                    android:inputType="date" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:hint="@string/photos_days_label"
+                app:helperText="@string/photos_days_helper"
+                app:helperTextEnabled="true">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/photoDaysInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:autofillHints=""
+                    android:imeOptions="actionNext"
+                    android:importantForAutofill="no"
+                    android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <TextView
+                android:id="@+id/photoWindowText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="8dp"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?attr/colorPrimary"
+                tools:text="Sending photos taken since 2026-07-24" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:hint="@string/photos_interval_label"
+                app:helperText="@string/photos_interval_helper"
+                app:helperTextEnabled="true">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/photoIntervalInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:autofillHints=""
+                    android:imeOptions="actionNext"
+                    android:importantForAutofill="no"
+                    android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:hint="@string/photos_max_label"
+                app:helperText="@string/photos_max_helper"
+                app:helperTextEnabled="true">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/photoMaxInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:autofillHints=""
+                    android:imeOptions="actionDone"
+                    android:importantForAutofill="no"
+                    android:inputType="number" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:baselineAligned="false"
+                android:minHeight="56dp"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:paddingEnd="12dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/permission_media"
+                        android:textAppearance="?attr/textAppearanceBodyLarge" />
+
+                    <TextView
+                        android:id="@+id/mediaState"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textAppearance="?attr/textAppearanceBodySmall"
+                        android:textColor="?android:attr/textColorSecondary"
+                        tools:text="@string/permission_missing" />
+                </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/mediaButton"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:text="@string/permission_grant" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:baselineAligned="false"
+                android:minHeight="56dp"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:paddingEnd="12dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/permission_media_location"
+                        android:textAppearance="?attr/textAppearanceBodyLarge" />
+
+                    <TextView
+                        android:id="@+id/mediaLocationState"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textAppearance="?attr/textAppearanceBodySmall"
+                        android:textColor="?android:attr/textColorSecondary"
+                        tools:text="@string/permission_missing" />
+                </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/mediaLocationButton"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:text="@string/permission_grant" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/permission_media_location_explanation"
                 android:textAppearance="?attr/textAppearanceBodySmall"
                 android:textColor="?android:attr/textColorSecondary" />
 

@@ -76,6 +76,27 @@
     <string name="autolock_explanation">While the clipboard sync is on, the phone broadcasts a short Bluetooth signal every quarter of a second. The Mac averages its strength and locks its screen once the average says you have left, which also means the Mac needs this switched on in its own menu. Nothing is scanned and nothing is connected to; the signal carries no data beyond a token derived from the pairing code.</string>
     <string name="autolock_needs_sync">Turn the clipboard sync on: the beacon only broadcasts while it is running.</string>
     <string name="autolock_needs_permission">Grant Nearby devices in Settings, otherwise the phone cannot broadcast. Tap here to open it.</string>
+    <string name="section_photos">Photos</string>
+    <string name="photos_switch">Send camera photos and videos to the Mac</string>
+    <string name="photos_explanation">Every half hour, the phone tells the Mac what is in its camera folder within the window below, and sends what the Mac asks for. Photos are sent as they are, so the location and the rest of the EXIF survive the trip. The Mac never imports anything before you have seen its first report, and it never removes a photo from your library on its own.</string>
+    <string name="photos_sync_now">Sync photos now</string>
+    <string name="photos_needs_sync">Turn the clipboard sync on: photos travel over the same connection.</string>
+    <string name="photos_needs_permission">Grant Photos and videos in Settings, otherwise the camera folder cannot be read. Tap here to open it.</string>
+    <string name="photos_start_label">Photos taken from</string>
+    <string name="photos_start_helper">YYYY-MM-DD; leave empty to let the number of days decide</string>
+    <string name="photos_days_label">Days back</string>
+    <string name="photos_days_helper">Whichever of the two is stricter wins, so this is the safety net</string>
+    <string name="photos_interval_label">Every N minutes</string>
+    <string name="photos_interval_helper">How often the camera folder is described to the Mac</string>
+    <string name="photos_max_label">Largest item, MB</string>
+    <string name="photos_max_helper">There is no resume, so a bigger file starts again from zero after every drop</string>
+    <string name="photos_window_from">Sending photos taken since %1$s</string>
+    <string name="photos_window_days">Sending photos from the last %1$d days</string>
+    <string name="permission_media">Photos and videos</string>
+    <string name="permission_media_location">Photo locations</string>
+    <string name="permission_media_location_explanation">Without this, Android removes the GPS tags from every photo it hands over, and the copy on the Mac would silently lose where it was taken. MacDroidSync refuses to send photos rather than deliver them stripped.</string>
+    <string name="photos_sync_requested">Asking the Mac to look at the camera folder…</string>
+
     <string name="share_hint">Share any file with MacDroidSync to drop it in the Mac\'s Downloads folder.</string>
     <string name="share_queued_one">%1$s is on its way to the Mac</string>
     <string name="share_queued_many">%1$d files are on their way to the Mac</string>

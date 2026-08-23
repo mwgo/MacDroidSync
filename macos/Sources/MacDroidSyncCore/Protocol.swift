@@ -26,6 +26,19 @@ public enum Wire {
     /// quarters of the throughput; the window bounds memory at eight chunks.
     public static let fileSendWindow = 8
 
+    /// Items in one `photo-manifest` page. The frame cap is not the binding
+    /// constraint here - four megabytes would hold some twenty thousand items -
+    /// so this is chosen for what a retransmission costs, not for what fits.
+    public static let photoManifestPageItems = 500
+    /// Bytes one manifest page may encode to. A pathological run of very long
+    /// names splits a page early rather than overrunning the frame.
+    public static let photoManifestPageBytes = 512 * 1024
+    /// A gallery item may be larger than a shared file: the photo path streams
+    /// with nothing above one chunk in memory, so the limit is policy. It is
+    /// still a limit, because there is no resume: an interrupted transfer starts
+    /// again from zero, and beyond a couple of gigabytes that stops finishing.
+    public static let maxPhotoBytes: Int64 = 2 * 1024 * 1024 * 1024
+
     public static let heartbeatInterval: TimeInterval = 15
     public static let receiveTimeout: TimeInterval = 30
 }
@@ -52,6 +65,12 @@ public enum MessageType {
     public static let fileAck = "file-ack"
     public static let presence = "presence"
     public static let lock = "lock"
+    /// Photo sync, see PROTOCOL.md section 8. One page of the phone's picture of
+    /// its camera folder, or - with `page: 0` - a correction carrying tombstones.
+    public static let photoManifest = "photo-manifest"
+    /// What the Mac wants from that picture. Without `keys` it means "build a
+    /// manifest now", which is what the manual sync uses.
+    public static let photoPull = "photo-pull"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.
@@ -79,6 +98,10 @@ public struct Message: Codable {
     /// Presence beacon, see PROTOCOL.md section 7: whether the phone is
     /// broadcasting it. Carried by `hello` and by `presence`.
     public var beacon: Bool?
+    /// Photo sync, see PROTOCOL.md section 8. One nested object rather than the
+    /// ten flat fields it holds: this struct carries every field of every message
+    /// type, and each one added here costs three edits on both platforms.
+    public var photo: PhotoPayload?
 
     public init(
         v: Int = Wire.version,
@@ -99,7 +122,8 @@ public struct Message: Codable {
         data: String? = nil,
         ok: Bool? = nil,
         path: String? = nil,
-        beacon: Bool? = nil
+        beacon: Bool? = nil,
+        photo: PhotoPayload? = nil
     ) {
         self.v = v
         self.seq = seq
@@ -120,6 +144,7 @@ public struct Message: Codable {
         self.ok = ok
         self.path = path
         self.beacon = beacon
+        self.photo = photo
     }
 
     public static func now() -> Int64 {

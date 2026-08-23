@@ -86,11 +86,15 @@ lives in *Settings…* instead:
 | `Open Downloads folder` | opens the folder incoming files are saved to |
 | `Lock when the phone leaves` | the automatic locking, with the live reading `Phone: -58 dBm (near)` under it |
 | `Pause auto lock for an hour` | gets the automatic locking out of the way for a while |
+| `Photos: 412 imported` | the photo sync in one line, or why it is doing nothing |
+| `Import 4312 photos (18,4 GB)?…` | appears only when a batch is waiting for your go-ahead |
+| `Remove 12 photos from Photos…` | appears when the phone deleted photos this Mac still holds; the only way anything leaves the library |
+| `Sync photos now` | asks the phone to describe its camera folder without waiting for the interval |
 | `Settings…` (⌘,) | the settings window, see below |
 
 #### The settings window
 
-Four tabs, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
+Five tabs, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
 other shortcuts there:
 
 | Tab | What is in it |
@@ -98,6 +102,7 @@ other shortcuts there:
 | **General** | the pairing code with *Copy* and *Regenerate…*, the listening port, *Launch at login*, and where incoming files are saved |
 | **Auto lock** | the *Lock when the phone leaves* switch, the three sensitivity presets with their numbers spelled out, the away threshold in dBm, the live reading next to it, and the pause |
 | **Safe networks** | the networks on which the Mac does not lock itself, with **+** adding the one it is on, and the identifier of that network under the list; see *Safe networks* below |
+| **Photos** | the switch that lets photos into the Photos library, the state of the Photos permission, what is imported and what is waiting, the window the phone is using, and the list of items that were not sent with the reason |
 | **About** | the icon, the version and build actually running, the author, the licence and where the protocol is written down |
 
 The window and the menu show the same settings from two sides and stay in step: switching the automatic
@@ -150,6 +155,60 @@ only start an activity from the background if it holds this permission. MacDroid
 `ClipboardBridgeActivity`, a fully transparent window with no animation, does the clipboard work as soon
 as it gains focus and finishes right away. Without the permission, incoming clipboard items become a
 tappable notification instead of being applied automatically.
+
+## Photo sync
+
+Photos and videos from the phone's camera folder - `DCIM/Camera`, and nothing else - are added to a
+`MacDroidSync` album in the Mac's Photos library. It is off on both ends until switched on, and it is
+built so that nothing surprising can happen to a photo library that took years to fill.
+
+**The window.** Two settings on the phone, and each of them is a lower bound: a start date, and how many
+days back to look. The **stricter of the two wins**, which makes the day count a fuse - a start date of
+2005 cannot on its own put 46 GB on the wire. The settings screen shows the resulting date, because two
+bounds do not add up to an obvious answer. Eligibility is decided on **when the photo was taken**, never
+on when the file was last touched: copying a file around refreshes its modification time, and a photo
+from last year would otherwise walk back into the window and be sent again.
+
+**Nothing moves before you say so.** The first complete description of the camera folder produces a
+report and imports nothing at all - not even five photos. After that, an everyday batch goes through
+without asking, but anything over 200 items or 2 GiB stops and waits in the menu:
+`Import 4312 photos (18,4 GB)?…`. Approving covers exactly the items you were shown; whatever turns up
+afterwards faces the same gate again.
+
+**Changes and deletions.** A photo edited on the phone arrives as a new asset, and the old one goes on a
+list. A photo deleted on the phone goes on the same list. Nothing on that list leaves the library until
+you press `Remove N photos from Photos…` in the menu, and the reason is **macOS: it puts up its own
+confirmation alert before an app removes anything from the Photos library.** An alert that appears by
+itself, up to twice an hour while a sync runs, would be worse than the wait - so the sync writes the
+deletions down and the removal happens when you ask, in one batch, with one alert. Removed photos go to
+*Recently Deleted*, so a mistake is recoverable for 30 days.
+
+A batch of disappearances larger than `max(20, 10%)` of what the Mac holds in the window is still written
+down like the rest, but it is called out in the log: at that size it is more likely a fault or a
+permission that was narrowed than real tidying up, and the count in the menu is what you are judging
+before you press Remove.
+
+**What cannot be met, stated once.** Photos offers no way to replace the contents of an existing asset,
+so an edit is an import plus a removal - and any crop, caption or keyword you added on the Mac belongs to
+the old asset and is lost with it. A photo you delete on the Mac never comes back, even if the phone
+edits it afterwards. Items larger than the limit (2 GiB by default) are listed with the reason and never
+sent, because the protocol has no resume and a transfer that restarts from zero on every hiccup does not
+finish.
+
+**Why it can be trusted not to delete.** Four independent guards, each of which alone would stop the bad
+case: the phone declares the window it used and the Mac never recomputes it; a manifest that lost a page
+is refused rather than read as "those photos are gone"; a phone that cannot describe its folder - no
+permission, or a permission narrowed to hand-picked photos - says so and the Mac does nothing; and even a
+complete description is not allowed to remove more than `max(20, 10%)` of what the Mac holds in the
+window. `PROTOCOL.md` section 8 has the details.
+
+**The permissions this needs, and why.** Reading the camera folder needs the media permissions, and
+`ACCESS_MEDIA_LOCATION` on top - without it Android strips the GPS tags out of the bytes it hands over,
+and a photo would arrive looking perfectly fine while having quietly lost where it was taken. The sync
+refuses to run rather than deliver those. On the Mac, PhotoKit needs the
+`com.apple.security.personal-information.photos-library` entitlement in the signature; without it the
+system reports access as granted and then shows an empty library, which is why the settings tab checks
+that the library actually answers instead of trusting the permission.
 
 ## Behaviour worth knowing
 
@@ -277,9 +336,12 @@ tappable notification instead of being applied automatically.
   purpose, so it reveals nothing about the key that encrypts the clipboard.
 * **Android strips location metadata from shared media.** When a photo or video comes from the gallery,
   Android hands out a copy with the GPS tags zeroed out unless the app holds the media location
-  permission. MacDroidSync deliberately asks for no storage permission at all, so what arrives on the Mac
-  is byte identical to what Android provided: the whole file, minus the geotag. Sharing the same file from
-  a file manager keeps it intact.
+  permission. The *share* path asks for no storage permission at all, so what arrives on the Mac is byte
+  identical to what Android provided: the whole file, minus the geotag. Sharing the same file from a file
+  manager keeps it intact. The **photo sync** is the one part that does ask - for reading the camera
+  folder and for `ACCESS_MEDIA_LOCATION` - precisely so that it can hand over the untouched original,
+  geotag included; without that permission it refuses to send anything rather than deliver photos with
+  the location quietly removed.
 * **No echo loops.** A value received from the peer is never sent back, and an identical value that some
   other app rewrites onto the clipboard is not forwarded twice.
 * **A ping rings the phone.** `Ping phone` is a "where did I leave it": the phone plays its own ringtone
@@ -350,6 +412,9 @@ adb logcat -s MacDroidSync
 | After a rebuild the Mac asks for the keychain password again | The grant is tied to the app's code signature, and `build.sh` signs ad-hoc, so every rebuild is a different app as far as macOS is concerned. Answer once per build; an installed copy that is not rebuilt keeps it |
 | A rebuild changes nothing | `build.sh` always writes `macos/build/MacDroidSync.app`. If you moved the app to `/Applications`, copy the fresh bundle over it again: `cp -R macos/build/MacDroidSync.app /Applications/` |
 | The phone shows no icon although the Mac is awake | If the Mac runs docked with the lid closed, the sync is suspended by design; the Mac menu says `Suspended, the lid is closed`. Open the lid to resume |
+| After a rebuild the Mac cannot see the Photos library | The Photos grant is tied to the code signature too, so a rebuilt bundle is a new app to macOS. The settings tab says `authorized, but the library is not visible`; run `tccutil reset Photos pl.wojas.MacDroidSync`, relaunch, and grant it again |
+| The Photos tab says the library is not visible although access was granted | Either the bundle was rebuilt (row above), or the *System Photo Library* points at a library that is not there. Open Photos holding Option, pick the library, then Settings, General, *Use as System Photo Library* |
+| A photo deleted on the phone is still in Photos | By design: the sync writes the deletion down, and the menu item `Remove N photos from Photos…` carries it out. macOS shows its own confirmation when you do |
 | macOS asks whether MacDroidSync may access the Downloads folder | Incoming files are saved there; allow it once. Denying it makes every transfer end with `Failed: …` in the menu and a refusal on the phone |
 | A shared photo differs from the original by a few bytes near the end | That is Android removing the GPS metadata, see *Android strips location metadata* above. The rest of the file is identical |
 | *Send to Mac* does not appear in the share sheet | Some apps only share a preview instead of the file. Try sharing from the gallery or a file manager |

@@ -21,6 +21,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetSocketAddress
@@ -46,6 +48,7 @@ class SyncService : Service() {
     private lateinit var outbox: Outbox
     private lateinit var incomingFiles: IncomingFiles
     private lateinit var beacon: PresenceAdvertiser
+    private lateinit var photos: PhotoSyncEngine
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val retryTrigger = Channel<Unit>(Channel.CONFLATED)
@@ -57,6 +60,15 @@ class SyncService : Service() {
 
     private var loopJob: Job? = null
     private var drainJob: Job? = null
+    private var photoJob: Job? = null
+    private var photoTimer: Job? = null
+    /**
+     * One sender at a time. A photo cycle holds this while it streams, and a
+     * shared file takes it from the photos: explicit intent beats background work,
+     * and the cycle picks up where it left off next time round.
+     */
+    private val photoSendLock = Mutex()
+    private var lastPhotoProgressAt = 0L
 
     @Volatile
     private var connection: PeerConnection? = null
@@ -91,8 +103,10 @@ class SyncService : Service() {
         outbox = Outbox(this)
         incomingFiles = IncomingFiles(this)
         beacon = PresenceAdvertiser(this)
+        photos = PhotoSyncEngine(this, prefs)
         announcedBeacon = beaconWanted
         scope.launch { outbox.sweepIncomplete() }
+        startPhotoCycle()
 
         notifications.createChannels()
         showIdle()
@@ -126,6 +140,7 @@ class SyncService : Service() {
                 drainOutbox()
             }
             ACTION_LOCK_MAC -> lockTheMac()
+            ACTION_SYNC_PHOTOS -> describePhotos()
             ACTION_QUERY_STATUS -> broadcastStatus()
             ACTION_SILENCE -> silenceRing()
         }
@@ -275,6 +290,101 @@ class SyncService : Service() {
         override fun onFileRefused(name: String, reason: String) {
             notifications.cancel(NotificationCenter.ID_INCOMING)
             notifications.showFileResult(name, ok = false, detail = reason)
+        }
+
+        override fun onPhotoPull(keys: List<String>?, manifestId: String?) {
+            if (!prefs.photoSyncEnabled) return
+            if (keys == null) {
+                describePhotos()
+            } else {
+                sendPhotos(keys)
+            }
+        }
+    }
+
+    // endregion
+
+    // region Photos
+
+    /**
+     * Describes the camera folder, on the Mac's request or on the interval.
+     *
+     * Runs on its own job so that a scan of five thousand rows never sits on the
+     * thread that reads the socket.
+     */
+    private fun describePhotos() {
+        if (photoJob?.isActive == true) return
+        photoJob = scope.launch {
+            val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+            photoSendLock.withLock {
+                runCatching { photos.describe(peer) }
+                    .onFailure { Log.w(TAG, "Could not describe the camera folder", it) }
+            }
+            prefs.lastPhotoCycleAt = System.currentTimeMillis()
+        }
+    }
+
+    /**
+     * Sends the batch the Mac asked for.
+     *
+     * Photos hold the send lock, which a share can take from them: an explicit
+     * "send this file" beats background work, and the photo cycle simply picks up
+     * where it left off next time.
+     */
+    private fun sendPhotos(keys: List<String>) {
+        if (keys.isEmpty()) return
+        scope.launch {
+            val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+            photoSendLock.withLock {
+                val failed = photos.send(
+                    connection = peer,
+                    keys = keys,
+                    awaitAck = { fileId, name -> awaitPhotoAck(fileId, name) },
+                    onProgress = { name, sent, total ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastPhotoProgressAt >= PROGRESS_INTERVAL_MS || sent == total) {
+                            lastPhotoProgressAt = now
+                            notifications.showTransfer(name, sent, total, keys.size - 1)
+                        }
+                    },
+                )
+                notifications.cancel(NotificationCenter.ID_TRANSFER)
+                if (failed.isNotEmpty()) {
+                    Log.i(TAG, "${failed.size} photo(s) could not be sent this time")
+                }
+            }
+        }
+    }
+
+    /** Waits for the Mac's verdict on one photo, on the same terms as a file. */
+    private suspend fun awaitPhotoAck(fileId: String, name: String): Boolean {
+        val ack = CompletableDeferred<FileVerdict>()
+        pendingAcks[fileId] = ack
+        val verdict = withTimeoutOrNull(ACK_TIMEOUT_MS) { ack.await() }
+        pendingAcks.remove(fileId)
+        if (verdict == null || !verdict.delivered) {
+            Log.i(TAG, "No answer from the Mac about $name")
+            return false
+        }
+        return verdict.ok
+    }
+
+    /**
+     * The interval. A cycle is skipped while nothing is connected, and skipped
+     * while one is already running - the phone owns the pace, and it is a slow one.
+     */
+    private fun startPhotoCycle() {
+        if (photoTimer?.isActive == true) return
+        photoTimer = scope.launch {
+            while (isActive) {
+                delay(PHOTO_CHECK_MS)
+                if (!prefs.photoSyncEnabled) continue
+                val due = System.currentTimeMillis() - prefs.lastPhotoCycleAt >=
+                    prefs.photoIntervalMinutes * 60_000L
+                if (!due) continue
+                if (connection?.isAuthenticated != true) continue
+                describePhotos()
+            }
         }
     }
 
@@ -526,6 +636,10 @@ class SyncService : Service() {
         ringer.stop()
         drainJob?.cancel()
         drainJob = null
+        photoJob?.cancel()
+        photoJob = null
+        photoTimer?.cancel()
+        photoTimer = null
         loopJob?.cancel()
         loopJob = null
         connection?.close()
@@ -578,6 +692,8 @@ class SyncService : Service() {
         const val ACTION_QUERY_STATUS = "pl.wojas.macdroidsync.QUERY_STATUS"
         const val ACTION_SILENCE = "pl.wojas.macdroidsync.SILENCE"
         const val ACTION_LOCK_MAC = "pl.wojas.macdroidsync.LOCK_MAC"
+        /** "Sync photos now", from the phone's own screen. */
+        const val ACTION_SYNC_PHOTOS = "pl.wojas.macdroidsync.SYNC_PHOTOS"
 
         const val BROADCAST_STATUS = "pl.wojas.macdroidsync.STATUS"
         const val EXTRA_TEXT = "text"
@@ -590,6 +706,8 @@ class SyncService : Service() {
         private const val HEARTBEAT_CHECK_MS = 5_000L
         private const val ACK_TIMEOUT_MS = 60_000L
         private const val PROGRESS_INTERVAL_MS = 500L
+        /** How often the interval is looked at, not how often a cycle runs. */
+        private const val PHOTO_CHECK_MS = 60_000L
         private const val GOODBYE_TIMEOUT_MS = 2_000L
         private const val MAX_ATTEMPTS = 3
         private val BACKOFF_MS = longArrayOf(1_000, 2_000, 5_000, 10_000, 30_000)

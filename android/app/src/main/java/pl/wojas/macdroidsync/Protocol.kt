@@ -16,6 +16,17 @@ object Wire {
     /** The Mac refuses anything bigger, so there is no point in starting. */
     const val MAX_FILE_BYTES = 512L * 1024 * 1024
 
+    /** Items in one photo-manifest page; chosen for retransmission cost, not to fit. */
+    const val PHOTO_MANIFEST_PAGE_ITEMS = 500
+    /** Bytes one page may encode to, so very long names split a page early. */
+    const val PHOTO_MANIFEST_PAGE_BYTES = 512 * 1024
+    /**
+     * A gallery item may be larger than a shared file, because the photo path
+     * streams straight from MediaStore. It is still capped: there is no resume,
+     * so an interrupted transfer starts again from zero.
+     */
+    const val MAX_PHOTO_BYTES = 2L * 1024 * 1024 * 1024
+
     const val HEARTBEAT_INTERVAL_MS = 15_000L
     const val RECEIVE_TIMEOUT_MS = 30_000L
 
@@ -40,6 +51,9 @@ object MessageType {
     const val FILE_ACK = "file-ack"
     const val PRESENCE = "presence"
     const val LOCK = "lock"
+    /** Photo sync, see PROTOCOL.md section 8. */
+    const val PHOTO_MANIFEST = "photo-manifest"
+    const val PHOTO_PULL = "photo-pull"
 }
 
 /** One protocol message; absent fields are left out of the JSON payload. */
@@ -69,6 +83,12 @@ data class Message(
      * broadcasting it. Carried by hello and by presence.
      */
     val beacon: Boolean? = null,
+    /**
+     * Photo sync, see PROTOCOL.md section 8. One nested object rather than the
+     * ten flat fields it holds, because every field of this class costs three
+     * edits here and three more in Protocol.swift.
+     */
+    val photo: PhotoPayload? = null,
 ) {
     fun toBytes(): ByteArray {
         val json = JSONObject()
@@ -91,6 +111,7 @@ data class Message(
         ok?.let { json.put("ok", it) }
         path?.let { json.put("path", it) }
         beacon?.let { json.put("beacon", it) }
+        photo?.let { json.put("photo", it.toJson()) }
         return json.toString().toByteArray(Charsets.UTF_8)
     }
 
@@ -117,6 +138,7 @@ data class Message(
                 ok = if (json.has("ok")) json.optBoolean("ok") else null,
                 path = json.optStringOrNull("path"),
                 beacon = if (json.has("beacon")) json.optBoolean("beacon") else null,
+                photo = json.optJSONObject("photo")?.let { PhotoPayload.fromJson(it) },
             )
         }
 

@@ -7,13 +7,31 @@ public struct FileOffer {
     public let name: String
     public let size: Int64
     public let mime: String?
+    /// Set when this is a gallery item rather than a shared file: the phone's
+    /// key for it. Its presence is what routes the transfer to Photos instead of
+    /// the Downloads folder, and what raises the size limit.
+    public let photoKey: String?
+    /// Capture time in milliseconds, carried so the index can scope deletions
+    /// by the same window the phone used.
+    public let captureAt: Int64?
 
-    public init(id: String, name: String, size: Int64, mime: String?) {
+    public init(
+        id: String,
+        name: String,
+        size: Int64,
+        mime: String?,
+        photoKey: String? = nil,
+        captureAt: Int64? = nil
+    ) {
         self.id = id
         self.name = name
         self.size = size
         self.mime = mime
+        self.photoKey = photoKey
+        self.captureAt = captureAt
     }
+
+    public var isPhoto: Bool { photoKey != nil }
 }
 
 public enum FileTransferError: LocalizedError {
@@ -62,6 +80,16 @@ public protocol FileSink: AnyObject {
     func abort()
     /// Bytes written so far for the transfer in flight.
     var receivedBytes: Int64 { get }
+}
+
+public extension FileSink {
+    /// What to tell the phone the file became, for `file-ack.path`.
+    ///
+    /// A path is the honest answer for a file saved on disk. It would be a lie
+    /// for a photo: what `finish` hands back there is a staging file that is
+    /// about to be handed to Photos and deleted, so that sink answers with where
+    /// the photo actually went.
+    func describe(_ url: URL) -> String { url.path }
 }
 
 /// Writes incoming files into a destination directory, by default `~/Downloads`.

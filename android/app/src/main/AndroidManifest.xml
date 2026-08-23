@@ -18,6 +18,17 @@
         android:maxSdkVersion="28" />
     <!-- Lets the service open the transparent clipboard window from the background. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Reading the camera folder for the photo sync. Three eras of Android:
+         separate image and video grants from 13, one storage grant up to 12. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- Without this, MediaStore strips the GPS tags out of the bytes it hands
+         over, and photos would arrive on the Mac with their location silently
+         removed. The sync refuses to run rather than deliver those. -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
     <!-- Broadcasting the presence beacon the Mac measures to decide whether the
          user walked away. Nothing is ever scanned or connected to from here, so
          no location permission is involved. -->

@@ -32,6 +32,13 @@ class PeerConnection(
         fun onIncomingProgress(name: String, received: Long, total: Long)
         fun onFileReceived(name: String, saved: IncomingFiles.Saved)
         fun onFileRefused(name: String, reason: String)
+
+        /**
+         * The Mac asking about photos: [keys] is the batch it wants, and null
+         * means "build a manifest now" - the same request with nothing to ask
+         * for yet, which is what its manual sync sends.
+         */
+        fun onPhotoPull(keys: List<String>?, manifestId: String?)
     }
 
     /** Where files coming from the Mac are written; without it they are refused. */
@@ -144,6 +151,88 @@ class PeerConnection(
         return true
     }
 
+    /** One page of the phone's picture of its camera folder. */
+    fun sendPhotoManifest(payload: PhotoPayload, ok: Boolean = true, reason: String? = null) {
+        send(
+            Message(
+                type = MessageType.PHOTO_MANIFEST,
+                seq = codec.nextSequence(),
+                ok = if (ok) null else false,
+                reason = reason,
+                photo = payload,
+            )
+        )
+    }
+
+    /**
+     * Streams one gallery item straight from MediaStore.
+     *
+     * Deliberately not [sendFile]: that one works from a staged copy in the cache
+     * directory, which would mean copying a 46 GB camera folder through a 512 MiB
+     * queue. Here the bytes are read exactly once, the checksum grows as they go
+     * past, and it is sent in file-end afterwards - which is the message that
+     * carries it anyway.
+     *
+     * [open] hands back the stream so that the caller can decide about
+     * `setRequireOriginal`, which is what keeps the GPS tags in the file, without
+     * this class having to know about MediaStore at all.
+     */
+    fun sendPhoto(
+        key: String,
+        name: String,
+        size: Long,
+        mime: String?,
+        captureAt: Long,
+        fileId: String,
+        open: () -> java.io.InputStream,
+        onProgress: (Long, Long) -> Unit,
+    ): Boolean {
+        send(
+            Message(
+                type = MessageType.FILE_OFFER,
+                seq = codec.nextSequence(),
+                fileId = fileId,
+                name = name,
+                size = size,
+                mime = mime,
+                photo = PhotoPayload(key = key, captureAt = captureAt),
+            )
+        )
+
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        var sent = 0L
+        open().use { stream ->
+            val buffer = ByteArray(Wire.FILE_CHUNK_BYTES)
+            while (true) {
+                if (refused.contains(fileId)) return false
+                val read = stream.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+                send(
+                    Message(
+                        type = MessageType.FILE_CHUNK,
+                        seq = codec.nextSequence(),
+                        fileId = fileId,
+                        data = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP),
+                    )
+                )
+                sent += read
+                onProgress(sent, size)
+            }
+        }
+        if (refused.contains(fileId)) return false
+
+        send(
+            Message(
+                type = MessageType.FILE_END,
+                seq = codec.nextSequence(),
+                fileId = fileId,
+                sha256 = digest.digest().joinToString("") { "%02x".format(it) },
+            )
+        )
+        return true
+    }
+
     /** Keeps the session alive while nothing else is being sent. */
     fun sendHeartbeatIfIdle() {
         if (!isAuthenticated) return
@@ -239,6 +328,10 @@ class PeerConnection(
                 if (!ok) refused.add(fileId)
                 listener.onFileAck(fileId, ok, message.path, message.reason)
             }
+            MessageType.PHOTO_PULL -> listener.onPhotoPull(
+                message.photo?.keys,
+                message.photo?.manifestId,
+            )
             MessageType.FILE_OFFER -> handleFileOffer(message, listener)
             MessageType.FILE_CHUNK -> handleFileChunk(message, listener)
             MessageType.FILE_END -> handleFileEnd(message, listener)

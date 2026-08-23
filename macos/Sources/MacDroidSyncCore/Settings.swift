@@ -26,6 +26,8 @@ public final class Settings: SyncConfiguration {
         static let autoLockPreset = "autoLockPreset"
         static let autoLockAwayThreshold = "autoLockAwayThreshold"
         static let autoLockSnoozeUntil = "autoLockSnoozeUntil"
+        static let photosEnabled = "photosEnabled"
+        static let photosAlbumIdentifier = "photosAlbumIdentifier"
     }
 
     private let defaults = UserDefaults.standard
@@ -158,6 +160,25 @@ public final class Settings: SyncConfiguration {
             // An empty item is as good as none.
             return .generate
         }
+    }
+
+    // MARK: - Photos
+
+    /// Whether photos from the phone are taken into the Photos library.
+    ///
+    /// Off until asked for, like the auto lock and for the same kind of reason:
+    /// turning it on is what triggers the system's Photos prompt, and it is the
+    /// switch this feature is required to have.
+    public var photosEnabled: Bool {
+        get { defaults.bool(forKey: Keys.photosEnabled) }
+        set { defaults.set(newValue, forKey: Keys.photosEnabled) }
+    }
+
+    /// The album imports go into, by identifier rather than by title: titles are
+    /// not unique and the user may rename the album without breaking anything.
+    public var photosAlbumIdentifier: String? {
+        get { defaults.string(forKey: Keys.photosAlbumIdentifier) }
+        set { defaults.set(newValue, forKey: Keys.photosAlbumIdentifier) }
     }
 
     // MARK: - Auto lock

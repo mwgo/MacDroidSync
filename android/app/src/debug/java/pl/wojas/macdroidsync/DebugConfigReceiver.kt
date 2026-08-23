@@ -28,6 +28,12 @@ import android.util.Log
  *
  *   ... --es bridge read
  *   ... --es bridge write --es text "hello"
+ *
+ * The photo sync has its own flags, including the window, so a cycle can be
+ * exercised on one known file instead of on a real camera folder:
+ *
+ *   ... --ez photos true --es photoFrom 2026-08-23 --ei photoDays 1
+ *   ... --es photoAction now
  */
 class DebugConfigReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -48,8 +54,21 @@ class DebugConfigReceiver : BroadcastReceiver() {
             return
         }
 
+        if (intent.getStringExtra("photoAction") == "now") {
+            Log.i(Prefs.TAG, "Debug: asking for a photo cycle now")
+            SyncService.start(context, SyncService.ACTION_SYNC_PHOTOS)
+            return
+        }
+
         val prefs = Prefs(context)
         intent.getStringExtra("code")?.let { prefs.pairingCode = it }
+        if (intent.hasExtra("photos")) prefs.photoSyncEnabled = intent.getBooleanExtra("photos", false)
+        intent.getStringExtra("photoFrom")?.let { text ->
+            val offset = java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis())
+            // An unparseable date is left alone rather than widening the window.
+            PhotoDate.parse(text, offset)?.let { prefs.photoStartDate = it }
+        }
+        if (intent.hasExtra("photoDays")) prefs.photoLastDays = intent.getIntExtra("photoDays", 30)
         intent.getStringExtra("host")?.let { prefs.manualHost = it }
         if (intent.hasExtra("port")) prefs.port = intent.getIntExtra("port", Wire.DEFAULT_PORT)
         if (intent.hasExtra("enabled")) prefs.syncEnabled = intent.getBooleanExtra("enabled", false)
@@ -59,6 +78,7 @@ class DebugConfigReceiver : BroadcastReceiver() {
             Prefs.TAG,
             "Debug config: host='${prefs.manualHost}' port=${prefs.port} " +
                 "enabled=${prefs.syncEnabled} beacon=${prefs.beaconEnabled} " +
+                "photos=${prefs.photoSyncEnabled} photoDays=${prefs.photoLastDays} " +
                 "codeLength=${prefs.pairingCode.length}",
         )
         if (prefs.syncEnabled) {

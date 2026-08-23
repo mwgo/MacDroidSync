@@ -28,6 +28,16 @@ public final class SyncServer {
     public var onPresencePreference: ((Bool) -> Void)?
     /// The phone pressed "Lock Now".
     public var onLockRequested: (() -> Void)?
+    /// One page of the phone's picture of its camera folder, with the message's
+    /// own `ok` and `reason`.
+    public var onPhotoManifest: ((PhotoPayload, Bool, String?) -> Void)?
+    /// A gallery item arriving, kept apart from the ordinary file callbacks so a
+    /// photo sync never shows up as the user's own transfer.
+    public var onPhotoProgress: ((String, Int64, Int64) -> Void)?
+    public var onPhotoStored: ((String) -> Void)?
+    /// Builds the sink for each session. The default keeps the behaviour the app
+    /// had before photos existed: everything lands in the Downloads folder.
+    public var makeFileSink: ((URL) -> FileSink)?
 
     public private(set) var state: PeerState = .disconnected {
         didSet {
@@ -207,7 +217,8 @@ public final class SyncServer {
             queue: queue
         )
         self.session = session
-        session.fileSink = FileReceiver(directory: destinationDirectory)
+        session.fileSink = makeFileSink?(destinationDirectory)
+            ?? FileReceiver(directory: destinationDirectory)
         state = .connecting
 
         session.onAuthenticated = { [weak self, weak session] deviceName in
@@ -245,6 +256,15 @@ public final class SyncServer {
         }
         session.onPresencePreference = { [weak self] enabled in
             DispatchQueue.main.async { self?.onPresencePreference?(enabled) }
+        }
+        session.onPhotoManifest = { [weak self] payload, ok, reason in
+            DispatchQueue.main.async { self?.onPhotoManifest?(payload, ok, reason) }
+        }
+        session.onPhotoProgress = { [weak self] name, received, total in
+            DispatchQueue.main.async { self?.onPhotoProgress?(name, received, total) }
+        }
+        session.onPhotoStored = { [weak self] name in
+            DispatchQueue.main.async { self?.onPhotoStored?(name) }
         }
         session.onLockRequested = { [weak self] in
             DispatchQueue.main.async { self?.onLockRequested?() }
@@ -285,6 +305,22 @@ public final class SyncServer {
             guard !session.isSendingFile else { return false }
             try session.startSendingFile(url: url)
             return true
+        }
+    }
+
+    /// Asks the phone for photos: a batch of keys, or - with none - for a fresh
+    /// manifest, which is what the manual sync uses.
+    @discardableResult
+    public func requestPhotos(keys: [String]? = nil, manifestId: String? = nil) -> Bool {
+        queue.sync {
+            guard let session, session.isAuthenticated else { return false }
+            do {
+                try session.requestPhotos(keys: keys, manifestId: manifestId)
+                return true
+            } catch {
+                Log.error("Could not ask the phone for photos: \(error.localizedDescription)")
+                return false
+            }
         }
     }
 

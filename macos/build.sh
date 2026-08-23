@@ -42,10 +42,15 @@ cp Resources/ShareExtension-Info.plist "${APPEX}/Contents/Info.plist"
 # Ad-hoc signature: macOS only shows the local network prompt for signed bundles.
 # The extension is signed first and with its entitlements, then the app, so that
 # the outer signature covers the finished plug-in.
+#
+# The app carries entitlements too, for the Photos library: PhotoKit reports
+# .authorized and then sees nothing at all without it. An ad-hoc signature can
+# carry entitlements, and this one needs no provisioning profile.
 echo "==> Signing (ad-hoc)"
 codesign --force --sign - --timestamp=none \
     --entitlements Resources/ShareExtension.entitlements "${APPEX}" >/dev/null
-codesign --force --sign - --timestamp=none "${BUNDLE}" >/dev/null
+codesign --force --sign - --timestamp=none \
+    --entitlements Resources/MacDroidSync.entitlements "${BUNDLE}" >/dev/null
 
 echo "==> Done: ${BUNDLE}"
 echo

@@ -68,10 +68,11 @@ The plaintext of every sealed frame is a JSON object. Absent fields are omitted.
 | `ok` | bool | verdict in `file-ack` |
 | `path` | string | where the receiver saved the file (`file-ack` with `ok`) |
 | `beacon` | bool | whether the phone broadcasts its presence beacon (`hello`, `presence`) |
+| `photo` | object | photo sync, see section 8 |
 
 Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
 `request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`, `file-offer`, `file-chunk`,
-`file-end`, `file-ack`, `presence`, `lock`.
+`file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
 that connection (replay and reordering protection).
@@ -311,3 +312,98 @@ phone                                          Mac
 switched on, on the beacon, or on any measurement: the user pressed a button,
 which is a clearer signal than any distance estimate, and locking is the safe
 direction. The Mac ignores it only when the screen is already locked.
+
+## 8. Photo sync
+
+One way only: the phone's camera folder to the Mac's Photos library. The phone
+describes, the Mac decides, and the bytes travel over the file transfer of
+section 5 with one field added.
+
+Two message types carry the conversation.
+
+```
+phone                                          Mac
+  |<- photo-pull {}  ------------------------- |  "describe your camera folder"
+  |-- photo-manifest {page 1..n} ------------->|  what the phone has, in pages
+  |<- photo-pull {keys} ---------------------- |  "send me these"
+  |-- file-offer {photo:{key}} --------------->|  then chunks, end, ack as usual
+```
+
+### The `photo` object
+
+| field | on | meaning |
+|-------|----|---------|
+| `key` | `file-offer` | the phone's key for this item, `DCIM/Camera/20260119_184146.jpg` (**untrusted**) |
+| `captureAt` | `file-offer` | when this item was taken, milliseconds |
+| `manifestId` | `photo-manifest`, `photo-pull` | identifies one snapshot across its pages |
+| `page` | `photo-manifest` | `1..pages`; **`0` is a correction**, carrying only `gone` |
+| `pages` | `photo-manifest` | pages in this snapshot |
+| `count` | `photo-manifest` | items across **all** pages, so a truncated snapshot is detectable |
+| `from` | `photo-manifest` | the window's lower bound the phone applied, milliseconds |
+| `items` | `photo-manifest` | this page's items |
+| `gone` | `photo-manifest` | keys the phone asserts are gone; **not** bounded by the window |
+| `keys` | `photo-pull` | the batch to send; absent means "describe the folder" |
+| `skipped` | `photo-manifest` | items whose capture date could not be established |
+
+One item, with single letter keys because a full camera folder sends thousands of
+them:
+
+| key | meaning |
+|-----|---------|
+| `k` | key |
+| `t` | capture time, milliseconds |
+| `s` | size in bytes |
+| `m` | MIME type, informational |
+| `h` | lowercase hex SHA-256, **optional** |
+| `x` | why it will not be sent: `size`, `unreadable`, `noLocation`, `noDate` |
+
+### The window belongs to the phone
+
+`from` is the number the phone applied, and the Mac uses that and never a bound
+of its own. This is not a detail: if both sides computed
+`max(startDate, now - lastDays)` independently, a clock skew or a setting changed
+mid transfer would put items in the gap between the two answers, and **every one
+of them would look deleted**. Declaring the bound removes the whole class of
+mistake, and gives "a photo that aged out is not a deletion" for free, because
+its capture time is below `from`.
+
+### Deletion is asserted, absence is only a hint
+
+`gone` is the phone saying "this is not here any more", and it is the only way a
+deletion outside the window can be reported at all. Absence from a manifest is
+also read as a deletion, but only under three conditions, because absence is
+exactly what a truncated or untrustworthy manifest looks like:
+
+* every page of one `manifestId` arrived and the item count matches `count`;
+* the message did not carry `ok: false`, which is how the phone reports that it
+  cannot describe the folder - no media permission, a permission narrowed to
+  selected photos, an unreadable folder. That case is otherwise indistinguishable
+  from every photo having been deleted;
+* the number of disappearances is at most `max(20, 10%)` of what the Mac holds
+  inside the window. Past that it is reported and not acted on.
+
+An item that cannot be sent is **listed with `x`**, never left out: leaving it out
+would read as a deletion.
+
+### Limits
+
+* `photo-manifest` pages hold at most 500 items, and are split earlier if a page
+  would encode to more than 512 KiB.
+* A gallery item may be up to 2 GiB, rather than the 512 MiB of an ordinary
+  shared file: the photo path streams straight from MediaStore with nothing above
+  one chunk in memory. The cap is policy, and it exists because there is no
+  resume - an interrupted transfer starts again from zero.
+* The sender computes the checksum while streaming, so `photo` items carry `h`
+  from the manifest and `file-end` carries the hash of what was actually sent. A
+  disagreement between the two is not an error: the file changed in between, the
+  transfer is accepted, and the next manifest sees the difference and asks again.
+
+### What the Mac does with it
+
+Nothing, until it is told. The first complete manifest produces a report and
+imports nothing; a batch over the configured threshold parks and waits.
+
+Deletions are recorded and carried out only when the operator asks, in one batch.
+That is not caution for its own sake: macOS shows a confirmation alert before an
+app removes anything from the Photos library, so a sync that deleted by itself
+would put that alert on screen unasked, twice an hour.

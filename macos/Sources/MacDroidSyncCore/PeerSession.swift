@@ -42,6 +42,16 @@ public final class PeerSession {
     /// tied to the auto lock: locking is the safe direction, and the button on
     /// the phone has to work whether or not the automatic feature is on.
     public var onLockRequested: (() -> Void)?
+    /// A gallery item arriving: name, bytes so far, total. Deliberately separate
+    /// from `onFileProgress`, because a photo sync is background work and must not
+    /// look like the user's own file transfer.
+    public var onPhotoProgress: ((String, Int64, Int64) -> Void)?
+    /// A gallery item's bytes are in and on their way to the library.
+    public var onPhotoStored: ((String) -> Void)?
+    /// One page of the phone's picture of its camera folder, with the message's
+    /// own `ok` and `reason`: a refusal is as meaningful as a page of items, and
+    /// is what stops a narrowed media permission from reading as a mass deletion.
+    public var onPhotoManifest: ((PhotoPayload, Bool, String?) -> Void)?
 
     /// Where incoming files are written; without a sink they are refused.
     public var fileSink: FileSink?
@@ -344,12 +354,32 @@ public final class PeerSession {
         case MessageType.lock:
             Log.info("Phone asked to lock the screen")
             onLockRequested?()
+        case MessageType.photoManifest:
+            guard let photo = message.photo else { return }
+            onPhotoManifest?(photo, message.ok ?? true, message.reason)
         case MessageType.bye:
             Log.info("Peer said goodbye: \(message.reason ?? "no reason")")
             connection.cancel()
         default:
             Log.info("Ignoring unknown message type \(message.type)")
         }
+    }
+
+    // MARK: - Photos
+
+    /// Asks the phone for photos.
+    ///
+    /// With `keys`, it is the batch this Mac decided it wants. Without them it
+    /// means "build a manifest now", which is what the manual sync sends - there
+    /// is deliberately no separate message type for that, because it is the same
+    /// request with nothing yet to ask for.
+    public func requestPhotos(keys: [String]? = nil, manifestId: String? = nil) throws {
+        guard isAuthenticated else { return }
+        try send(Message(
+            seq: codec.nextSequence(),
+            type: MessageType.photoPull,
+            photo: PhotoPayload(manifestId: manifestId, keys: keys)
+        ))
     }
 
     // MARK: - Outgoing files
@@ -475,7 +505,11 @@ public final class PeerSession {
             id: message.fileId ?? UUID().uuidString,
             name: message.name ?? "file",
             size: message.size ?? 0,
-            mime: message.mime
+            mime: message.mime,
+            // A key present here is what makes this a gallery item rather than a
+            // shared file. The sink decides what that means; this only carries it.
+            photoKey: message.photo?.key,
+            captureAt: message.photo?.captureAt
         )
         guard let sink = fileSink else {
             try rejectFile(offer, reason: "this Mac has nowhere to save files")
@@ -525,9 +559,20 @@ public final class PeerSession {
                 fileId: offer.id,
                 name: offer.name,
                 ok: true,
-                path: url.path
+                // The sink says where it went: a path for a saved file, and for a
+                // photo the library it is on its way into, because the staged file
+                // it hands back is about to be gone.
+                path: sink.describe(url)
             ))
-            onFileReceived?(url, offer.name)
+            // Photos report themselves: they have their own status line, and
+            // putting them through the file path as well would mean a
+            // notification and a "Received: …" entry for every photo of a
+            // holiday. The transfer is background work, not an event.
+            if offer.isPhoto {
+                onPhotoStored?(offer.name)
+            } else {
+                onFileReceived?(url, offer.name)
+            }
         } catch {
             try rejectFile(offer, reason: error.localizedDescription)
         }
@@ -554,7 +599,11 @@ public final class PeerSession {
         let now = Date()
         guard force || now.timeIntervalSince(lastProgressReport) >= 0.2 else { return }
         lastProgressReport = now
-        onFileProgress?(offer.name, sink.receivedBytes, offer.size)
+        if offer.isPhoto {
+            onPhotoProgress?(offer.name, sink.receivedBytes, offer.size)
+        } else {
+            onFileProgress?(offer.name, sink.receivedBytes, offer.size)
+        }
     }
 
     // MARK: - Liveness

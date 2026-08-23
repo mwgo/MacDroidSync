@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
@@ -61,6 +62,7 @@ class MainActivity : ScreenActivity() {
 
         binding.syncSwitch.isChecked = prefs.syncEnabled
         binding.beaconSwitch.isChecked = prefs.beaconEnabled
+        binding.photosSwitch.isChecked = prefs.photoSyncEnabled
 
         binding.syncSwitch.setOnCheckedChangeListener { _, _ -> applySwitches(reconnect = true) }
         binding.beaconSwitch.setOnCheckedChangeListener { _, checked ->
@@ -72,6 +74,42 @@ class MainActivity : ScreenActivity() {
         binding.lockNowButton.setOnClickListener { lockTheMac() }
         binding.disconnectButton.setOnClickListener { disconnect() }
         binding.beaconHint.setOnClickListener { openSettings() }
+        binding.photosSwitch.setOnCheckedChangeListener { _, _ -> applySwitches(reconnect = false) }
+        binding.photosHint.setOnClickListener { openSettings() }
+        binding.syncPhotosButton.setOnClickListener { syncPhotosNow() }
+    }
+
+    /**
+     * Asks for a cycle right now, instead of waiting for the interval. The
+     * service does the work; this only starts it and says so, because the answer
+     * comes back minutes later and over the connection.
+     */
+    private fun syncPhotosNow() {
+        if (!prefs.photoSyncEnabled || !prefs.syncEnabled) {
+            refreshPhotoHint()
+            return
+        }
+        SyncService.start(this, SyncService.ACTION_SYNC_PHOTOS)
+        Toast.makeText(this, R.string.photos_sync_requested, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * The photo switch on its own is not enough either: it needs the media
+     * permissions and it rides on the clipboard connection. Saying which of the
+     * two is missing is the difference between a switch that looks broken and one
+     * that explains itself.
+     */
+    private fun refreshPhotoHint() {
+        val message = when {
+            !binding.photosSwitch.isChecked -> null
+            Permissions.mediaRefusal(this) != null -> getString(R.string.photos_needs_permission)
+            !binding.syncSwitch.isChecked -> getString(R.string.photos_needs_sync)
+            else -> null
+        }
+        binding.photosHint.isVisible = message != null
+        message?.let { binding.photosHint.text = it }
+        binding.syncPhotosButton.isEnabled =
+            binding.photosSwitch.isChecked && binding.syncSwitch.isChecked
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -102,6 +140,7 @@ class MainActivity : ScreenActivity() {
         // A permission may well have been granted on the settings screen while
         // this one was in the background.
         refreshBeaconHint()
+        refreshPhotoHint()
         refreshQueuedFiles()
         if (prefs.syncEnabled) {
             // The answer arrives as a broadcast and settles the Lock Now button.
@@ -127,7 +166,15 @@ class MainActivity : ScreenActivity() {
     private fun applySwitches(reconnect: Boolean) {
         prefs.syncEnabled = binding.syncSwitch.isChecked
         prefs.beaconEnabled = binding.beaconSwitch.isChecked
+        prefs.photoSyncEnabled = binding.photosSwitch.isChecked
+        // The first time it goes on, "from" is today unless a date was typed in
+        // the settings screen: a switch nobody configured must not decide to send
+        // the whole camera folder.
+        if (prefs.photoSyncEnabled && prefs.photoStartDate == 0L) {
+            prefs.photoStartDate = System.currentTimeMillis()
+        }
         refreshBeaconHint()
+        refreshPhotoHint()
 
         if (!prefs.syncEnabled) {
             // The beacon rides along with the sync, so this stops both.

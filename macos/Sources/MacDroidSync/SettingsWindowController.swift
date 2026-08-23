@@ -19,6 +19,17 @@ struct SettingsHooks {
     var downloadsPath: () -> String = { "" }
     var revealDownloads: () -> Void = {}
 
+    /// Photo sync. The window shows what the coordinator decided and offers the
+    /// two things only the operator may set off; it never imports or deletes.
+    var photoReport: () -> PhotoSyncReport = { PhotoSyncReport() }
+    var photoReadiness: () -> String = { "" }
+    var photosEnabledChanged: (Bool) -> Void = { _ in }
+    var requestPhotoAccess: () -> Void = {}
+    var approvePhotos: () -> Void = {}
+    var removePhotos: () -> Void = {}
+    var syncPhotosNow: () -> Void = {}
+    var revealPhotoAlbum: () -> Void = {}
+
     /// Identity of the Wi-Fi network this Mac is on, nil when it is on none.
     var currentNetworkID: () -> String? = { nil }
     var safeNetworks: () -> [SafeNetworkStore.Network] = { [] }
@@ -51,6 +62,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let liveLabel = NSTextField(labelWithString: "")
     private let snoozeLabel = NSTextField(labelWithString: "")
     private let snoozeButton = NSButton(title: "Pause for an hour", target: nil, action: nil)
+
+    // Photos
+    private let photosBox = NSButton(
+        checkboxWithTitle: "Add photos and videos from the phone to Photos", target: nil, action: nil
+    )
+    private let photoAccessLabel = NSTextField(labelWithString: "")
+    private let photoAccessButton = NSButton(title: "Grant access…", target: nil, action: nil)
+    private let photoCountsLabel = NSTextField(labelWithString: "")
+    private let photoWaitingLabel = NSTextField(labelWithString: "")
+    private let photoApproveButton = NSButton(title: "Import…", target: nil, action: nil)
+    private let photoRemoveButton = NSButton(title: "Remove…", target: nil, action: nil)
+    private let photoWindowLabel = NSTextField(labelWithString: "")
+    private let photoSkippedLabel = NSTextField(wrappingLabelWithString: "")
 
     // Safe networks
     private let networkTable = NSTableView()
@@ -213,6 +237,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
 
         refreshNetworks()
+        refreshPhotos()
     }
 
     /// Refresh after a change made **here**. The field editor is dismissed
@@ -451,8 +476,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         tabs.translatesAutoresizingMaskIntoConstraints = false
 
         let bodies = [
-            pad(buildGeneralTab()), pad(buildAutoLockTab()),
-            pad(buildSafeNetworksTab()), pad(buildAboutTab()),
+            pad(buildGeneralTab()), pad(buildAutoLockTab()), pad(buildSafeNetworksTab()),
+            pad(buildPhotosTab()), pad(buildAboutTab()),
         ]
 
         let general = NSTabViewItem(identifier: "general")
@@ -470,9 +495,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         networks.view = bodies[2]
         tabs.addTabViewItem(networks)
 
+        let photos = NSTabViewItem(identifier: "photos")
+        photos.label = "Photos"
+        photos.view = bodies[3]
+        tabs.addTabViewItem(photos)
+
         let about = NSTabViewItem(identifier: "about")
         about.label = "About"
-        about.view = bodies[3]
+        about.view = bodies[4]
         tabs.addTabViewItem(about)
 
         // One width for every tab, so switching them does not make the window
@@ -629,6 +659,132 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         return stack
+    }
+
+    private func buildPhotosTab() -> NSView {
+        photosBox.target = self
+        photosBox.action = #selector(togglePhotos)
+        for (button, action) in [
+            (photoAccessButton, #selector(grantPhotoAccess)),
+            (photoApproveButton, #selector(approvePhotos)),
+            (photoRemoveButton, #selector(removePhotos)),
+        ] {
+            button.target = self
+            button.action = action
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 11)
+        }
+        photoAccessLabel.font = .systemFont(ofSize: 12)
+        photoCountsLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        photoWaitingLabel.font = .systemFont(ofSize: 12)
+        photoWindowLabel.font = .systemFont(ofSize: 11)
+        photoWindowLabel.textColor = .secondaryLabelColor
+        photoSkippedLabel.font = .systemFont(ofSize: 11)
+        photoSkippedLabel.textColor = .secondaryLabelColor
+        photoSkippedLabel.preferredMaxLayoutWidth = 420
+
+        let grid = NSGridView(views: [
+            [NSGridCell.emptyContentView, photosBox],
+            [NSGridCell.emptyContentView, hint(
+                "The phone decides what is in range - the start date, how many days back, and how "
+                + "often - because it is the side doing the looking. This Mac decides what to do "
+                + "with it."
+            )],
+            [label("Photos access:"), row([photoAccessLabel, photoAccessButton])],
+            [label("In Photos:"), photoCountsLabel],
+            [label("Waiting:"), row([photoWaitingLabel, photoApproveButton, photoRemoveButton])],
+            [label("This window:"), photoWindowLabel],
+            [label("Not sent:"), photoSkippedLabel],
+            [NSGridCell.emptyContentView, row([button("Sync photos now", #selector(syncPhotosNow))])],
+            [NSGridCell.emptyContentView, hint(
+                "Nothing is imported before you have seen the first report, and a large batch waits "
+                + "for you too. Photos deleted on the phone are written down and removed when you press "
+                + "Remove - macOS asks for a confirmation, and an alert appearing by itself twice an "
+                + "hour would be worse than the wait. Removed photos go to Recently Deleted, so there "
+                + "are 30 days in which to change your mind."
+            )],
+        ])
+        return configure(grid)
+    }
+
+    @objc private func togglePhotos() {
+        let enabled = photosBox.state == .on
+        Settings.shared.photosEnabled = enabled
+        hooks.photosEnabledChanged(enabled)
+        // Asking for the permission is a user action, and this click is it.
+        if enabled { hooks.requestPhotoAccess() }
+        refreshAfterChange()
+    }
+
+    @objc private func grantPhotoAccess() {
+        hooks.requestPhotoAccess()
+    }
+
+    @objc private func approvePhotos() {
+        hooks.approvePhotos()
+        refreshAfterChange()
+    }
+
+    @objc private func removePhotos() {
+        hooks.removePhotos()
+        refreshAfterChange()
+    }
+
+    @objc private func syncPhotosNow() {
+        hooks.syncPhotosNow()
+    }
+
+    /// Called by the menu controller when the photo report changed under us.
+    func refreshFromMenu() {
+        guard window?.isVisible == true else { return }
+        refresh()
+    }
+
+    private func refreshPhotos() {
+        let report = hooks.photoReport()
+        photosBox.state = Settings.shared.photosEnabled ? .on : .off
+        photoAccessLabel.stringValue = hooks.photoReadiness()
+        photoCountsLabel.stringValue = "\(report.imported) imported, \(report.removedByUser) removed here"
+        var waiting: [String] = []
+        if report.awaitingApproval > 0 {
+            waiting.append("\(report.awaitingApproval) to import "
+                + "(\(ByteCountFormatter.string(fromByteCount: report.awaitingBytes, countStyle: .file)))")
+        }
+        if report.pendingDeletions > 0 {
+            waiting.append("\(report.pendingDeletions) to remove")
+        }
+        photoWaitingLabel.stringValue = waiting.isEmpty ? "nothing" : waiting.joined(separator: ", ")
+        photoApproveButton.isHidden = report.awaitingApproval == 0
+        photoRemoveButton.isHidden = report.pendingDeletions == 0
+
+        if let refusal = report.refusal {
+            photoWindowLabel.stringValue = "the phone is not describing its camera folder: \(refusal)"
+        } else if let from = report.windowFrom {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            photoWindowLabel.stringValue = "photos taken since \(formatter.string(from: from))"
+        } else {
+            photoWindowLabel.stringValue = "nothing described yet"
+        }
+
+        photoSkippedLabel.stringValue = report.skipped.isEmpty
+            ? "nothing was left out"
+            : report.skipped.map {
+                "\($0.name) - \(ByteCountFormatter.string(fromByteCount: $0.size, countStyle: .file)), "
+                    + Self.describe($0.reason)
+            }.joined(separator: "\n")
+    }
+
+    /// The reason a photo will not be sent, in words rather than in a code.
+    private static func describe(_ reason: PhotoExclusion) -> String {
+        switch reason {
+        case .size: return "too large for one transfer"
+        case .unreadable: return "the phone could not read it"
+        case .noLocation: return "its location could not be read, so it was not sent"
+        case .noDate: return "no date could be established"
+        }
     }
 
     /// Where the source lives. The About tab is the one place in the app that

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Without this, PhotoKit answers .authorized and then shows an empty
+         library: no assets, no albums, no smart albums, no error. The grant is
+         part of the code signature, so it has to be here rather than in
+         Info.plist, and build.sh must pass this file to codesign.
+
+         The app itself is deliberately not sandboxed; this is the only
+         entitlement it carries. -->
+    <key>com.apple.security.personal-information.photos-library</key>
+    <true/>
+</dict>
+</plist>

@@ -13,6 +13,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let presence = PresenceScanner()
     private let safeNetworks = SafeNetworkStore()
     private let network = NetworkMonitor()
+    private let photoIndex = PhotoIndexStore()
+    private lazy var photoImporter = PhotoImporter(
+        library: PhotoKitLibrary(),
+        index: photoIndex,
+        readAlbumIdentifier: { Settings.shared.photosAlbumIdentifier },
+        writeAlbumIdentifier: { Settings.shared.photosAlbumIdentifier = $0 }
+    )
+    private lazy var photoSync = PhotoSyncCoordinator(importer: photoImporter) { [weak self] keys, id in
+        self?.server.requestPhotos(keys: keys, manifestId: id)
+    }
+    private var photoReport = PhotoSyncReport()
+    /// The photo in flight, shown on the photo line while it arrives.
+    private var photoTransfer: String?
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
@@ -28,6 +41,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let autoLockMenuItem = NSMenuItem(title: "Lock when the phone leaves", action: #selector(toggleAutoLock), keyEquivalent: "")
     private let presenceMenuItem = NSMenuItem(title: "Auto lock is off", action: nil, keyEquivalent: "")
     private let snoozeMenuItem = NSMenuItem(title: "Pause auto lock for an hour", action: #selector(toggleSnooze), keyEquivalent: "")
+    private let photoStatusMenuItem = NSMenuItem(title: "Photo sync is off", action: nil, keyEquivalent: "")
+    private let photoApproveMenuItem = NSMenuItem(title: "Import photos…", action: #selector(approvePhotos), keyEquivalent: "")
+    private let photoRemoveMenuItem = NSMenuItem(title: "Remove photos from Photos…", action: #selector(removePhotos), keyEquivalent: "")
+    private let photoSyncNowMenuItem = NSMenuItem(title: "Sync photos now", action: #selector(syncPhotosNow), keyEquivalent: "")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
     private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
 
@@ -69,6 +86,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         wireServices()
         wireShareInbox()
         wirePresence()
+        wirePhotos()
         render(state: .disconnected)
 
         server.start()
@@ -118,9 +136,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in [
             pingMenuItem, sendMenuItem, sendFilesMenuItem, fileMenuItem, downloadsMenuItem,
             autoLockMenuItem, snoozeMenuItem, settingsMenuItem, quitMenuItem,
+            photoApproveMenuItem, photoRemoveMenuItem, photoSyncNowMenuItem,
         ] {
             item.target = self
         }
+        photoStatusMenuItem.isEnabled = false
 
         // What the menu carries is state and the handful of things worth doing
         // from the menu bar. Everything that is set once and then left alone
@@ -139,6 +159,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(autoLockMenuItem)
         menu.addItem(presenceMenuItem)
         menu.addItem(snoozeMenuItem)
+        menu.addItem(.separator())
+        // In order of what needs a decision: the state, then the two things only
+        // the operator may set off, then the manual run.
+        menu.addItem(photoStatusMenuItem)
+        menu.addItem(photoApproveMenuItem)
+        menu.addItem(photoRemoveMenuItem)
+        menu.addItem(photoSyncNowMenuItem)
         menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
         menu.addItem(.separator())
@@ -181,6 +208,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         sendFilesMenuItem.isEnabled = true
         outgoingMenuItem.title = outgoingSummary
+
+        photoStatusMenuItem.title = photoSummary ?? "Photo sync is off"
+        // The two destructive-or-committing actions only appear as available when
+        // there is really something to decide about.
+        photoApproveMenuItem.isHidden = photoReport.awaitingApproval == 0
+        photoApproveMenuItem.title = "Import \(photoReport.awaitingApproval) photos "
+            + "(\(Self.bytes(photoReport.awaitingBytes)))…"
+        photoRemoveMenuItem.isHidden = photoReport.pendingDeletions == 0
+        photoRemoveMenuItem.title = "Remove \(photoReport.pendingDeletions) photos from Photos…"
+        photoSyncNowMenuItem.isEnabled = connected && settings.photosEnabled
 
         fileMenuItem.title = fileStatus ?? "No files received yet"
         // Only clickable once there is a file to point Finder at.
@@ -674,6 +711,124 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         NSWorkspace.shared.open(server.destinationDirectory)
     }
 
+    // MARK: - Photos
+
+    private func wirePhotos() {
+        // Everything the sink and the coordinator do goes through this one path,
+        // so the server never learns what Photos is.
+        server.makeFileSink = { [weak self] downloads in
+            guard let self else { return FileReceiver(directory: downloads) }
+            let sink = PhotoRoutingSink(
+                downloads: FileReceiver(directory: downloads),
+                importer: self.photoImporter,
+                acceptsPhotos: { Settings.shared.photosEnabled }
+            )
+            sink.onImportFailed = { [weak self] name, reason in
+                DispatchQueue.main.async { self?.notifier.fileFailed(name: name, reason: reason) }
+            }
+            return sink
+        }
+        server.onPhotoManifest = { [weak self] payload, ok, reason in
+            guard Settings.shared.photosEnabled else { return }
+            self?.photoSync.handle(manifest: payload, ok: ok, reason: reason)
+        }
+        // A photo transfer speaks on its own line only. It gets no notification
+        // and no "Received: …" entry: a holiday's worth of photos arriving is
+        // background work, and the file line belongs to what the user asked for.
+        server.onPhotoProgress = { [weak self] name, received, total in
+            guard let self else { return }
+            self.photoTransfer = Self.progressSummary(name: name, done: received, total: total)
+            self.flashTransfer()
+            self.refreshMenuTitles()
+        }
+        server.onPhotoStored = { [weak self] _ in
+            self?.photoTransfer = nil
+            self?.refreshPhotoReport()
+        }
+        photoSync.onReport = { [weak self] report in
+            self?.photoReport = report
+            self?.refreshMenuTitles()
+            self?.settingsWindow?.refreshFromMenu()
+        }
+        photoImporter.onImported = { [weak self] name in
+            Log.info("Added \(name) to Photos")
+            // The count has to be re-read, not remembered: the import finishes on
+            // its own queue, well after the cycle that asked for it published its
+            // report, so a cached number would sit there saying zero.
+            self?.refreshPhotoReport()
+        }
+        // What the user deleted in Photos themselves is noticed once at startup,
+        // so those photos are not offered again from the very first cycle. The
+        // report is taken afterwards, so the menu says what is really in the
+        // library from the first time it is opened rather than showing zero until
+        // some cycle happens to run.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard Settings.shared.photosEnabled else { return }
+            self?.photoImporter.reconcile()
+            self?.refreshPhotoReport()
+        }
+    }
+
+    /// Takes a fresh report and shows it. Safe from any thread.
+    private func refreshPhotoReport() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.photoReport = self.photoSync.report
+            self.refreshMenuTitles()
+            self.settingsWindow?.refreshFromMenu()
+        }
+    }
+
+    /// One line about the photo sync, or nil when it has nothing to say.
+    private var photoSummary: String? {
+        guard settings.photosEnabled else { return nil }
+        if let photoTransfer { return "Photos: \(photoTransfer)" }
+        if let refusal = photoReport.refusal { return "Photos: \(refusal)" }
+        let readiness = photoImporter.readiness
+        guard readiness.canImport else { return "Photos: \(readiness.summary)" }
+        if photoReport.awaitingApproval > 0 {
+            return "Photos: \(photoReport.awaitingApproval) waiting for your go-ahead"
+        }
+        return "Photos: \(photoReport.imported) imported"
+    }
+
+    @objc private func approvePhotos() {
+        photoSync.approveWaitingPlan()
+    }
+
+    /// The one place anything leaves the Photos library. macOS puts its own
+    /// confirmation in front of this, which is exactly why it is a menu item: an
+    /// alert that appears by itself, twice an hour, is not acceptable.
+    @objc private func removePhotos() {
+        switch photoSync.removeWaitingPhotos() {
+        case .cancelledByUser:
+            Log.info("Removal cancelled; the photos stay on the list")
+        case .failed(let reason):
+            notifier.fileFailed(name: "Photos", reason: reason)
+        case .deleted, .nothingToDo:
+            break
+        }
+        refreshMenuTitles()
+    }
+
+    @objc private func syncPhotosNow() {
+        photoSync.syncNow()
+    }
+
+    /// Asks the system for the Photos library. The window is brought forward
+    /// first: the alert is drawn by macOS, and an accessory app is not frontmost,
+    /// so otherwise it opens behind whatever the user is reading.
+    private func requestPhotoAccess() {
+        NSApp.activate(ignoringOtherApps: true)
+        photoImporter.readiness == .notDetermined
+            ? PhotoKitLibrary().requestAuthorization { [weak self] readiness in
+                Log.info("Photos access: \(readiness.summary)")
+                self?.refreshMenuTitles()
+                self?.settingsWindow?.refreshFromMenu()
+            }
+            : Log.info("Photos access: \(photoImporter.readiness.summary)")
+    }
+
     // MARK: - Settings
 
     @objc private func showSettings(_ sender: Any?) {
@@ -709,6 +864,26 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             revealDownloads: { [weak self] in
                 guard let self else { return }
                 NSWorkspace.shared.open(self.server.destinationDirectory)
+            },
+            photoReport: { [weak self] in self?.photoReport ?? PhotoSyncReport() },
+            photoReadiness: { [weak self] in
+                guard Settings.shared.photosEnabled else { return "not asked for yet" }
+                return self?.photoImporter.readiness.summary ?? "unknown"
+            },
+            photosEnabledChanged: { [weak self] _ in self?.refreshMenuTitles() },
+            requestPhotoAccess: { [weak self] in
+                // Only ever from a click: an accessory app asking at launch would
+                // put a system alert behind whatever the user is looking at.
+                self?.requestPhotoAccess()
+            },
+            approvePhotos: { [weak self] in self?.approvePhotos() },
+            removePhotos: { [weak self] in self?.removePhotos() },
+            syncPhotosNow: { [weak self] in self?.syncPhotosNow() },
+            revealPhotoAlbum: {
+                guard let photos = NSWorkspace.shared.urlForApplication(
+                    withBundleIdentifier: "com.apple.Photos"
+                ) else { return }
+                NSWorkspace.shared.openApplication(at: photos, configuration: .init())
             },
             currentNetworkID: { [weak self] in self?.network.currentProfileID },
             safeNetworks: { [weak self] in self?.safeNetworks.all ?? [] },
@@ -777,6 +952,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     private static let maxSendAttempts = 3
+
+    private static func bytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
 
     private static func summarize(_ text: String) -> String {
         let flattened = text
