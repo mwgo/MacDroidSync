@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug only helper for automated end to end tests, see DebugConfigReceiver.
+             It has to be exported so that `adb shell am broadcast` can reach it, so it
+             is guarded by android.permission.DUMP: the adb shell holds that permission,
+             ordinary apps do not. The receiver does not exist in release builds. -->
+        <receiver
+            android:name=".DebugConfigReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="pl.wojas.macdroidsync.DEBUG_CONFIG" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

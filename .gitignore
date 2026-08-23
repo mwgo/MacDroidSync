@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Swift / SwiftPM
+macos/.build/
+macos/build/
+macos/.swiftpm/
+*.xcuserstate
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+*.apk
+*.ap_
+*.dex
+*.class
+
+# IDE
+.idea/
+.junie/
+*.iml

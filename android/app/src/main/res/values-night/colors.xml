@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark counterparts of the brand scheme in values/colors.xml. -->
+<resources>
+    <color name="brand_primary">#A9C7FF</color>
+    <color name="brand_on_primary">#002F65</color>
+    <color name="brand_primary_container">#00458F</color>
+    <color name="brand_on_primary_container">#D6E3FF</color>
+    <color name="brand_secondary_container">#3B4254</color>
+    <color name="brand_on_secondary_container">#DCE2F9</color>
+</resources>

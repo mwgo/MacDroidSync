@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MacDroidSync</string>
+
+    <string name="status_heading">Status</string>
+
+    <string name="section_pairing">Pairing</string>
+    <string name="pairing_code_label">Pairing code</string>
+    <string name="pairing_code_helper">Shown in the Mac menu under Pairing code</string>
+    <string name="host_label">Mac address</string>
+    <string name="host_helper">Leave empty to discover the Mac automatically</string>
+    <string name="port_label">Port</string>
+    <string name="port_helper">Must match the port set on the Mac</string>
+
+    <string name="section_sync">Clipboard sync</string>
+    <string name="sync_switch">Keep the clipboard in sync</string>
+    <string name="save_and_connect">Save and reconnect</string>
+    <string name="send_clipboard_now">Send clipboard to the Mac</string>
+
+    <string name="section_permissions">Permissions</string>
+    <string name="permission_notifications">Notifications</string>
+    <string name="permission_overlay">Display over other apps</string>
+    <string name="permission_overlay_explanation">Android only lets an app touch the clipboard while it has a window on screen. MacDroidSync opens an invisible window for a fraction of a second, which requires this permission.</string>
+    <string name="permission_granted">Granted</string>
+    <string name="permission_missing">Required, not granted yet</string>
+    <string name="permission_grant">Grant</string>
+    <string name="permission_open_settings">Settings</string>
+
+    <string name="status_disconnected">Not connected</string>
+    <string name="status_connecting">Looking for the Mac…</string>
+    <string name="status_connected">Connected to %1$s</string>
+    <string name="status_missing_code">Enter the pairing code shown in the Mac menu</string>
+    <string name="status_sync_off">Clipboard sync is off</string>
+
+    <string name="notification_channel_idle">Waiting for the Mac</string>
+    <string name="notification_channel_idle_description">Silent placeholder shown while no Mac is connected. It has no status bar icon.</string>
+    <string name="notification_channel_active">Connected</string>
+    <string name="notification_channel_active_description">Shown while a Mac is connected, with the action that sends this phone\'s clipboard.</string>
+    <string name="notification_channel_events">Clipboard events</string>
+    <string name="notification_channel_events_description">Clipboard items waiting to be applied.</string>
+    <string name="notification_channel_ping">Ping</string>
+    <string name="notification_channel_ping_description">Rings this phone when you ping it from the Mac, so you can find it.</string>
+
+    <string name="notification_idle_title">MacDroidSync</string>
+    <string name="notification_idle_text">Waiting for the Mac…</string>
+    <string name="notification_active_title">MacDroidSync</string>
+    <string name="notification_active_text">Connected to %1$s</string>
+    <string name="notification_action_send">Send clipboard to Mac</string>
+    <string name="notification_action_disconnect">Disconnect</string>
+    <string name="notification_ping_title">Ping from %1$s</string>
+    <string name="notification_ping_text">Ringing this phone. Tap Silence to stop.</string>
+    <string name="notification_action_silence">Silence</string>
+    <string name="notification_pending_title">Clipboard from %1$s</string>
+    <string name="notification_pending_text">Tap to put it on this phone\'s clipboard.</string>
+
+    <string name="toast_clipboard_empty">The clipboard is empty</string>
+</resources>

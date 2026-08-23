@@ -1,0 +1,20 @@
+<!--
+  Fully transparent status bar icon used by the idle (disconnected) notification.
+
+  A foreground service must always keep an ongoing notification, and Android
+  raises the importance of that notification to at least IMPORTANCE_LOW even when
+  its channel asks for IMPORTANCE_MIN, so a low importance channel is not enough
+  to keep the status bar clean. Drawing nothing is what actually makes the icon
+  disappear while no Mac is connected; the notification itself stays in the
+  shade, and the real icon (ic_stat_sync) comes back as soon as a Mac connects.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillAlpha="0"
+        android:fillColor="#00000000"
+        android:pathData="M0,0h24v24h-24z" />
+</vector>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Blue scheme matching the application icon. -->
+<resources>
+    <color name="brand_primary">#1B6AC9</color>
+    <color name="brand_on_primary">#FFFFFFFF</color>
+    <color name="brand_primary_container">#D6E3FF</color>
+    <color name="brand_on_primary_container">#001B3E</color>
+    <color name="brand_secondary_container">#DCE2F9</color>
+    <color name="brand_on_secondary_container">#151B2C</color>
+</resources>
