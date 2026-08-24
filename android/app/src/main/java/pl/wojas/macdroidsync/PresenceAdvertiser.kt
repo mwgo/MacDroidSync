@@ -1,5 +1,7 @@
 package pl.wojas.macdroidsync
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
@@ -24,6 +26,12 @@ import androidx.core.content.ContextCompat
  * Mac averages the signal strength it measures. The token inside the packet is
  * only valid for one 30 second slot, so the advertisement is rebuilt at every
  * slot boundary.
+ *
+ * That the controller needs no help from the CPU is what makes this feature work
+ * at all, and also what makes it subtle: while the phone is suspended the packets
+ * keep going out with whatever token was last published. The handler below only
+ * runs when the CPU does, so it is backed by an alarm that survives Doze - see
+ * [scheduleWake]. The Mac tolerates a wide range of slots for the same reason.
  *
  * Everything is best effort and loud in the log: no permission, no Bluetooth, no
  * pairing code or a radio that refuses to advertise all end up as "no beacon",
@@ -53,16 +61,54 @@ class PresenceAdvertiser(private val context: Context) {
         }
     }
 
-    /** Bluetooth can be switched off and on again underneath us. */
-    private val adapterReceiver = object : BroadcastReceiver() {
+    private val alarms = context.getSystemService(AlarmManager::class.java)
+
+    /**
+     * The alarm that republishes the token, addressed to this package only. It is
+     * immutable and carries no extras: the fact that it arrived is the whole
+     * message.
+     */
+    private val wakeIntent: PendingIntent by lazy {
+        PendingIntent.getBroadcast(
+            context,
+            0,
+            Intent(ACTION_WAKE).setPackage(context.packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /**
+     * Bluetooth can be switched off and on again underneath us, and the wake
+     * alarm is the only thing that reaches this object through a suspended CPU.
+     */
+    private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
-                BluetoothAdapter.STATE_ON -> {
-                    Log.i(TAG, "Bluetooth came back, restarting the presence beacon")
-                    refresh()
-                }
-                BluetoothAdapter.STATE_TURNING_OFF -> {
-                    isAdvertising = false
+            when (intent.action) {
+                ACTION_WAKE -> refresh()
+                // Reached on Android 11 and older only. From 12 on this broadcast
+                // is guarded by BLUETOOTH_CONNECT, which this app deliberately
+                // does not hold - it never connects to anything, it only
+                // advertises - so the branch below simply never runs there.
+                // Confirmed on Android 16: switching Bluetooth off and on again
+                // delivered nothing at all.
+                //
+                // Kept rather than deleted, because minSdk is 28 and it does work
+                // on those releases. Losing it costs nothing on newer ones:
+                // [refresh] reschedules itself whether or not the radio was
+                // available, so the next 30 second tick re-reads the adapter and
+                // picks the beacon back up within one slot. That poll is what
+                // actually recovers on a modern phone - measured at about ten
+                // seconds from switching Bluetooth back on.
+                BluetoothAdapter.ACTION_STATE_CHANGED -> when (
+                    intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                ) {
+                    BluetoothAdapter.STATE_ON -> {
+                        Log.i(TAG, "Bluetooth came back, restarting the presence beacon")
+                        refresh()
+                    }
+                    BluetoothAdapter.STATE_TURNING_OFF -> {
+                        isAdvertising = false
+                    }
                 }
             }
         }
@@ -84,10 +130,12 @@ class PresenceAdvertiser(private val context: Context) {
 
         if (!isStarted) {
             isStarted = true
+            val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+            filter.addAction(ACTION_WAKE)
             ContextCompat.registerReceiver(
                 context,
-                adapterReceiver,
-                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                receiver,
+                filter,
                 ContextCompat.RECEIVER_NOT_EXPORTED,
             )
         }
@@ -96,10 +144,11 @@ class PresenceAdvertiser(private val context: Context) {
 
     fun stop() {
         handler.removeCallbacksAndMessages(null)
+        runCatching { alarms?.cancel(wakeIntent) }
         stopAdvertising()
         if (isStarted) {
             isStarted = false
-            runCatching { context.unregisterReceiver(adapterReceiver) }
+            runCatching { context.unregisterReceiver(receiver) }
         }
     }
 
@@ -110,12 +159,22 @@ class PresenceAdvertiser(private val context: Context) {
      * rebuild for the moment that slot ends. Restarting is what publishes a new
      * payload; it costs a couple of controller commands and the gap is far too
      * short for the Mac, which tolerates 15 seconds of silence.
+     *
+     * A radio that cannot be reached right now must not end the story: the
+     * scheduling at the bottom happens either way, so the next slot tries again.
+     * Returning early here used to leave the beacon stopped for good, because the
+     * advertisement had already been torn down on the way in.
      */
     private fun refresh() {
         stopAdvertising()
         if (!isStarted) return
 
-        val advertiser = advertiserOrNull() ?: return
+        val advertiser = advertiserOrNull()
+        if (advertiser == null) {
+            scheduleNextSlot()
+            scheduleWake()
+            return
+        }
         val payload = PresenceBeacon.currentPayload(pairingCode)
         val data = AdvertiseData.Builder()
             // The name would push the packet past the 31 byte limit.
@@ -145,6 +204,7 @@ class PresenceAdvertiser(private val context: Context) {
         }
 
         scheduleNextSlot()
+        scheduleWake()
     }
 
     private fun scheduleNextSlot() {
@@ -152,6 +212,40 @@ class PresenceAdvertiser(private val context: Context) {
         val delay = slotMillis - (System.currentTimeMillis() % slotMillis)
         handler.removeCallbacksAndMessages(null)
         handler.postDelayed({ refresh() }, delay)
+    }
+
+    /**
+     * The safety net under [scheduleNextSlot]. A handler is scheduled against
+     * uptime and holds no wake lock, so it simply does not run while the phone is
+     * suspended - measured at 99 seconds of silence on a Galaxy S25 in light
+     * Doze, and far longer once deep idle sets in. The controller carries on
+     * broadcasting the token published before the suspend, so the beacon looks
+     * healthy from the outside while the Mac quietly rejects every packet.
+     *
+     * Inexact and "allow while idle" on purpose. Doze rate limits an alarm like
+     * this to roughly one firing every nine minutes per app, which is the cadence
+     * wanted here anyway, and unlike an exact alarm it needs no permission the
+     * user could take away.
+     *
+     * Inexact also means the system answers with a window rather than an instant:
+     * asked for ten minutes, `dumpsys alarm` reported a latest delivery of about
+     * seventeen. The Mac's slot tolerance is sized against that worst case, not
+     * against the ten minutes asked for here.
+     *
+     * Rescheduled on every [refresh], so while the handler is ticking the alarm
+     * is pushed forward and never fires. It is a watchdog: it only ever goes off
+     * after the phone really has been suspended, which costs no battery at all
+     * the rest of the time.
+     */
+    private fun scheduleWake() {
+        val manager = alarms ?: return
+        runCatching {
+            manager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                System.currentTimeMillis() + WAKE_INTERVAL_MS,
+                wakeIntent,
+            )
+        }.onFailure { Log.w(TAG, "Could not schedule the presence beacon wake up", it) }
     }
 
     private fun stopAdvertising() {
@@ -195,5 +289,11 @@ class PresenceAdvertiser(private val context: Context) {
 
     companion object {
         private const val TAG = Prefs.TAG
+        private const val ACTION_WAKE = "pl.wojas.macdroidsync.BEACON_WAKE"
+        /**
+         * Ten minutes, just above the nine that Doze allows, so a firing is never
+         * dropped for being too eager.
+         */
+        private const val WAKE_INTERVAL_MS = 10 * 60 * 1000L
     }
 }

@@ -337,8 +337,13 @@ public final class PeerSession {
         case MessageType.pong:
             guard let token = message.token, let sentAt = pendingPings.removeValue(forKey: token) else { return }
             onRoundTrip?(Date().timeIntervalSince(sentAt) * 1000)
+        // Answered rather than ignored. A peer whose CPU has been suspended runs
+        // no timer of its own, so its own heartbeat never leaves and this side
+        // drops a session that is perfectly healthy. Having just read this frame
+        // is proof the peer has the CPU for a moment, which is exactly when the
+        // reply can be written. See PROTOCOL.md section 4.
         case MessageType.heartbeat:
-            break
+            sendHeartbeatIfIdle()
         case MessageType.fileOffer:
             try handleFileOffer(message)
         case MessageType.fileChunk:
@@ -626,12 +631,19 @@ public final class PeerSession {
             connection.cancel()
             return
         }
-        if isAuthenticated, now.timeIntervalSince(lastSend) >= Wire.heartbeatInterval {
-            try? send(Message(seq: codec.nextSequence(), type: MessageType.heartbeat))
-        }
+        sendHeartbeatIfIdle(at: now)
         if let since = awaitingAckSince, now.timeIntervalSince(since) > Wire.fileAckTimeout {
             failOutgoing(reason: "the phone never confirmed the transfer")
         }
         pendingPings = pendingPings.filter { now.timeIntervalSince($0.value) < 30 }
+    }
+
+    /// One heartbeat, but only if nothing else has gone out recently. Called both
+    /// from the timer above and on receiving the peer's own heartbeat, so the two
+    /// can never talk each other into a storm: each side speaks only after it has
+    /// itself been silent for the interval.
+    private func sendHeartbeatIfIdle(at now: Date = Date()) {
+        guard isAuthenticated, now.timeIntervalSince(lastSend) >= Wire.heartbeatInterval else { return }
+        try? send(Message(seq: codec.nextSequence(), type: MessageType.heartbeat))
     }
 }

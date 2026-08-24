@@ -53,9 +53,25 @@ final class PresenceBeaconTests: XCTestCase {
         }
     }
 
+    /// The window is not about clock skew, it is about Doze. A suspended phone
+    /// gets no CPU, so it keeps broadcasting the token it published before it
+    /// went under while the controller repeats the packet regardless; anything
+    /// narrower than this reads a phone lying on the desk as a phone that left.
+    func testAPayloadFrozenByASuspendedPhoneIsStillAccepted() {
+        for offset in [-PresenceBeacon.slotTolerance, -20, 20, PresenceBeacon.slotTolerance] {
+            let payload = PresenceBeacon.payload(pairingCode: code, flags: flags, slot: slot + offset)
+            XCTAssertEqual(
+                PresenceBeacon.verify(payload: payload, pairingCode: code, at: date(for: slot)),
+                flags,
+                "slot offset \(offset) is inside the tolerance and has to be accepted"
+            )
+        }
+    }
+
     func testASlotTooFarAwayIsRejected() {
-        for offset in [-3, -2, 2, 3, 2880] {
-            let payload = PresenceBeacon.payload(pairingCode: code, flags: flags, slot: slot + Int64(offset))
+        let beyond = PresenceBeacon.slotTolerance + 1
+        for offset in [-2880, -beyond, beyond, 2880] {
+            let payload = PresenceBeacon.payload(pairingCode: code, flags: flags, slot: slot + offset)
             XCTAssertNil(
                 PresenceBeacon.verify(payload: payload, pairingCode: code, at: date(for: slot)),
                 "a recorded packet from slot offset \(offset) must not still work"

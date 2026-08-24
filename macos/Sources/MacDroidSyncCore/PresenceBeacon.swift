@@ -30,8 +30,30 @@ public enum PresenceBeacon {
     public static let flagAutoLock: UInt8 = 0x01
     /// Length of one token slot in seconds.
     public static let slotSeconds: Int64 = 30
-    /// How many slots either side of the current one are still accepted.
-    public static let slotTolerance: Int64 = 1
+    /// How many slots either side of the current one are still accepted, which
+    /// is thirty minutes at thirty seconds a slot.
+    ///
+    /// It has to be this wide because of what the phone can and cannot do while
+    /// it is idle. The radio repeats the advertisement without any help from the
+    /// CPU, so the packets keep arriving all through Doze - but the payload is
+    /// built in the application process, and that process gets no CPU at all
+    /// while the phone is suspended. Measured on a Galaxy S25: the token stood
+    /// still for 99 seconds, and every packet inside that gap was rejected even
+    /// though the phone was on the desk at -47 dBm. A minute of tolerance is
+    /// enough for clock skew and for nothing else.
+    ///
+    /// What this costs is the replay window, and it is a smaller loss than it
+    /// looks: a replay keeps the Mac **unlocked**, so it has to be broadcast
+    /// continuously from a recording no older than this - which means being in
+    /// range of the real phone all along, and the RSSI thresholds still have to
+    /// be satisfied from wherever the attacker is standing.
+    ///
+    /// The width is sized against the alarm that republishes the token from the
+    /// phone. That alarm is inexact by design, and the system grants it a window:
+    /// asked for ten minutes, `dumpsys alarm` reported a latest delivery of about
+    /// seventeen. Thirty minutes leaves real headroom over that, which matters on
+    /// a vendor ROM free to defer it further still.
+    public static let slotTolerance: Int64 = 60
     /// 0xFFFF is reserved for testing, so it needs no Bluetooth SIG assignment.
     public static let manufacturerId: UInt16 = 0xFFFF
     /// Bytes of the truncated HMAC that follow the flags byte. Forty bits are
@@ -100,9 +122,13 @@ public enum PresenceBeacon {
         let flags = bytes[bytes.startIndex]
         let offered = Data(bytes.dropFirst())
         let current = slot(at: date)
+        // Derived once rather than once per candidate: the scan runs with
+        // duplicates on, so this is a few packets a second, and an HKDF pass for
+        // every slot in the window would be wasted work on all of them.
+        let key = beaconKey(pairingCode: pairingCode)
 
-        for candidate in (current - slotTolerance) ... (current + slotTolerance) {
-            let expected = mac(pairingCode: pairingCode, flags: flags, slot: candidate)
+        for offset in candidateOffsets {
+            let expected = mac(key: key, flags: flags, slot: current + offset)
             // Constant time: the comparison is cheap, but a timing signal here
             // would leak the expected token one byte at a time.
             if constantTimeEquals(expected, offered) { return flags }
@@ -110,8 +136,27 @@ public enum PresenceBeacon {
         return nil
     }
 
+    /// Slot offsets to try, ordered outwards from the current one. A phone that
+    /// is awake and publishing on time matches on the first attempt; only a
+    /// payload frozen by Doze pays for the width of the window.
+    private static let candidateOffsets: [Int64] = {
+        var offsets: [Int64] = [0]
+        for distance in 1 ... slotTolerance {
+            offsets.append(-distance)
+            offsets.append(distance)
+        }
+        return offsets
+    }()
+
+    private static func beaconKey(pairingCode: String) -> SymmetricKey {
+        CryptoBox.deriveKey(pairingCode: pairingCode, info: tokenInfo, outputByteCount: 32)
+    }
+
     private static func mac(pairingCode: String, flags: UInt8, slot: Int64) -> Data {
-        let key = CryptoBox.deriveKey(pairingCode: pairingCode, info: tokenInfo, outputByteCount: 32)
+        mac(key: beaconKey(pairingCode: pairingCode), flags: flags, slot: slot)
+    }
+
+    private static func mac(key: SymmetricKey, flags: UInt8, slot: Int64) -> Data {
         var message = Data(domain)
         var big = slot.bigEndian
         withUnsafeBytes(of: &big) { message.append(contentsOf: $0) }

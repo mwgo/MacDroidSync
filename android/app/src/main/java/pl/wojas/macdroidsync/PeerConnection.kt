@@ -321,7 +321,15 @@ class PeerConnection(
                 send(Message(type = MessageType.PONG, seq = codec.nextSequence(), token = message.token))
                 listener.onPing(macName)
             }
-            MessageType.PONG, MessageType.HEARTBEAT -> Unit
+            MessageType.PONG -> Unit
+            // Answered here rather than left to the timer in SyncService. Doze
+            // suspends this process for minutes at a stretch - measured at 88
+            // seconds while the Mac was still probing every 15 - and no timer in
+            // the process runs across that: a coroutine `delay` parks on a clock
+            // that stops with the CPU, while the interval it is compared against
+            // is wall clock. Reading this frame is proof the CPU is ours right
+            // now, so this is the one moment the reply is certain to go out.
+            MessageType.HEARTBEAT -> sendHeartbeatIfIdle()
             MessageType.FILE_ACK -> {
                 val fileId = message.fileId.orEmpty()
                 val ok = message.ok == true

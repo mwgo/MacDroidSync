@@ -95,7 +95,8 @@ client                                        server (macOS)
   |<---- 0x02 {"type":"ping","token"} -----------|   "Ping phone" menu command
   |----- 0x02 {"type":"pong","token"} ---------->|   server measures the round trip
   |                                              |
-  |<---> 0x02 {"type":"heartbeat"} <------------>|   every 15 s while idle
+  |<---> 0x02 {"type":"heartbeat"} <------------>|   every 15 s while idle,
+  |                                              |   and answered when received
 ```
 
 * The `hello` must echo the `challenge` verbatim, otherwise the server closes the
@@ -105,6 +106,18 @@ client                                        server (macOS)
 * **Liveness**: each side sends a `heartbeat` when it has been idle for 15 s and drops
   the connection when no frame arrives for 30 s. This is what suspends the sync when
   the devices move apart.
+
+  A received `heartbeat` is also **answered** - subject to the same "only if I have
+  been idle for 15 s" rule, so the two sides cannot talk each other into a storm.
+  Answering matters because the timer alone is not dependable on the phone: Doze
+  suspends the process for minutes at a time (measured at 88 seconds while the Mac
+  was still probing every 15), and nothing scheduled inside the process runs across
+  that - a coroutine `delay` parks on a clock that stops with the CPU, while the
+  interval it is compared against is wall clock. An arriving frame, on the other
+  hand, wakes the kernel and unblocks the read, so handling it is the one moment the
+  phone is certain to be able to write. Without the answer the Mac tears down a
+  session whose phone is sitting on the desk, and the menu bar icon flaps between
+  connected and disconnected for as long as the phone stays idle.
 * **Offline queue**: while disconnected, macOS keeps only the most recent clipboard
   text (last one wins) and sends it right after `hello-ack`.
 * **Echo suppression**: a clipboard value received from the peer is never sent back.
@@ -227,9 +240,24 @@ payload     = flags || token                                   (6 bytes)
 * `flags` bit 0 means "the phone agrees to the Mac locking itself". The flags are
   covered by the HMAC, so they cannot be flipped in flight. Other bits are
   reserved and must be zero.
-* The Mac accepts `slot - 1`, `slot` and `slot + 1`, which tolerates a minute of
-  clock skew. Everything else is ignored and logged as a bad token, which is the
-  signal that the two devices disagree about either the pairing code or the time.
+* The Mac accepts any slot within **60 either side of its own**, thirty minutes
+  in each direction. Everything else is ignored and logged as a bad token, which
+  is the signal that the two devices disagree about either the pairing code or
+  the time.
+
+  The width is not about clock skew, it is about Doze. The advertisement is
+  repeated by the controller with no help from the CPU, but the payload is built
+  in the application process, and that process gets no CPU at all while the phone
+  is suspended: measured on a Galaxy S25, the token stood still for 99 seconds in
+  light Doze while the packets kept arriving at -47 dBm, and deep idle stretches
+  the gap much further. A narrow window reads a phone lying on the desk as a
+  phone that walked away, and locks the screen of someone sitting right there.
+
+  What it costs is the replay window. That is a smaller loss than it looks: a
+  replay keeps the Mac **unlocked**, so it has to be broadcast continuously from
+  a recording no older than the window - which means staying in range of the real
+  phone the whole time - and the RSSI thresholds still have to be satisfied from
+  wherever it is broadcast.
 * Forty bits of HMAC are enough here: a forgery achieves nothing but a Mac that
   fails to lock, and there is no feedback channel to guess against.
 
@@ -252,6 +280,17 @@ Company id `0xFFFF` is the value reserved for testing, so no Bluetooth SIG
 assignment is involved. The advertisement is non-connectable: it is a beacon, and
 nothing may open a GATT connection to it. It is rebuilt at every slot boundary,
 which is what publishes the next token.
+
+While the phone is awake that rebuild is driven by an ordinary handler. Because a
+handler does not run at all across a CPU suspend, it is backed by an inexact
+`setAndAllowWhileIdle` alarm roughly every ten minutes - just above the nine that
+Doze permits - so a phone left alone still republishes its token well inside the
+window the Mac accepts.
+
+Being inexact, that alarm is granted a delivery window rather than an instant:
+asked for ten minutes, `dumpsys alarm` reported a latest delivery of about
+seventeen. The thirty minute tolerance above is sized to sit comfortably outside
+that, with room for a vendor ROM that defers it further.
 
 ### Deciding that the user left
 
