@@ -19,8 +19,8 @@ public struct PresenceSettings: Equatable {
 
     public init(
         window: TimeInterval = 20,
-        awayThreshold: Double = -80,
-        nearThreshold: Double = -72,
+        awayThreshold: Double = -90,
+        nearThreshold: Double = -82,
         lostAfter: TimeInterval = 15,
         grace: TimeInterval = 20,
         minSamples: Int = 3
@@ -37,12 +37,32 @@ public struct PresenceSettings: Equatable {
     /// in bursts with quiet spells of up to about seven seconds even with the
     /// phone on the desk, so anything much below fifteen seconds would call a
     /// present phone lost. See the measurement in README.
+    ///
+    /// Every threshold sits far below what a phone in the room actually reads,
+    /// because the signal cannot tell "in a pocket" from "left the building".
+    /// Measured at one desk: a phone lying beside the Mac holds a steady -51 dBm;
+    /// the same phone in a trouser pocket, its owner sitting right there, runs at
+    /// a median of -77 and dips to -86; and a real departure passes through -85 on
+    /// its way to the beacon stopping altogether. The last two overlap completely,
+    /// so a line drawn to catch the departure also catches the pocket - at -75 the
+    /// mean was below it seventy per cent of the time with the phone pocketed, and
+    /// the Mac locked itself in front of its owner.
+    ///
+    /// What marks a departure is therefore the packets ceasing, which is
+    /// `lostAfter`. The thresholds only add the case of a phone still in range but
+    /// genuinely far off, and the presets differ mostly in how quickly they react
+    /// rather than in any accuracy about distance.
+    ///
+    /// For a phone that lives on the desk next to the Mac: at -51 dBm there is
+    /// thirty decibels of headroom under this threshold, so it can afford to be
+    /// the eager one. Carrying the phone in a pocket wants `balanced` or
+    /// `cautious`, whose lines fall below where a pocket bottoms out.
     public static let fast = PresenceSettings(
-        window: 10, awayThreshold: -75, nearThreshold: -68, lostAfter: 15, grace: 10
+        window: 10, awayThreshold: -85, nearThreshold: -80, lostAfter: 15, grace: 10
     )
     public static let balanced = PresenceSettings()
     public static let cautious = PresenceSettings(
-        window: 30, awayThreshold: -85, nearThreshold: -78, lostAfter: 30, grace: 45
+        window: 30, awayThreshold: -93, nearThreshold: -85, lostAfter: 30, grace: 45
     )
 
     /// Name of the matching preset, or nil once the thresholds were edited.

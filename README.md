@@ -328,8 +328,8 @@ that the library actually answers instead of trusting the permission.
   and no connection of any kind - it is one 31 byte advertisement, and nothing is ever scanned or
   connected to from the phone.
   Signal strength is far too noisy to act on directly, so nothing is decided from a single reading: the
-  Mac averages the last 20 seconds, starts a 20 second countdown once that average drops below -80 dBm
-  (or once no packet arrives for 15 s at all), and needs -72 dBm to consider you back. In practice the
+  Mac averages the last 20 seconds, starts a 20 second countdown once that average drops below -90 dBm
+  (or once no packet arrives for 15 s at all), and needs -82 dBm to consider you back. In practice the
   screen locks roughly 25 to 40 seconds after you leave the room, and a hand over the phone or a body
   walking past does nothing at all. For the whole countdown a panel sits in the middle of the screen
   showing the seconds left, with a **Don't lock** button. It is a non-activating panel, so it never takes
@@ -355,9 +355,19 @@ that the library actually answers instead of trusting the permission.
   so both the menu and the *Auto lock* tab show the live average (`Phone: -63 dBm (near)`): walk to where
   you want the lock to happen and read the number. The tab is the place to do it, because the threshold
   field and the reading it is compared against sit next to each other. *Sensitivity* offers three presets
-  - **Fast** (10 s window, -75 dBm, 10 s grace), **Balanced** (the default above) and **Cautious** (30 s
-  window, -85 dBm, 45 s grace) - and *Away threshold* takes a single dBm value while keeping the preset's
+  - **Fast** (10 s window, -85 dBm, 10 s grace), **Balanced** (the default above) and **Cautious** (30 s
+  window, -93 dBm, 45 s grace) - and *Away threshold* takes a single dBm value while keeping the preset's
   hysteresis.
+
+  All three sit far lower than the reading a phone in the room produces, and deliberately so: **the signal
+  cannot tell a pocket from a departure**. Measured at one desk, a phone lying beside the Mac holds a
+  steady -51 dBm; the same phone in a trouser pocket, its owner sitting right there, runs at a median of
+  -77 and dips to -86; a real departure passes through -85 on the way to the beacon stopping altogether.
+  The last two overlap, so a line drawn to catch the departure also catches the pocket - at -75 dBm the
+  average sat below the line **70 % of the time** with the phone pocketed, and the Mac locked in front of
+  its owner. What actually marks a departure is the packets ceasing, which is the 15 s rule above; the
+  thresholds only add the case of a phone still in range but genuinely far away. Pick **Fast** when the
+  phone lives on the desk next to the Mac, and one of the other two when you carry it.
 * **Safe networks.** The lock is worth having in an office, a train or a café and merely irritating at
   your own desk, so the *Safe networks* tab in the Mac's settings holds the Wi-Fi networks on which the
   Mac stands down. Press **+** once while on the network and it is added - no dialog, nothing to fill in.

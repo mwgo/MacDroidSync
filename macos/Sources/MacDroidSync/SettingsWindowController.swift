@@ -579,6 +579,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             presetButtons.append(radio)
             presets.addView(radio, in: .top)
             presets.addView(hint(Self.describe(preset), indent: 18), in: .top)
+            if let purpose = Self.purpose(of: preset) {
+                presets.addView(hint(purpose, indent: 18), in: .top)
+            }
         }
 
         let grid = NSGridView(views: [
@@ -960,6 +963,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             format: "Away below %.0f dBm, back at %.0f dBm, %.0f s average, locks after %.0f s",
             preset.awayThreshold, preset.nearThreshold, preset.window, preset.grace
         )
+    }
+
+    /// What the preset is actually for, on a line of its own below the numbers.
+    /// It goes on its own line deliberately: these labels stretch to fit rather
+    /// than wrap, so the longest of them decides how wide the window ends up, and
+    /// appending this to the numbers made the window far wider than it needs to be.
+    ///
+    /// The numbers alone are not much help in choosing anyway. What decides is
+    /// whether the phone sits on the desk or travels in a pocket, and between
+    /// those two the reading differs by some twenty-five dB.
+    ///
+    /// Nil once the thresholds have been edited by hand, because then none of this
+    /// describes what is actually configured.
+    private static func purpose(of preset: PresenceSettings) -> String? {
+        switch preset.presetName {
+        case "Fast": return "Best with the phone on the desk next to the Mac"
+        case "Balanced": return "A reasonable default when you carry the phone"
+        case "Cautious": return "For a phone kept in a pocket all day"
+        default: return nil
+        }
     }
 
     private func report(title: String, message: String) {
