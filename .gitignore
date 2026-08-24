@@ -19,6 +19,13 @@ android/captures/
 *.dex
 *.class
 
+# Release signing material. Never commit any of this: the keystore and its
+# passwords are what prove a build came from you, and a leaked one lets anyone
+# ship an update over the top of an installed MacDroidSync.
+android/keystore.properties
+*.jks
+*.keystore
+
 # IDE
 .idea/
 .junie/

@@ -145,6 +145,53 @@ Then open the app once and, in *Settings* in the toolbar menu:
 3. Grant **notifications** and **display over other apps**.
 4. Press *Save and reconnect*, go back, and turn on *Keep the clipboard in sync*.
 
+#### Signing
+
+`assembleDebug` needs nothing extra: Android signs debug builds with a throwaway key it manages itself.
+A release build needs your own key, and without one it comes out as `app-release-unsigned.apk`, which no
+phone will install. That is deliberate - the project has to build for anyone who clones it, with or
+without a keystore.
+
+Create a keystore once, somewhere **outside** the repository, and keep it safe. Losing it means never
+being able to update an installed copy again; leaking it lets anyone else ship an update over the top
+of one.
+
+```bash
+keytool -genkeypair -v -keystore ~/keys/macdroidsync.jks -alias macdroidsync \
+    -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Then point the build at it with `android/keystore.properties`. That file is not in the repository and
+must never be - it holds the password to the key - so copy the template next to it and fill in the
+blanks:
+
+```bash
+cd android
+cp keystore.properties.example keystore.properties
+```
+
+```properties
+storeFile=/Users/you/keys/macdroidsync.jks
+storePassword=…
+keyAlias=macdroidsync
+keyPassword=
+```
+
+Leave `keyPassword` empty unless the key has one of its own - that is the usual case, because `keytool`
+offers "RETURN if same as keystore password" and most people take it. Then `chmod 600` the file: the
+passwords sit in it in plain text.
+
+`./gradlew :app:assembleRelease` now produces a signed `app-release.apk`. A build server that cannot
+have the file can pass the same four values as `MDS_STORE_FILE`, `MDS_STORE_PASSWORD`, `MDS_KEY_ALIAS`
+and `MDS_KEY_PASSWORD` instead; the file wins wherever it has a value.
+
+Verify what came out before handing it to anyone:
+
+```bash
+~/Library/Android/sdk/build-tools/*/apksigner verify --print-certs \
+    app/build/outputs/apk/release/app-release.apk
+```
+
 For the photo sync, also in *Settings*: grant **Photos and videos** and **Photo locations**, set the date
 to start from and how many days back to look, then turn on *Send camera photos and videos to the Mac* on
 the main screen. The line under the two date fields spells out the resulting cut-off, because two bounds
