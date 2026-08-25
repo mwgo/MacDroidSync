@@ -91,8 +91,7 @@ lives in *Settings…* instead:
 | `Lock when the phone leaves` | the automatic locking, with the live reading `Phone: -58 dBm (near)` under it |
 | `Pause auto lock for an hour` | gets the automatic locking out of the way for a while |
 | `Photos: 412 imported` | the photo sync in one line, or why it is doing nothing |
-| `Import 4312 photos (18,4 GB)?…` | appears only when a batch is waiting for your go-ahead |
-| `Remove 12 photos from Photos…` | appears when the phone deleted photos this Mac still holds; the only way anything leaves the library |
+| `Photo sync — 12 waiting…` | opens the sync window, where every decision about an individual photo is made |
 | `Sync photos now` | asks the phone to describe its camera folder without waiting for the interval |
 | `Settings…` (⌘,) | the settings window, see below |
 
@@ -225,24 +224,34 @@ bounds do not add up to an obvious answer. Eligibility is decided on **when the 
 on when the file was last touched: copying a file around refreshes its modification time, and a photo
 from last year would otherwise walk back into the window and be sent again.
 
-**Nothing moves before you say so.** The first complete description of the camera folder produces a
-report and imports nothing at all - not even five photos. After that, an everyday batch goes through
-without asking, but anything over 200 items or 2 GiB stops and waits in the menu:
-`Import 4312 photos (18,4 GB)?…`. Approving covers exactly the items you were shown; whatever turns up
-afterwards faces the same gate again.
+**The sync window.** Anything that is not a plain addition waits in `Photo sync…`, a window listing every
+item with what would happen to it - **Add**, **Update**, **Remove**, or **Problem** with the phone's own
+reason. Pick any number of rows and either **Synchronise selected**, which carries out exactly those
+rows, or **Ignore selected**, which drops them from the sync for good: an ignored item is treated as
+synchronised and is never offered again. Ignoring is irreversible, so it asks first.
 
-**Changes and deletions.** A photo edited on the phone arrives as a new asset, and the old one goes on a
-list. A photo deleted on the phone goes on the same list. Nothing on that list leaves the library until
-you press `Remove N photos from Photos…` in the menu, and the reason is **macOS: it puts up its own
-confirmation alert before an app removes anything from the Photos library.** An alert that appears by
-itself, up to twice an hour while a sync runs, would be worse than the wait - so the sync writes the
-deletions down and the removal happens when you ask, in one batch, with one alert. Removed photos go to
-*Recently Deleted*, so a mistake is recoverable for 30 days.
+**What runs by itself, and what waits.** The first complete description of the camera folder produces a
+report and imports nothing at all - not even five photos. After that a plan of *only* additions runs on
+its own, unless it is over 200 items or 2 GiB, which stops and waits like everything else. Any other plan
+waits in the window in full, additions included: if photos are about to be removed, that is the moment to
+look at the whole picture rather than at one half of it. `Confirm new photos in the sync window too`, in
+the Photos settings, makes even plain additions wait.
+
+**Changes and deletions.** A photo edited on the phone arrives as a new asset, and the old one goes on the
+list as **Remove**. A photo deleted on the phone goes on the list too. Nothing on that list leaves the
+library until you ask for it in the window, and the reason is **macOS: it puts up its own confirmation
+alert before an app removes anything from the Photos library.** An alert that appears by itself, up to
+twice an hour while a sync runs, would be worse than the wait - so the sync writes the deletions down and
+the removal happens when you ask, in one batch, with one alert. Removed photos go to *Recently Deleted*,
+so a mistake is recoverable for 30 days.
+
+Ignoring an **Update** refuses that one version rather than the photo: a later, different edit is a
+question nobody has answered yet, and it comes back. Ignoring a **Remove** keeps the photo in Photos and
+stops the question coming back at all.
 
 A batch of disappearances larger than `max(20, 10%)` of what the Mac holds in the window is still written
-down like the rest, but it is called out in the log: at that size it is more likely a fault or a
-permission that was narrowed than real tidying up, and the count in the menu is what you are judging
-before you press Remove.
+down like the rest, but every row of it says so and it is called out in the log: at that size it is more
+likely a fault or a permission that was narrowed than real tidying up.
 
 **What cannot be met, stated once.** Photos offers no way to replace the contents of an existing asset,
 so an edit is an import plus a removal - and any crop, caption or keyword you added on the Mac belongs to
@@ -485,7 +494,8 @@ adb logcat -s MacDroidSync
 | The phone shows no icon although the Mac is awake | If the Mac runs docked with the lid closed, the sync is suspended by design; the Mac menu says `Suspended, the lid is closed`. Open the lid to resume |
 | After a rebuild the Mac cannot see the Photos library | The Photos grant is tied to the code signature too, so a rebuilt bundle is a new app to macOS. The settings tab says `authorized, but the library is not visible`; run `tccutil reset Photos pl.wojas.MacDroidSync`, relaunch, and grant it again |
 | The Photos tab says the library is not visible although access was granted | Either the bundle was rebuilt (row above), or the *System Photo Library* points at a library that is not there. Open Photos holding Option, pick the library, then Settings, General, *Use as System Photo Library* |
-| A photo deleted on the phone is still in Photos | By design: the sync writes the deletion down, and the menu item `Remove N photos from Photos…` carries it out. macOS shows its own confirmation when you do |
+| A photo deleted on the phone is still in Photos | By design: the sync writes the deletion down and lists it in `Photo sync…` as **Remove**. Pick it there and press *Synchronise selected*; macOS shows its own confirmation when you do |
+| Nothing is being imported any more | Something is waiting for a decision: a plan that is not purely additions waits in full. Open `Photo sync…` and either synchronise or ignore what is listed. One item the phone will never send - a video over the size limit, say - holds up the rest until it is ignored |
 | macOS asks whether MacDroidSync may access the Downloads folder | Incoming files are saved there; allow it once. Denying it makes every transfer end with `Failed: …` in the menu and a refusal on the phone |
 | A shared photo differs from the original by a few bytes near the end | That is Android removing the GPS metadata, see *Android strips location metadata* above. The rest of the file is identical |
 | *Send to Mac* does not appear in the share sheet | Some apps only share a preview instead of the file. Try sharing from the gallery or a file manager |

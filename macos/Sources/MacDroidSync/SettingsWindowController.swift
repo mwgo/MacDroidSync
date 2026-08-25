@@ -19,14 +19,13 @@ struct SettingsHooks {
     var downloadsPath: () -> String = { "" }
     var revealDownloads: () -> Void = {}
 
-    /// Photo sync. The window shows what the coordinator decided and offers the
-    /// two things only the operator may set off; it never imports or deletes.
+    /// Photo sync. This tab configures and reports; every decision about an
+    /// individual photo is made in the sync window, which this can open.
     var photoReport: () -> PhotoSyncReport = { PhotoSyncReport() }
     var photoReadiness: () -> String = { "" }
     var photosEnabledChanged: (Bool) -> Void = { _ in }
     var requestPhotoAccess: () -> Void = {}
-    var approvePhotos: () -> Void = {}
-    var removePhotos: () -> Void = {}
+    var openPhotoSyncWindow: () -> Void = {}
     var syncPhotosNow: () -> Void = {}
     var revealPhotoAlbum: () -> Void = {}
 
@@ -71,8 +70,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let photoAccessButton = NSButton(title: "Grant access…", target: nil, action: nil)
     private let photoCountsLabel = NSTextField(labelWithString: "")
     private let photoWaitingLabel = NSTextField(labelWithString: "")
-    private let photoApproveButton = NSButton(title: "Import…", target: nil, action: nil)
-    private let photoRemoveButton = NSButton(title: "Remove…", target: nil, action: nil)
+    private let photoWindowButton = NSButton(title: "Review…", target: nil, action: nil)
+    private let photoApproveAdditionsBox = NSButton(
+        checkboxWithTitle: "Confirm new photos in the sync window too", target: nil, action: nil
+    )
     private let photoWindowLabel = NSTextField(labelWithString: "")
     private let photoSkippedLabel = NSTextField(wrappingLabelWithString: "")
 
@@ -667,10 +668,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func buildPhotosTab() -> NSView {
         photosBox.target = self
         photosBox.action = #selector(togglePhotos)
+        photoApproveAdditionsBox.target = self
+        photoApproveAdditionsBox.action = #selector(togglePhotoApproveAdditions)
         for (button, action) in [
             (photoAccessButton, #selector(grantPhotoAccess)),
-            (photoApproveButton, #selector(approvePhotos)),
-            (photoRemoveButton, #selector(removePhotos)),
+            (photoWindowButton, #selector(openPhotoSyncWindow)),
         ] {
             button.target = self
             button.action = action
@@ -694,16 +696,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                 + "often - because it is the side doing the looking. This Mac decides what to do "
                 + "with it."
             )],
+            [NSGridCell.emptyContentView, photoApproveAdditionsBox],
+            [NSGridCell.emptyContentView, hint(
+                "Off: new photos are added on their own, and only removals, replaced versions and "
+                + "items the phone could not send wait for you. On: everything waits in the sync "
+                + "window, including plain additions."
+            )],
             [label("Photos access:"), row([photoAccessLabel, photoAccessButton])],
             [label("In Photos:"), photoCountsLabel],
-            [label("Waiting:"), row([photoWaitingLabel, photoApproveButton, photoRemoveButton])],
+            [label("Waiting:"), row([photoWaitingLabel, photoWindowButton])],
             [label("This window:"), photoWindowLabel],
             [label("Not sent:"), photoSkippedLabel],
             [NSGridCell.emptyContentView, row([button("Sync photos now", #selector(syncPhotosNow))])],
             [NSGridCell.emptyContentView, hint(
-                "Nothing is imported before you have seen the first report, and a large batch waits "
-                + "for you too. Photos deleted on the phone are written down and removed when you press "
-                + "Remove - macOS asks for a confirmation, and an alert appearing by itself twice an "
+                "Anything that is not a plain addition waits in the photo sync window, where each "
+                + "item says what would happen to it. Nothing leaves Photos until you ask for it "
+                + "there - macOS asks for a confirmation, and an alert appearing by itself twice an "
                 + "hour would be worse than the wait. Removed photos go to Recently Deleted, so there "
                 + "are 30 days in which to change your mind."
             )],
@@ -724,14 +732,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         hooks.requestPhotoAccess()
     }
 
-    @objc private func approvePhotos() {
-        hooks.approvePhotos()
+    @objc private func togglePhotoApproveAdditions() {
+        Settings.shared.photosApproveAdditions = photoApproveAdditionsBox.state == .on
+        Log.info("Confirming additions \(Settings.shared.photosApproveAdditions ? "on" : "off")")
         refreshAfterChange()
     }
 
-    @objc private func removePhotos() {
-        hooks.removePhotos()
-        refreshAfterChange()
+    /// Opens the window where the decisions are made. Nothing changes here, so
+    /// there is nothing to refresh afterwards.
+    @objc private func openPhotoSyncWindow() {
+        hooks.openPhotoSyncWindow()
     }
 
     @objc private func syncPhotosNow() {
@@ -747,19 +757,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func refreshPhotos() {
         let report = hooks.photoReport()
         photosBox.state = Settings.shared.photosEnabled ? .on : .off
+        photoApproveAdditionsBox.state = Settings.shared.photosApproveAdditions ? .on : .off
         photoAccessLabel.stringValue = hooks.photoReadiness()
         photoCountsLabel.stringValue = "\(report.imported) imported, \(report.removedByUser) removed here"
+            + (report.ignored > 0 ? ", \(report.ignored) ignored" : "")
         var waiting: [String] = []
         if report.awaitingApproval > 0 {
-            waiting.append("\(report.awaitingApproval) to import "
+            waiting.append("\(report.awaitingApproval) to transfer "
                 + "(\(ByteCountFormatter.string(fromByteCount: report.awaitingBytes, countStyle: .file)))")
         }
         if report.pendingDeletions > 0 {
             waiting.append("\(report.pendingDeletions) to remove")
         }
+        let others = report.pendingDecisions - report.awaitingApproval - report.pendingDeletions
+        if others > 0 { waiting.append("\(others) with a problem") }
         photoWaitingLabel.stringValue = waiting.isEmpty ? "nothing" : waiting.joined(separator: ", ")
-        photoApproveButton.isHidden = report.awaitingApproval == 0
-        photoRemoveButton.isHidden = report.pendingDeletions == 0
+        photoWindowButton.isHidden = report.pendingDecisions == 0
 
         if let refusal = report.refusal {
             photoWindowLabel.stringValue = "the phone is not describing its camera folder: \(refusal)"

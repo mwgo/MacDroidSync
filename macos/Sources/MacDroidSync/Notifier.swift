@@ -14,6 +14,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private static let category = "file-received"
     private static let showInFinder = "show-in-finder"
     private static let pathKey = "path"
+    private static let decisionCategory = "photo-decision"
+    private static let reviewPhotos = "review-photos"
+    /// One fixed identifier, so a new banner about the same standing list
+    /// replaces the previous one instead of piling up behind it.
+    private static let decisionIdentifier = "photo-decision"
+
+    /// The banner asked for the photo sync window.
+    var onOpenPhotoSync: (() -> Void)?
 
     /// Outside an app bundle the notification center traps instead of failing,
     /// so it is never touched in that case (for example when run from the CLI).
@@ -32,13 +40,24 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             title: "Show in Finder",
             options: [.foreground]
         )
+        let review = UNNotificationAction(
+            identifier: Self.reviewPhotos,
+            title: "Review…",
+            options: [.foreground]
+        )
         center.setNotificationCategories([
             UNNotificationCategory(
                 identifier: Self.category,
                 actions: [reveal],
                 intentIdentifiers: [],
                 options: []
-            )
+            ),
+            UNNotificationCategory(
+                identifier: Self.decisionCategory,
+                actions: [review],
+                intentIdentifiers: [],
+                options: []
+            ),
         ])
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error {
@@ -67,6 +86,17 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(content)
     }
 
+    /// Says that photos are waiting, and nothing more: the window is where the
+    /// decision is made, and this is not urgent enough for a sound.
+    func photosNeedDecision(summary: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Photos waiting for a decision"
+        content.body = summary
+        content.categoryIdentifier = Self.decisionCategory
+        content.sound = nil
+        post(content, identifier: Self.decisionIdentifier)
+    }
+
     private func post(_ content: UNMutableNotificationContent, identifier: String = UUID().uuidString) {
         guard isAvailable, isAuthorized else { return }
         let request = UNNotificationRequest(
@@ -93,13 +123,20 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         completionHandler([.banner, .sound])
     }
 
-    /// Both the action and a plain tap reveal the file in Finder.
+    /// Both the action and a plain tap do the obvious thing for that banner.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         defer { completionHandler() }
+        if response.notification.request.content.categoryIdentifier == Self.decisionCategory {
+            guard response.actionIdentifier == Self.reviewPhotos
+                || response.actionIdentifier == UNNotificationDefaultActionIdentifier
+            else { return }
+            DispatchQueue.main.async { [weak self] in self?.onOpenPhotoSync?() }
+            return
+        }
         guard response.actionIdentifier == Self.showInFinder
             || response.actionIdentifier == UNNotificationDefaultActionIdentifier
         else { return }

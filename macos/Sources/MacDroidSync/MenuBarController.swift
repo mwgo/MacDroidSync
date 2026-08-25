@@ -20,8 +20,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         readAlbumIdentifier: { Settings.shared.photosAlbumIdentifier },
         writeAlbumIdentifier: { Settings.shared.photosAlbumIdentifier = $0 }
     )
-    private lazy var photoSync = PhotoSyncCoordinator(importer: photoImporter) { [weak self] keys, id in
-        self?.server.requestPhotos(keys: keys, manifestId: id)
+    private lazy var photoSync = PhotoSyncCoordinator(
+        importer: photoImporter,
+        approvesAdditions: { Settings.shared.photosApproveAdditions }
+    ) { [weak self] keys, id in
+        // Whether the ask reached the phone decides whether those rows may be
+        // crossed off the list, so the answer is carried back rather than dropped.
+        self?.server.requestPhotos(keys: keys, manifestId: id) ?? false
     }
     private var photoReport = PhotoSyncReport()
     /// The photo in flight, shown on the photo line while it arrives.
@@ -42,8 +47,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let presenceMenuItem = NSMenuItem(title: "Auto lock is off", action: nil, keyEquivalent: "")
     private let snoozeMenuItem = NSMenuItem(title: "Pause auto lock for an hour", action: #selector(toggleSnooze), keyEquivalent: "")
     private let photoStatusMenuItem = NSMenuItem(title: "Photo sync is off", action: nil, keyEquivalent: "")
-    private let photoApproveMenuItem = NSMenuItem(title: "Import photos…", action: #selector(approvePhotos), keyEquivalent: "")
-    private let photoRemoveMenuItem = NSMenuItem(title: "Remove photos from Photos…", action: #selector(removePhotos), keyEquivalent: "")
+    private let photoWindowMenuItem = NSMenuItem(title: "Photo sync…", action: #selector(showPhotoSync(_:)), keyEquivalent: "")
     private let photoSyncNowMenuItem = NSMenuItem(title: "Sync photos now", action: #selector(syncPhotosNow), keyEquivalent: "")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
     private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
@@ -53,6 +57,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Built on first use: the window is the exception in a menu bar app, not
     /// something every session needs.
     private var settingsWindow: SettingsWindowController?
+    /// Same rule as the settings window, and it never opens by itself: the
+    /// operator asks for it from the menu or from a notification.
+    private var photoSyncWindow: PhotoSyncWindowController?
+    /// Keys the operator has already been told about, so a list that stands for
+    /// a week does not raise a banner on every cycle.
+    private var notifiedPhotoKeys: Set<String> = []
+    private var lastPhotoNoticeAt: Date?
+    /// The first report after launch says nothing: a backlog from before the
+    /// restart is not news.
+    private var photoNoticesArmed = false
     private lazy var serviceProvider = ServiceProvider { [weak self] urls in
         self?.enqueue(files: urls)
     }
@@ -63,6 +77,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private var lastSentSummary: String?
     private var fileStatus: String?
     private var lastReceivedFile: URL?
+    /// A file arrived and nobody has looked at the menu since.
+    ///
+    /// The other half of the dot in the menu bar, and the half that clears
+    /// itself: a delivered file is news until it has been seen, while a photo
+    /// waiting for a decision stays a request until it is answered.
+    private var hasUnseenFile = false
     private var outgoingStatus: String?
     /// Queue entry currently in flight, so its ack can clear the right item.
     private var sendingItemId: String?
@@ -116,6 +136,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         snoozeWorkItem?.cancel()
         countdown.hide()
         settingsWindow?.close()
+        photoSyncWindow?.close()
         lockStateObservers.forEach(DistributedNotificationCenter.default().removeObserver)
         lockStateObservers.removeAll()
         presence.stop()
@@ -136,7 +157,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in [
             pingMenuItem, sendMenuItem, sendFilesMenuItem, fileMenuItem, downloadsMenuItem,
             autoLockMenuItem, snoozeMenuItem, settingsMenuItem, quitMenuItem,
-            photoApproveMenuItem, photoRemoveMenuItem, photoSyncNowMenuItem,
+            photoWindowMenuItem, photoSyncNowMenuItem,
         ] {
             item.target = self
         }
@@ -160,11 +181,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(presenceMenuItem)
         menu.addItem(snoozeMenuItem)
         menu.addItem(.separator())
-        // In order of what needs a decision: the state, then the two things only
-        // the operator may set off, then the manual run.
+        // In order of what needs a decision: the state, then the window where
+        // every decision is made, then the manual run.
         menu.addItem(photoStatusMenuItem)
-        menu.addItem(photoApproveMenuItem)
-        menu.addItem(photoRemoveMenuItem)
+        menu.addItem(photoWindowMenuItem)
         menu.addItem(photoSyncNowMenuItem)
         menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
@@ -177,6 +197,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        // Opening the menu is seeing it: the file line is right there.
+        hasUnseenFile = false
         refreshMenuTitles()
     }
 
@@ -209,14 +231,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         sendFilesMenuItem.isEnabled = true
         outgoingMenuItem.title = outgoingSummary
 
+        renderIcon()
         photoStatusMenuItem.title = photoSummary ?? "Photo sync is off"
-        // The two destructive-or-committing actions only appear as available when
-        // there is really something to decide about.
-        photoApproveMenuItem.isHidden = photoReport.awaitingApproval == 0
-        photoApproveMenuItem.title = "Import \(photoReport.awaitingApproval) photos "
-            + "(\(Self.bytes(photoReport.awaitingBytes)))…"
-        photoRemoveMenuItem.isHidden = photoReport.pendingDeletions == 0
-        photoRemoveMenuItem.title = "Remove \(photoReport.pendingDeletions) photos from Photos…"
+        // Always visible, unlike the two items it replaces: this is the only way
+        // into the window, and an entry saying "nothing waiting" is better than
+        // one that disappears.
+        photoWindowMenuItem.title = photoReport.pendingDecisions == 0
+            ? "Photo sync…"
+            : "Photo sync — \(photoReport.pendingDecisions) waiting…"
         photoSyncNowMenuItem.isEnabled = connected && settings.photosEnabled
 
         fileMenuItem.title = fileStatus ?? "No files received yet"
@@ -271,10 +293,32 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private func render(state: PeerState) {
         displayState = state
-        statusItem.button?.image = StatusIcon.image(for: state)
-        statusItem.button?.alphaValue = StatusIcon.alpha(for: state)
-        statusItem.button?.toolTip = StatusIcon.accessibilityDescription(for: state)
+        renderIcon()
         refreshMenuTitles()
+    }
+
+    /// The icon, and the dot that says the sync is waiting for an answer.
+    ///
+    /// Separate from `render(state:)` because the two things that decide what
+    /// the icon looks like change independently: the connection comes from the
+    /// server, and the dot from a photo cycle that may not have touched the
+    /// connection at all.
+    private func renderIcon() {
+        let decisions = settings.photosEnabled ? photoReport.pendingDecisions : 0
+        let attention = decisions > 0 || hasUnseenFile
+        let button = statusItem.button
+        button?.image = StatusIcon.image(for: displayState, needsAttention: attention)
+        button?.alphaValue = StatusIcon.alpha(for: displayState, needsAttention: attention)
+
+        var lines = [StatusIcon.accessibilityDescription(for: displayState)]
+        if decisions > 0 { lines.append("\(decisions) photo item(s) waiting for a decision") }
+        if hasUnseenFile, let name = lastReceivedFile?.lastPathComponent {
+            lines.append("received \(name)")
+        }
+        button?.toolTip = lines.joined(separator: " - ")
+        // The dot is a shape and says nothing on its own, so the reason for it
+        // goes where VoiceOver will read it.
+        button?.setAccessibilityLabel(button?.toolTip)
     }
 
     /// Brief icon flash whenever a clipboard actually moves.
@@ -327,6 +371,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             guard let self else { return }
             self.lastReceivedFile = url
             self.fileStatus = "Received: \(url.lastPathComponent)"
+            self.hasUnseenFile = true
             self.fileMenuItem.toolTip = url.path
             self.notifier.fileReceived(at: url, from: self.server.connectedDeviceName ?? "your phone")
             self.flashTransfer()
@@ -703,6 +748,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func revealLastFile() {
+        hasUnseenFile = false
         guard let url = lastReceivedFile else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
@@ -750,6 +796,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             self?.refreshMenuTitles()
             self?.settingsWindow?.refreshFromMenu()
         }
+        // Deliberately not hung off `refreshMenuTitles`, which runs several
+        // times a second during a transfer: reloading the table that often
+        // would fight whoever is reading it.
+        photoSync.onPendingChanged = { [weak self] _ in
+            self?.photoSyncWindow?.refreshFromMenu()
+        }
+        photoSync.onDecisionsNeeded = { [weak self] rows in
+            self?.announcePhotoDecisions(rows)
+        }
+        // The banner's only job is to open the window.
+        notifier.onOpenPhotoSync = { [weak self] in self?.showPhotoSync(nil) }
         photoImporter.onImported = { [weak self] name in
             Log.info("Added \(name) to Photos")
             // The count has to be re-read, not remembered: the import finishes on
@@ -776,6 +833,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             self.photoReport = self.photoSync.report
             self.refreshMenuTitles()
             self.settingsWindow?.refreshFromMenu()
+            self.photoSyncWindow?.refreshFromMenu()
         }
     }
 
@@ -786,29 +844,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if let refusal = photoReport.refusal { return "Photos: \(refusal)" }
         let readiness = photoImporter.readiness
         guard readiness.canImport else { return "Photos: \(readiness.summary)" }
-        if photoReport.awaitingApproval > 0 {
-            return "Photos: \(photoReport.awaitingApproval) waiting for your go-ahead"
+        if photoReport.pendingDecisions > 0 {
+            return "Photos: \(photoReport.pendingDecisions) waiting for a decision"
         }
         return "Photos: \(photoReport.imported) imported"
-    }
-
-    @objc private func approvePhotos() {
-        photoSync.approveWaitingPlan()
-    }
-
-    /// The one place anything leaves the Photos library. macOS puts its own
-    /// confirmation in front of this, which is exactly why it is a menu item: an
-    /// alert that appears by itself, twice an hour, is not acceptable.
-    @objc private func removePhotos() {
-        switch photoSync.removeWaitingPhotos() {
-        case .cancelledByUser:
-            Log.info("Removal cancelled; the photos stay on the list")
-        case .failed(let reason):
-            notifier.fileFailed(name: "Photos", reason: reason)
-        case .deleted, .nothingToDo:
-            break
-        }
-        refreshMenuTitles()
     }
 
     @objc private func syncPhotosNow() {
@@ -828,6 +867,83 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             }
             : Log.info("Photos access: \(photoImporter.readiness.summary)")
     }
+
+    // MARK: - The sync window
+
+    @objc private func showPhotoSync(_ sender: Any?) {
+        if photoSyncWindow == nil {
+            photoSyncWindow = PhotoSyncWindowController(hooks: makePhotoSyncHooks())
+        }
+        photoSyncWindow?.present()
+    }
+
+    private func makePhotoSyncHooks() -> PhotoSyncHooks {
+        PhotoSyncHooks(
+            pendingActions: { [weak self] in self?.photoSync.pendingActions ?? [] },
+            synchronize: { [weak self] keys in
+                guard let self else { return PhotoActionOutcome() }
+                let outcome = self.photoSync.synchronize(keys: keys)
+                self.refreshPhotoReport()
+                return outcome
+            },
+            ignore: { [weak self] keys in
+                guard let self else { return }
+                self.photoSync.ignore(keys: keys)
+                self.refreshPhotoReport()
+            },
+            syncNow: { [weak self] in self?.syncPhotosNow() },
+            status: { [weak self] in
+                guard let self else { return nil }
+                guard Settings.shared.photosEnabled else {
+                    return "Photo sync is switched off in Settings."
+                }
+                if let refusal = self.photoReport.refusal {
+                    return "The phone is not describing its camera folder: \(refusal)"
+                }
+                let readiness = self.photoImporter.readiness
+                return readiness.canImport ? nil : "Photos access: \(readiness.summary)"
+            }
+        )
+    }
+
+    /// Posts at most one banner for one list, and only for rows nobody has seen.
+    ///
+    /// Five separate brakes, because the cycle runs twice an hour and the list
+    /// can stand for days: only unseen keys, not while the window is open, not
+    /// within six hours of the last one unless a real wave arrived, nothing on
+    /// the first report after launch, and one fixed notification identifier so a
+    /// new banner replaces the old rather than stacking on it.
+    private func announcePhotoDecisions(_ rows: [PhotoPendingAction]) {
+        guard Settings.shared.photosEnabled else { return }
+        let keys = Set(rows.map(\.key))
+        guard photoNoticesArmed else {
+            photoNoticesArmed = true
+            notifiedPhotoKeys = keys
+            return
+        }
+        guard !keys.isEmpty else {
+            notifiedPhotoKeys = []
+            return
+        }
+        guard photoSyncWindow?.window?.isVisible != true else {
+            notifiedPhotoKeys = keys
+            return
+        }
+        let fresh = keys.subtracting(notifiedPhotoKeys)
+        guard !fresh.isEmpty else { return }
+        if let last = lastPhotoNoticeAt,
+           Date().timeIntervalSince(last) < Self.photoNoticeInterval,
+           fresh.count < Self.photoNoticeBurst {
+            notifiedPhotoKeys = keys
+            return
+        }
+        notifiedPhotoKeys = keys
+        lastPhotoNoticeAt = Date()
+        notifier.photosNeedDecision(summary: PhotoPendingAction.summary(of: rows))
+    }
+
+    private static let photoNoticeInterval: TimeInterval = 6 * 3600
+    private static let photoNoticeBurst = 25
 
     // MARK: - Settings
 
@@ -876,8 +992,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 // put a system alert behind whatever the user is looking at.
                 self?.requestPhotoAccess()
             },
-            approvePhotos: { [weak self] in self?.approvePhotos() },
-            removePhotos: { [weak self] in self?.removePhotos() },
+            openPhotoSyncWindow: { [weak self] in self?.showPhotoSync(nil) },
             syncPhotosNow: { [weak self] in self?.syncPhotosNow() },
             revealPhotoAlbum: {
                 guard let photos = NSWorkspace.shared.urlForApplication(

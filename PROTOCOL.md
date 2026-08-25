@@ -440,7 +440,10 @@ would read as a deletion.
 ### What the Mac does with it
 
 Nothing, until it is told. The first complete manifest produces a report and
-imports nothing; a batch over the configured threshold parks and waits.
+imports nothing; a batch over the configured threshold parks and waits. So does
+any plan that is not purely additions - a replaced version, a deletion, or an
+item the phone listed but will not send parks the whole plan in the sync window,
+where the operator decides row by row.
 
 Deletions are recorded and carried out only when the operator asks, in one batch.
 That is not caution for its own sake: macOS shows a confirmation alert before an

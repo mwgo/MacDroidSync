@@ -28,6 +28,7 @@ public final class Settings: SyncConfiguration {
         static let autoLockSnoozeUntil = "autoLockSnoozeUntil"
         static let photosEnabled = "photosEnabled"
         static let photosAlbumIdentifier = "photosAlbumIdentifier"
+        static let photosApproveAdditions = "photosApproveAdditions"
     }
 
     private let defaults = UserDefaults.standard
@@ -172,6 +173,16 @@ public final class Settings: SyncConfiguration {
     public var photosEnabled: Bool {
         get { defaults.bool(forKey: Keys.photosEnabled) }
         set { defaults.set(newValue, forKey: Keys.photosEnabled) }
+    }
+
+    /// Whether plain additions wait in the sync window as well.
+    ///
+    /// Off by default, and the default is the argument: a new photo turning up
+    /// is this feature working, not a decision. Removals, replaced versions and
+    /// anything the phone refused to send always wait, whatever this says.
+    public var photosApproveAdditions: Bool {
+        get { defaults.bool(forKey: Keys.photosApproveAdditions) }
+        set { defaults.set(newValue, forKey: Keys.photosApproveAdditions) }
     }
 
     /// The album imports go into, by identifier rather than by title: titles are

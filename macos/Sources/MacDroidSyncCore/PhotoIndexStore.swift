@@ -66,6 +66,32 @@ public final class PhotoIndexStore {
         }
     }
 
+    /// Writes a row only when the key is unknown.
+    ///
+    /// This is how a photo nobody has ever fetched gets ignored: the row is a
+    /// stub, holding no asset, saying only "never offer this again". It must
+    /// never overwrite a live `imported` row, which is the whole reason it is
+    /// not a plain `upsert`.
+    public func upsertIfAbsent(_ entry: PhotoIndexEntry) {
+        queue.sync {
+            guard entries[entry.key] == nil else { return }
+            entries[entry.key] = entry
+            persist()
+        }
+    }
+
+    /// Records that the operator refused this particular version of a photo.
+    /// The row keeps its state, so the Mac carries on noticing if the photo
+    /// later leaves the phone for real.
+    public func setIgnoredVersion(key: String, fingerprint: String) {
+        queue.sync {
+            guard var entry = entries[key] else { return }
+            entry.ignoredVersion = fingerprint
+            entries[key] = entry
+            persist()
+        }
+    }
+
     public func mark(_ keys: [String], as state: PhotoIndexState) {
         guard !keys.isEmpty else { return }
         queue.sync {

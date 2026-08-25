@@ -1,5 +1,22 @@
 import Foundation
 
+/// One row the operator refused in the sync window, and how to record that.
+///
+/// Three cases rather than one, because "ignore" means something different
+/// depending on what this Mac is holding for that key, and two of the three
+/// would cost something real if they were collapsed into the third.
+public enum PhotoIgnore: Equatable {
+    /// Nothing here yet - a photo never fetched, or one the phone will not send.
+    /// A stub row records the refusal.
+    case never(PhotoItem)
+    /// An edit of a photo we hold. Only *this version* is refused; the row and
+    /// its asset stay as they are.
+    case version(key: String, item: PhotoItem)
+    /// A pending removal the operator does not want carried out. The asset stays
+    /// in Photos and the question does not come back.
+    case keepInPhotos(key: String)
+}
+
 /// Everything the Mac does with a photo once its bytes have arrived.
 ///
 /// This is where the index and the library meet, and it holds no PhotoKit types
@@ -7,8 +24,8 @@ import Foundation
 /// including the ones that delete.
 ///
 /// The rule the whole type is arranged around: **nothing is ever removed from
-/// Photos except from a menu item the operator clicked.** A deletion coming from
-/// the phone only ever writes down an intention.
+/// Photos except from a row the operator picked in the sync window.** A deletion
+/// coming from the phone only ever writes down an intention.
 public final class PhotoImporter {
 
     public struct Acceptance: Equatable {
@@ -50,6 +67,10 @@ public final class PhotoImporter {
     public var importedCount: Int { index.count(in: .imported) }
     public var pendingDeletionCount: Int { index.count(in: .pendingDelete) }
     public var removedByUserCount: Int { index.count(in: .removedByUser) }
+    public var ignoredCount: Int { index.count(in: .ignoredByUser) }
+    /// The assets waiting to leave Photos, so the window can list them rather
+    /// than only count them.
+    public var waitingDeletions: [PhotoIndexEntry] { index.pendingDeletions }
     public var isFirstRun: Bool { index.isFirstRun }
     public var indexedKeys: [PhotoIndexEntry] { index.all }
 
@@ -68,7 +89,12 @@ public final class PhotoImporter {
             // The user threw this away here. That decision outranks the phone,
             // and it holds even when the phone has edited the bytes since.
             return .no("removed from Photos on this Mac")
+        case .ignoredByUser:
+            return .no("ignored in the photo sync window")
         case .imported, .pendingDelete:
+            // Checked before the hash comparison: this is the version the
+            // operator refused, and the phone may already be sending it.
+            if entry.refuses(sha256: sha256) { return .no("this version was ignored") }
             guard let sha256, sha256.lowercased() == entry.sha256.lowercased() else { return .yes }
             return .no("already in Photos")
         case .deletedByUs:
@@ -166,7 +192,7 @@ public final class PhotoImporter {
     // MARK: - What the phone says is gone
 
     /// Writes down that these keys left the phone. Nothing is removed from
-    /// Photos here, by design: that waits for the menu item.
+    /// Photos here, by design: that waits for the sync window.
     public func markGone(_ keys: [String]) {
         guard !keys.isEmpty else { return }
         index.mark(keys, as: .pendingDelete)
@@ -185,6 +211,48 @@ public final class PhotoImporter {
 
     public func rename(from: String, to: String) {
         index.rename(from: from, to: to)
+    }
+
+    // MARK: - What the operator refuses
+
+    /// Applies the operator's "ignore" to one row, in the only way that suits it.
+    ///
+    /// Three cases rather than one flag, because the three rows differ in what
+    /// this Mac is holding, and collapsing them would cost something real in two
+    /// of the three.
+    public func ignore(_ decisions: [PhotoIgnore]) {
+        guard !decisions.isEmpty else { return }
+        var keepInPhotos: [String] = []
+        for decision in decisions {
+            switch decision {
+            case .never(let item):
+                // Nothing here to protect, so a stub row carries the refusal.
+                // `upsertIfAbsent` because a live row must never be flattened
+                // by one of these.
+                index.upsertIfAbsent(
+                    PhotoIndexEntry(
+                        key: item.key,
+                        sha256: item.sha256?.lowercased() ?? "",
+                        size: item.size,
+                        captureAt: item.captureAt,
+                        localIdentifier: nil,
+                        state: .ignoredByUser,
+                        importedAt: Message.now()
+                    )
+                )
+            case .version(let key, let item):
+                // The asset stays, and so does its `imported` state: that is
+                // what keeps a later real deletion on the phone visible here.
+                index.setIgnoredVersion(key: key, fingerprint: PhotoIndexEntry.fingerprint(of: item))
+            case .keepInPhotos(let key):
+                // Deliberately not `cancelPendingDeletion`, which would put the
+                // row back to `imported` and have the next manifest ask again.
+                keepInPhotos.append(key)
+            }
+        }
+        index.mark(keepInPhotos, as: .ignoredByUser)
+        Log.info("Ignored \(decisions.count) photo item(s) for good")
+        report()
     }
 
     /// Notices what the user removed in Photos themselves. Anything our index
@@ -217,12 +285,18 @@ public final class PhotoImporter {
 
     /// Removes what is waiting, in one batch, so macOS asks once.
     ///
-    /// Only ever called from the menu item. The batch is pruned first: anything
-    /// the user already deleted by hand is written off without appearing in the
-    /// alert, so the common case shows no alert at all.
-    public func flushDeletions() -> PhotoDeletionOutcome {
+    /// Only ever called from something the operator clicked. The batch is pruned
+    /// first: anything the user already deleted by hand is written off without
+    /// appearing in the alert, so the common case shows no alert at all.
+    ///
+    /// `keys` narrows it to the rows the operator picked in the sync window;
+    /// nil keeps the old meaning, "everything waiting". Whatever the subset, it
+    /// is still one call into the library, so macOS still asks once.
+    public func flushDeletions(keys: Set<String>? = nil) -> PhotoDeletionOutcome {
         queue.sync {
-            let waiting = index.pendingDeletions
+            let waiting = keys.map { picked in
+                index.pendingDeletions.filter { picked.contains($0.key) }
+            } ?? index.pendingDeletions
             guard !waiting.isEmpty else { return .nothingToDo }
             let identifiers = waiting.compactMap(\.localIdentifier)
             let alive = library.existing(identifiers)

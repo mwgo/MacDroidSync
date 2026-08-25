@@ -154,6 +154,25 @@ public enum PhotoIndexState: String, Codable, Equatable {
     /// rejected this photo here, so if it reappears on the phone - restored from
     /// the phone's own bin, say - it is welcome back.
     case deletedByUs
+    /// The operator ignored this in the photo sync window. Sticky, exactly like
+    /// `removedByUser` and for the same reason: a decision taken here outranks
+    /// whatever the phone says about it afterwards.
+    case ignoredByUser
+
+    /// The two states that mean "never again, whatever the phone offers".
+    public var isRefusedForever: Bool { self == .removedByUser || self == .ignoredByUser }
+
+    /// An unknown state is read as the most cautious thing this file can say.
+    ///
+    /// Without this, a single row written by a newer build makes the decode of
+    /// the *whole* array throw, `PhotoIndexStore.load` reads that as "start
+    /// empty", and every "never again" recorded here is forgotten - the feature
+    /// then re-imports the lot. Falling back to `removedByUser` means neither
+    /// fetch nor delete: only `imported` rows are ever deletion candidates.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PhotoIndexState(rawValue: raw) ?? .removedByUser
+    }
 }
 
 /// One row of `photos-index.json`: what the Mac has, keyed by the phone's key.
@@ -167,6 +186,17 @@ public struct PhotoIndexEntry: Codable, Equatable {
     public var localIdentifier: String?
     public var state: PhotoIndexState
     public var importedAt: Int64
+    /// The version of this photo the operator refused in the sync window.
+    ///
+    /// Optional on purpose, and not merely for tidiness: the compiler
+    /// synthesises `decodeIfPresent` for an optional, so an index written before
+    /// this field existed still loads. A non-optional with a default value would
+    /// throw instead, and the store reads a throw as "start from empty".
+    ///
+    /// Ignoring an *edit* is recorded here rather than by moving the row to
+    /// `ignoredByUser`, because that would take the row out of the `imported`
+    /// set - and that set is what notices the photo later leaving the phone.
+    public var ignoredVersion: String?
 
     public init(
         key: String,
@@ -175,7 +205,8 @@ public struct PhotoIndexEntry: Codable, Equatable {
         captureAt: Int64,
         localIdentifier: String?,
         state: PhotoIndexState,
-        importedAt: Int64
+        importedAt: Int64,
+        ignoredVersion: String? = nil
     ) {
         self.key = key
         self.sha256 = sha256
@@ -184,6 +215,31 @@ public struct PhotoIndexEntry: Codable, Equatable {
         self.localIdentifier = localIdentifier
         self.state = state
         self.importedAt = importedAt
+        self.ignoredVersion = ignoredVersion
+    }
+
+    /// How a refused version is recognised when it comes round again.
+    ///
+    /// The hash when there is one, and otherwise size and capture time - which
+    /// is exactly what `PhotoDelta.unchanged` falls back to when the phone has
+    /// run out of hashing budget. Recording anything else would mean an ignored
+    /// edit came back on the next cycle whenever the phone was busy.
+    public static func fingerprint(of item: PhotoItem) -> String {
+        if let hash = item.sha256 { return hash.lowercased() }
+        return "s\(item.size):t\(item.captureAt)"
+    }
+
+    /// Whether this is the exact version the operator refused for this key.
+    /// A later, *different* edit is a new question and is not covered by this.
+    public func refuses(_ item: PhotoItem) -> Bool {
+        guard let ignored = ignoredVersion else { return false }
+        return Self.fingerprint(of: item) == ignored
+    }
+
+    /// The same question from the transfer path, which knows only a hash.
+    public func refuses(sha256: String?) -> Bool {
+        guard let sha256, let ignored = ignoredVersion else { return false }
+        return sha256.lowercased() == ignored
     }
 }
 
@@ -283,7 +339,12 @@ public enum PhotoDelta {
         // 1. What to fetch, and what a changed hash means.
         for item in items {
             guard item.isFetchable else {
-                plan.excluded.append(item)
+                // Not reported once the operator has refused it. Without this an
+                // item the phone will never send - one photo with no location,
+                // say - would park every cycle for the rest of time.
+                if byKey[item.key]?.state.isRefusedForever != true {
+                    plan.excluded.append(item)
+                }
                 continue
             }
             guard let entry = byKey[item.key] else {
@@ -300,9 +361,9 @@ public enum PhotoDelta {
                 continue
             }
             switch entry.state {
-            case .removedByUser:
-                // Deliberately nothing: the user's deletion here outranks the
-                // phone, and that holds for edited bytes too.
+            case .removedByUser, .ignoredByUser:
+                // Deliberately nothing: a decision taken on this Mac outranks
+                // the phone, and that holds for edited bytes too.
                 continue
             case .pendingDelete:
                 // It is back. Restoring from the phone's bin must not cost a
@@ -317,7 +378,11 @@ public enum PhotoDelta {
                 // Nothing of it is left here, so the hash cannot be compared.
                 plan.want.append(item)
             case .imported:
-                if !unchanged(item, entry) { plan.want.append(item) }
+                // A refused edit is not wanted; a *different* later edit is,
+                // because that is a question nobody has answered yet.
+                if !unchanged(item, entry), !entry.refuses(item) {
+                    plan.want.append(item)
+                }
             }
         }
 

@@ -131,6 +131,59 @@ final class PhotoIndexStoreTests: XCTestCase {
         store.removeAll()
         XCTAssertFalse(FileManager.default.fileExists(atPath: storeURL.path))
     }
+
+    // MARK: - Reading a file a newer build wrote
+
+    /// One unrecognised state used to take the whole file with it: the decode of
+    /// the array threw, the store read that as "start from empty", and every
+    /// "never again" recorded here was forgotten - so the next cycle re-imported
+    /// the lot. An unknown state now reads as the most cautious thing there is.
+    func testAnUnknownStateIsReadCautiouslyAndKeepsTheRestOfTheFile() throws {
+        let json = """
+        [{"key":"a","sha256":"aa","size":1,"captureAt":1,"state":"imported","importedAt":1},
+         {"key":"b","sha256":"bb","size":1,"captureAt":1,"state":"somethingNewer","importedAt":1}]
+        """
+        try Data(json.utf8).write(to: storeURL)
+
+        let store = PhotoIndexStore(url: storeURL)
+        XCTAssertEqual(store.all.count, 2, "one odd row must not empty the index")
+        XCTAssertEqual(store.entry(for: "a")?.state, .imported)
+        XCTAssertEqual(store.entry(for: "b")?.state, .removedByUser,
+                       "neither fetched nor deleted")
+    }
+
+    func testAFileWrittenBeforeIgnoringExistedStillLoads() throws {
+        let json = """
+        [{"key":"a","sha256":"aa","size":1,"captureAt":1,"state":"imported","importedAt":1}]
+        """
+        try Data(json.utf8).write(to: storeURL)
+        let store = PhotoIndexStore(url: storeURL)
+        XCTAssertEqual(store.entry(for: "a")?.state, .imported)
+        XCTAssertNil(store.entry(for: "a")?.ignoredVersion)
+    }
+
+    func testARefusedVersionSurvivesARestart() {
+        PhotoIndexStore(url: storeURL).upsert(entry("a"))
+        PhotoIndexStore(url: storeURL).setIgnoredVersion(key: "a", fingerprint: "edit-1")
+
+        let reopened = PhotoIndexStore(url: storeURL)
+        XCTAssertEqual(reopened.entry(for: "a")?.ignoredVersion, "edit-1")
+        XCTAssertEqual(reopened.entry(for: "a")?.state, .imported,
+                       "the row keeps its state, so a real deletion is still noticed")
+    }
+
+    /// A stub row is how a photo nobody ever fetched gets refused. It must never
+    /// flatten a live row, which is the difference from a plain upsert.
+    func testAStubNeverOverwritesALiveRow() {
+        let store = PhotoIndexStore(url: storeURL)
+        store.upsert(entry("a", state: .imported))
+        store.upsertIfAbsent(entry("a", sha: "zz", state: .ignoredByUser))
+        XCTAssertEqual(store.entry(for: "a")?.state, .imported)
+        XCTAssertEqual(store.entry(for: "a")?.sha256, "aa")
+
+        store.upsertIfAbsent(entry("b", state: .ignoredByUser))
+        XCTAssertEqual(store.entry(for: "b")?.state, .ignoredByUser)
+    }
 }
 
 /// The question this file answers: can a manifest that arrived in pieces be

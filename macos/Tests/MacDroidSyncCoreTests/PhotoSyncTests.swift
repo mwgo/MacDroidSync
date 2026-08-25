@@ -26,10 +26,12 @@ final class PhotoDeltaTests: XCTestCase {
         at captureAt: Int64,
         size: Int64 = 1_000,
         sha: String = "aa",
-        state: PhotoIndexState = .imported
+        state: PhotoIndexState = .imported,
+        ignoredVersion: String? = nil
     ) -> PhotoIndexEntry {
         PhotoIndexEntry(key: key, sha256: sha, size: size, captureAt: captureAt,
-                        localIdentifier: "asset/\(key)", state: state, importedAt: 1)
+                        localIdentifier: "asset/\(key)", state: state, importedAt: 1,
+                        ignoredVersion: ignoredVersion)
     }
 
     // MARK: - Deleting
@@ -239,6 +241,123 @@ final class PhotoDeltaTests: XCTestCase {
         )
         XCTAssertTrue(plan.want.isEmpty)
     }
+
+    // MARK: - Rows for the sync window
+
+    /// `want` mixes two questions, and the window has to tell them apart: a key
+    /// this Mac has never held is an arrival, the same key with other bytes is a
+    /// replacement, and the two deserve different words.
+    func testRowsSeparateArrivalsFromReplacements() {
+        let index = [entry("held", at: 5 * day, sha: "old"),
+                     entry("gone-here", at: 5 * day, state: .deletedByUs)]
+        let plan = PhotoDelta.plan(
+            items: [item("held", at: 5 * day, sha: "new"), item("fresh", at: 6 * day),
+                    item("gone-here", at: 5 * day, sha: "bb"),
+                    item("odd", at: 6 * day, excluded: .noDate)],
+            from: 0, index: index, isFirstRun: false
+        )
+        let rows = plan.pendingActions(index: index, now: 42)
+        XCTAssertEqual(rows.filter { $0.kind == .change }.map(\.key), ["held"])
+        XCTAssertEqual(rows.filter { $0.kind == .add }.map(\.key).sorted(), ["fresh", "gone-here"])
+        XCTAssertEqual(rows.filter { $0.kind == .problem }.map(\.key), ["odd"])
+        XCTAssertEqual(rows.first?.kind, .problem, "what needs attention sorts to the top")
+    }
+
+    func testADeletionRowCarriesWhatTheIndexKnows() {
+        let index = [entry("gone", at: 5 * day)]
+        let plan = PhotoDelta.plan(items: [], from: 0, index: index, isFirstRun: false)
+        let rows = plan.pendingActions(index: index, now: 42)
+        XCTAssertEqual(rows.map(\.kind), [.delete])
+        XCTAssertEqual(rows.first?.name, "gone")
+        XCTAssertNil(rows.first?.item, "there is no manifest item for something that left the phone")
+    }
+
+    /// A replaced version is tracked under a synthetic key; the operator should
+    /// still read the file's own name.
+    func testAReplacedVersionIsNamedAfterItsFile() {
+        XCTAssertEqual(
+            PhotoPendingAction.name(of: "DCIM/Camera/a.jpg#replaced-1730000000000"),
+            "a.jpg"
+        )
+    }
+
+    // MARK: - What may run without asking
+
+    func testOnlyAdditionsCountsRenamesAndRestoresAsFree() {
+        let index = [entry("moved", at: 5 * day, sha: "same"),
+                     entry("back", at: 5 * day, sha: "bb", state: .pendingDelete)]
+        let plan = PhotoDelta.plan(
+            items: [item("elsewhere", at: 5 * day, sha: "same"),
+                    item("back", at: 5 * day, sha: "bb"),
+                    item("new", at: 6 * day, sha: "cc")],
+            from: 0, index: index, isFirstRun: false
+        )
+        XCTAssertEqual(plan.renames.map(\.to), ["elsewhere"])
+        XCTAssertEqual(plan.cancelPendingDelete, ["back"])
+        XCTAssertTrue(plan.isAdditionsOnly(index: index),
+                      "a rename moves no bytes and a restore deletes nothing")
+    }
+
+    func testAChangeOrADeletionOrAProblemIsNotAdditionsOnly() {
+        let held = [entry("held", at: 5 * day, sha: "old")]
+        let changed = PhotoDelta.plan(items: [item("held", at: 5 * day, sha: "new")], from: 0,
+                                      index: held, isFirstRun: false)
+        XCTAssertFalse(changed.isAdditionsOnly(index: held))
+
+        let deleted = PhotoDelta.plan(items: [], from: 0, index: held, isFirstRun: false)
+        XCTAssertFalse(deleted.isAdditionsOnly(index: held))
+
+        let refused = PhotoDelta.plan(items: [item("odd", at: 5 * day, excluded: .size)], from: 0,
+                                      index: [], isFirstRun: false)
+        XCTAssertFalse(refused.isAdditionsOnly(index: []))
+
+        let plain = PhotoDelta.plan(items: [item("new", at: 5 * day)], from: 0, index: [],
+                                    isFirstRun: false)
+        XCTAssertTrue(plain.isAdditionsOnly(index: []))
+    }
+
+    // MARK: - What the operator refused
+
+    func testAnIgnoredKeyIsNeverWantedAgain() {
+        let index = [entry("no", at: 5 * day, state: .ignoredByUser)]
+        let plan = PhotoDelta.plan(items: [item("no", at: 5 * day, sha: "anything")], from: 0,
+                                   index: index, isFirstRun: false)
+        XCTAssertTrue(plan.want.isEmpty)
+    }
+
+    /// Ignoring an edit refuses that version, not the photo: a later, different
+    /// edit is a question nobody has answered yet.
+    func testAnIgnoredVersionIsRefusedButALaterEditIsNot() {
+        let index = [entry("a", at: 5 * day, sha: "held", ignoredVersion: "edit-1")]
+        let same = PhotoDelta.plan(items: [item("a", at: 5 * day, sha: "edit-1")], from: 0,
+                                   index: index, isFirstRun: false)
+        XCTAssertTrue(same.want.isEmpty)
+
+        let later = PhotoDelta.plan(items: [item("a", at: 5 * day, sha: "edit-2")], from: 0,
+                                    index: index, isFirstRun: false)
+        XCTAssertEqual(later.want.map(\.key), ["a"])
+    }
+
+    /// The phone is allowed to run out of hashing budget, and then size and
+    /// capture time are what decide - so that is what an ignore has to record,
+    /// or the refused edit would be back on the next cycle.
+    func testAVersionWithNoHashIsStillRecognised() {
+        let unhashed = item("a", at: 5 * day, sha: nil)
+        let index = [entry("a", at: 5 * day, sha: "held",
+                           ignoredVersion: PhotoIndexEntry.fingerprint(of: unhashed))]
+        let plan = PhotoDelta.plan(items: [unhashed], from: 0, index: index, isFirstRun: false)
+        XCTAssertTrue(plan.want.isEmpty)
+    }
+
+    /// And a photo the operator already refused stops being listed as a problem,
+    /// which is what stops it parking every cycle for ever.
+    func testAnIgnoredProblemIsNotReportedAgain() {
+        let index = [entry("odd", at: 5 * day, state: .ignoredByUser)]
+        let plan = PhotoDelta.plan(items: [item("odd", at: 5 * day, excluded: .noLocation)],
+                                   from: 0, index: index, isFirstRun: false)
+        XCTAssertTrue(plan.excluded.isEmpty)
+    }
+
 }
 
 /// The window is two lower bounds, and which one wins decides whether a wide

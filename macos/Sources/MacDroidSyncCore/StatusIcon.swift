@@ -3,34 +3,86 @@ import AppKit
 /// Maps the connection state onto the menu bar icon.
 ///
 /// Two arrows pointing opposite ways, matching the application icon: the
-/// clipboard, the files and the presence all travel both ways. The state shows
-/// in the weight of the glyph - outline while nothing is connected, enclosed and
-/// filled once it is - and in the alpha below, because a menu bar icon has no
-/// room for a badge.
+/// clipboard, the files and the presence all travel both ways. The connection
+/// state shows in the weight of the glyph - outline while nothing is connected,
+/// enclosed and filled once it is - and in the alpha below.
+///
+/// One thing does get a badge, and only one: a dot in the corner when something
+/// is waiting for a decision in the photo sync window. The distinction is that
+/// the connection state is *information*, which the menu already carries, while
+/// a waiting decision is a **request** - nothing will move again until it is
+/// answered, and that has to be visible without opening the menu.
 ///
 /// Each state names several symbols and takes the first one the system actually
 /// has, so a name withdrawn by a future macOS degrades to a near neighbour
 /// instead of leaving the menu bar blank.
 public enum StatusIcon {
-    public static func image(for state: PeerState) -> NSImage? {
-        let image = symbol(for: state)
+    public static func image(for state: PeerState, needsAttention: Bool = false) -> NSImage? {
+        guard let image = symbol(for: state) else { return nil }
         if state == .error {
-            image?.isTemplate = false
-            return image?.withSymbolConfiguration(
+            image.isTemplate = false
+            let red = image.withSymbolConfiguration(
                 NSImage.SymbolConfiguration(paletteColors: [.systemRed])
             ) ?? image
+            return needsAttention ? badged(red, tint: .systemRed) : red
         }
-        image?.isTemplate = true
-        return image
+        image.isTemplate = true
+        return needsAttention ? badged(image, tint: nil) : image
     }
 
-    /// Dimmed while nothing is connected, full strength otherwise.
-    public static func alpha(for state: PeerState) -> CGFloat {
+    /// Dimmed while nothing is connected, full strength otherwise - except when
+    /// something is waiting, which outranks the connection state: a dot nobody
+    /// can see is not a request, and the phone being away is no reason to whisper
+    /// about a decision that is already overdue.
+    public static func alpha(for state: PeerState, needsAttention: Bool = false) -> CGFloat {
+        if needsAttention { return 1.0 }
         switch state {
         case .disconnected: return 0.55
         case .suspended: return 0.4
         default: return 1.0
         }
+    }
+
+    /// The same glyph with a dot off its bottom right corner.
+    ///
+    /// The canvas grows rather than the glyph shrinking, so the icon does not
+    /// change size when the dot comes and goes - the menu bar has room for it,
+    /// and a glyph that resized itself twice an hour would be its own
+    /// distraction. The dot mostly sits *outside* the glyph, and what overlap is
+    /// left is punched out with a thin transparent ring: at this size the two
+    /// shapes otherwise read as one blob, and in the ordinary case they are the
+    /// same colour, because the icon stays a template image so that macOS keeps
+    /// tinting it for whatever is behind the bar.
+    private static func badged(_ base: NSImage, tint: NSColor?) -> NSImage {
+        let glyph = base.size
+        guard glyph.width > 0, glyph.height > 0 else { return base }
+        let diameter = glyph.width * 0.28
+        let overhang = diameter * 0.55
+        let gap = diameter * 0.18
+        let size = NSSize(width: glyph.width + overhang, height: glyph.height + overhang)
+
+        // Composed once into pixels rather than through a redraw-on-demand
+        // image: the punch-out below depends on what is already in the buffer,
+        // and that is easier to be sure of when it happens exactly once. The
+        // icon is built only when the state changes, so once is cheap.
+        let canvas = NSImage(size: size)
+        canvas.lockFocus()
+        // The glyph sits at the top of the canvas, because the dot takes the
+        // corner below it. This is drawn unflipped, so y grows upwards.
+        base.draw(in: NSRect(x: 0, y: overhang, width: glyph.width, height: glyph.height))
+        let dot = NSRect(x: size.width - diameter, y: 0, width: diameter, height: diameter)
+
+        NSGraphicsContext.current?.compositingOperation = .destinationOut
+        NSColor.black.setFill()
+        NSBezierPath(ovalIn: dot.insetBy(dx: -gap, dy: -gap)).fill()
+
+        NSGraphicsContext.current?.compositingOperation = .sourceOver
+        (tint ?? .black).setFill()
+        NSBezierPath(ovalIn: dot).fill()
+        canvas.unlockFocus()
+        canvas.isTemplate = tint == nil
+        canvas.accessibilityDescription = base.accessibilityDescription
+        return canvas
     }
 
     public static func accessibilityDescription(for state: PeerState) -> String {

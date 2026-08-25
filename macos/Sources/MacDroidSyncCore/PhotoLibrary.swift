@@ -141,7 +141,8 @@ public protocol PhotoLibrary: AnyObject {
     func existing(_ identifiers: [String]) -> Set<String>
     func attributes(of identifier: String) -> PhotoAssetAttributes?
     /// Removes assets. macOS asks the user, once per call, and there is no API
-    /// to suppress that - which is why this is only ever called from a menu item.
+    /// to suppress that - which is why this is only ever called from a row the
+    /// operator picked in the sync window.
     func delete(_ identifiers: [String]) -> PhotoDeletionOutcome
 }
 
