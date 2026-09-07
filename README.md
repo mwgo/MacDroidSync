@@ -83,15 +83,11 @@ lives in *Settings…* instead:
 | `Connected: <phone>` / `Listening on port 47831` | current state |
 | `Ping phone` (⌘P) | rings the phone and shows the round trip time, `Ping: 23 ms`, for a few seconds |
 | `Send clipboard now` (⌘S) | pushes the current clipboard even if it did not change |
-| `Last sent: …` | what was last sent, received or queued |
 | `Send files to phone…` (⌘O) | opens a file picker; several files at a time are fine |
-| `Sending photo.jpg - 45%` | outgoing transfer, then `Sent: …` or `Queued: 3 files` |
-| `Received: <file>` | the file that arrived last; selecting it reveals the file in Finder |
-| `Open Downloads folder` | opens the folder incoming files are saved to |
-| `Lock when the phone leaves` | the automatic locking, with the live reading `Phone: -58 dBm (near)` under it |
-| `Pause auto lock for an hour` | gets the automatic locking out of the way for a while |
-| `Photos: 412 imported` | the photo sync in one line, or why it is doing nothing |
-| `Photo sync — 12 waiting…` | opens the sync window, where every decision about an individual photo is made |
+| `Open Downloads folder` | opens the folder incoming files are saved to; greyed out until the phone has delivered a file since the app started |
+| `Lock when the phone leaves` | the automatic locking; the live reading `Phone: -58 dBm (near)` is in the *Auto lock* settings tab |
+| `Pause auto lock for an hour` | gets the automatic locking out of the way for a while; greyed out on a safe network, where nothing is armed to begin with |
+| `Photo sync — 12 waiting…` | opens the sync window, where every decision about an individual photo is made; greyed out while nothing waits there |
 | `Sync photos now` | asks the phone to describe its camera folder without waiting for the interval |
 | `Settings…` (⌘,) | the settings window, see below |
 
@@ -377,7 +373,7 @@ that the library actually answers instead of trusting the permission.
   while the average stayed put at -63.5. That gap between one reading and the average is the whole reason
   this feature averages at all.
 * **Calibrating the distance.** dBm readings differ by more than ten between radios, rooms and pockets,
-  so both the menu and the *Auto lock* tab show the live average (`Phone: -63 dBm (near)`): walk to where
+  so the *Auto lock* tab shows the live average (`Phone: -63 dBm (near)`): walk to where
   you want the lock to happen and read the number. The tab is the place to do it, because the threshold
   field and the reading it is compared against sit next to each other. *Sensitivity* offers three presets
   - **Fast** (10 s window, -85 dBm, 10 s grace), **Balanced** (the default above) and **Cautious** (30 s

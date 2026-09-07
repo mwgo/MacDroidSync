@@ -54,15 +54,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusMenuItem = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")
     private let pingMenuItem = NSMenuItem(title: "Ping phone", action: #selector(pingPhone), keyEquivalent: "p")
     private let sendMenuItem = NSMenuItem(title: "Send clipboard now", action: #selector(sendClipboardNow), keyEquivalent: "s")
-    private let lastSentMenuItem = NSMenuItem(title: "Nothing sent yet", action: nil, keyEquivalent: "")
     private let sendFilesMenuItem = NSMenuItem(title: "Send files to phone…", action: #selector(sendFiles), keyEquivalent: "o")
-    private let outgoingMenuItem = NSMenuItem(title: "No files sent yet", action: nil, keyEquivalent: "")
-    private let fileMenuItem = NSMenuItem(title: "No files received yet", action: #selector(revealLastFile), keyEquivalent: "")
     private let downloadsMenuItem = NSMenuItem(title: "Open Downloads folder", action: #selector(openDownloads), keyEquivalent: "")
     private let autoLockMenuItem = NSMenuItem(title: "Lock when the phone leaves", action: #selector(toggleAutoLock), keyEquivalent: "")
-    private let presenceMenuItem = NSMenuItem(title: "Auto lock is off", action: nil, keyEquivalent: "")
     private let snoozeMenuItem = NSMenuItem(title: "Pause auto lock for an hour", action: #selector(toggleSnooze), keyEquivalent: "")
-    private let photoStatusMenuItem = NSMenuItem(title: "Photo sync is off", action: nil, keyEquivalent: "")
     private let photoWindowMenuItem = NSMenuItem(title: "Photo sync…", action: #selector(showPhotoSync(_:)), keyEquivalent: "")
     private let photoSyncNowMenuItem = NSMenuItem(title: "Sync photos now", action: #selector(syncPhotosNow), keyEquivalent: "")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
@@ -91,8 +86,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private var displayState: PeerState = .disconnected
     private var failureMessage: String?
     private var suspendReason: String?
-    private var lastSentSummary: String?
-    private var fileStatus: String?
     private var lastReceivedFile: URL?
     /// A file arrived and nobody has looked at the menu since.
     ///
@@ -100,7 +93,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// itself: a delivered file is news until it has been seen, while a photo
     /// waiting for a decision stays a request until it is answered.
     private var hasUnseenFile = false
-    private var outgoingStatus: String?
     /// Queue entry currently in flight, so its ack can clear the right item.
     private var sendingItemId: String?
     private var sendAttempts: [String: Int] = [:]
@@ -169,40 +161,35 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private func buildMenu() {
         statusMenuItem.isEnabled = false
-        lastSentMenuItem.isEnabled = false
-        outgoingMenuItem.isEnabled = false
-        presenceMenuItem.isEnabled = false
 
         for item in [
-            pingMenuItem, sendMenuItem, sendFilesMenuItem, fileMenuItem, downloadsMenuItem,
+            pingMenuItem, sendMenuItem, sendFilesMenuItem, downloadsMenuItem,
             autoLockMenuItem, snoozeMenuItem, settingsMenuItem, quitMenuItem,
             photoWindowMenuItem, photoSyncNowMenuItem,
         ] {
             item.target = self
         }
-        photoStatusMenuItem.isEnabled = false
 
-        // What the menu carries is state and the handful of things worth doing
-        // from the menu bar. Everything that is set once and then left alone
-        // lives in the settings window instead.
+        // What the menu carries is the connection state and the handful of
+        // things worth doing from the menu bar. Everything that is set once and
+        // then left alone lives in the settings window, and the running
+        // commentary - the last clipboard, the last file, the live reading, the
+        // photo count - is not here either: the icon and the notifications say
+        // what needs saying, and the settings window has the numbers. What is
+        // not worth doing right now is greyed out rather than taken away, so
+        // the menu keeps its shape.
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
         menu.addItem(pingMenuItem)
         menu.addItem(sendMenuItem)
-        menu.addItem(lastSentMenuItem)
         menu.addItem(.separator())
         menu.addItem(sendFilesMenuItem)
-        menu.addItem(outgoingMenuItem)
-        menu.addItem(fileMenuItem)
         menu.addItem(downloadsMenuItem)
         menu.addItem(.separator())
         menu.addItem(autoLockMenuItem)
-        menu.addItem(presenceMenuItem)
         menu.addItem(snoozeMenuItem)
         menu.addItem(.separator())
-        // In order of what needs a decision: the state, then the window where
-        // every decision is made, then the manual run.
-        menu.addItem(photoStatusMenuItem)
+        // The window where every decision is made, then the manual run.
         menu.addItem(photoWindowMenuItem)
         menu.addItem(photoSyncNowMenuItem)
         menu.addItem(.separator())
@@ -216,7 +203,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        // Opening the menu is seeing it: the file line is right there.
+        // Opening the menu counts as having seen it: the dot in the icon has
+        // done its job, and the Downloads entry is lit for whoever wants the file.
         hasUnseenFile = false
         refreshMenuTitles()
     }
@@ -239,39 +227,32 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         pingMenuItem.isEnabled = connected
         sendMenuItem.isEnabled = connected || pending.pending == nil
 
-        if let summary = lastSentSummary {
-            lastSentMenuItem.title = summary
-        } else if let queued = pending.pending {
-            lastSentMenuItem.title = "Queued: \(Self.summarize(queued.text))"
-        } else {
-            lastSentMenuItem.title = "Nothing sent yet"
-        }
-
         sendFilesMenuItem.isEnabled = true
-        outgoingMenuItem.title = outgoingSummary
 
         renderIcon()
-        photoStatusMenuItem.title = photoSummary ?? "Photo sync is off"
-        // Always visible, unlike the two items it replaces: this is the only way
-        // into the window, and an entry saying "nothing waiting" is better than
-        // one that disappears.
-        photoWindowMenuItem.title = photoReport.pendingDecisions == 0
+        // Stays in the menu whatever the count, because it is the only way into
+        // the window - but the window has nothing to show until something waits
+        // in it, so the entry is greyed out rather than removed the rest of the
+        // time. The count is gated the same way the dot in the icon is.
+        let decisions = settings.photosEnabled ? photoReport.pendingDecisions : 0
+        photoWindowMenuItem.title = decisions == 0
             ? "Photo sync…"
-            : "Photo sync — \(photoReport.pendingDecisions) waiting…"
+            : "Photo sync — \(decisions) waiting…"
+        photoWindowMenuItem.isEnabled = decisions > 0
         photoSyncNowMenuItem.isEnabled = connected && settings.photosEnabled
 
-        fileMenuItem.title = fileStatus ?? "No files received yet"
-        // Only clickable once there is a file to point Finder at.
-        fileMenuItem.isEnabled = lastReceivedFile != nil
         downloadsMenuItem.title = "Open \(server.destinationDirectory.lastPathComponent) folder"
+        // Nothing worth opening until the phone has actually delivered a file.
+        // Remembered for the life of the process only: no record of received
+        // files is kept anywhere, and the folder's own contents say nothing -
+        // it is the user's Downloads, full of things that never saw the phone.
+        downloadsMenuItem.isEnabled = lastReceivedFile != nil
 
         let autoLock = settings.autoLockEnabled
         autoLockMenuItem.state = autoLock ? .on : .off
-        presenceMenuItem.title = autoLockSummary
-        presenceMenuItem.toolTip = presence.state == .unarmed && autoLock
-            ? "The screen is never locked until the phone has been seen at least once."
-            : nil
-        snoozeMenuItem.isEnabled = autoLock
+        // On a safe network the lock is not armed in the first place, so a pause
+        // would pause nothing; one already running simply runs out on its own.
+        snoozeMenuItem.isEnabled = autoLock && safeNetworkName == nil
         snoozeMenuItem.title = settings.autoLockSnoozeUntil == nil
             ? "Pause auto lock for an hour"
             : "Resume auto lock"
@@ -282,8 +263,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     /// The live reading is the only practical way to calibrate the threshold:
-    /// walk away and watch what it says. The settings window shows the same line
-    /// next to the threshold field, which is where the calibrating happens.
+    /// walk away and watch what it says. It is shown in the settings window next
+    /// to the threshold field, which is where the calibrating happens; the menu
+    /// no longer carries it.
     private var autoLockSummary: String {
         guard settings.autoLockEnabled else { return "Auto lock is off" }
         if let until = settings.autoLockSnoozeUntil {
@@ -373,7 +355,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         server.onClipboardReceived = { [weak self] text in
             guard let self else { return }
             self.watcher.apply(remoteText: text)
-            self.lastSentSummary = "Received: \(Self.summarize(text))"
             self.flashTransfer()
         }
         server.onClipboardDelivered = { [weak self] in
@@ -385,7 +366,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         server.onFileProgress = { [weak self] name, received, total in
             guard let self else { return }
-            self.fileStatus = Self.progressSummary(name: name, done: received, total: total)
             // Progress arrives at least every 200 ms, so the icon stays lit for
             // the whole transfer.
             self.flashTransfer()
@@ -394,23 +374,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         server.onFileReceived = { [weak self] url, _ in
             guard let self else { return }
             self.lastReceivedFile = url
-            self.fileStatus = "Received: \(url.lastPathComponent)"
             self.hasUnseenFile = true
-            self.fileMenuItem.toolTip = url.path
             self.notifier.fileReceived(at: url, from: self.server.connectedDeviceName ?? "your phone")
             self.flashTransfer()
             self.refreshMenuTitles()
         }
         server.onFileFailed = { [weak self] name, reason in
             guard let self else { return }
-            self.fileStatus = "Failed: \(name)"
-            self.fileMenuItem.toolTip = reason
             self.notifier.fileFailed(name: name, reason: reason)
             self.refreshMenuTitles()
         }
         server.onOutgoingProgress = { [weak self] name, sent, total in
             guard let self else { return }
-            self.outgoingStatus = Self.progressSummary(verb: "Sending", name: name, done: sent, total: total)
             self.flashTransfer()
             self.refreshMenuTitles()
         }
@@ -421,7 +396,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 self.sendAttempts[id] = nil
                 self.sendingItemId = nil
             }
-            self.outgoingStatus = "Sent: \(name)"
             Log.info("\(name) reached the phone\(path.isEmpty ? "" : " (\(path))")")
             self.flashTransfer()
             self.refreshMenuTitles()
@@ -598,11 +572,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private func deliver(text: String) {
         if server.sendClipboard(text: text) {
             pending.store(text: text)   // cleared once the phone acknowledges it
-            lastSentSummary = "Sent: \(Self.summarize(text))"
             flashTransfer()
         } else {
             pending.store(text: text)
-            lastSentSummary = nil
             Log.info("Phone unavailable, clipboard queued for the next connection")
         }
         refreshMenuTitles()
@@ -612,7 +584,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         guard let item = pending.pending else { return }
         Log.info("Flushing the queued clipboard from \(Date(timeIntervalSince1970: Double(item.ts) / 1000))")
         if server.sendClipboard(text: item.text) {
-            lastSentSummary = "Sent: \(Self.summarize(item.text))"
             flashTransfer()
             refreshMenuTitles()
         }
@@ -655,7 +626,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         guard server.isConnected, !server.isSendingFile, sendingItemId == nil else { return }
         guard let item = outbox.first(onMissing: { [weak self] missing in
             guard let self else { return }
-            self.outgoingStatus = "Missing: \(missing.name)"
             self.notifier.fileFailed(name: missing.name, reason: "the file is no longer there")
         }) else {
             refreshMenuTitles()
@@ -665,13 +635,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         do {
             if try server.sendFile(url: item.url) {
                 sendingItemId = item.id
-                outgoingStatus = "Sending \(item.name)…"
                 flashTransfer()
             }
         } catch {
             // Nothing about this file can ever work: drop it and move on.
             outbox.remove(id: item.id)
-            outgoingStatus = "Failed: \(item.name)"
             Log.error("Cannot send \(item.name): \(error.localizedDescription)")
             notifier.fileFailed(name: item.name, reason: error.localizedDescription)
             refreshMenuTitles()
@@ -693,13 +661,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             if tries >= Self.maxSendAttempts {
                 outbox.remove(id: id)
                 sendAttempts[id] = nil
-                outgoingStatus = "Failed: \(name)"
                 notifier.fileFailed(name: name, reason: reason)
-            } else {
-                outgoingStatus = "Retrying \(name) later"
             }
-        } else {
-            outgoingStatus = "Failed: \(name)"
         }
         Log.error("Sending \(name) failed: \(reason)")
         refreshMenuTitles()
@@ -709,13 +672,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// What to call the phone in the countdown panel.
     private var phoneName: String {
         server.connectedDeviceName ?? settings.pairedDeviceName ?? "Your phone"
-    }
-
-    private var outgoingSummary: String {
-        if let outgoingStatus { return outgoingStatus }
-        let queued = outbox.count
-        if queued > 0 { return "Queued: \(queued) file\(queued == 1 ? "" : "s")" }
-        return "No files sent yet"
     }
 
     // MARK: - Actions
@@ -765,16 +721,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
         if !server.isConnected {
-            outgoingStatus = nil
             Log.info("No phone connected, \(panel.urls.count) file(s) queued")
         }
         enqueue(files: panel.urls)
-    }
-
-    @objc private func revealLastFile() {
-        hasUnseenFile = false
-        guard let url = lastReceivedFile else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     @objc private func openDownloads() {
@@ -899,19 +848,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             self.settingsWindow?.refreshFromMenu()
             self.photoSyncWindow?.refreshFromMenu()
         }
-    }
-
-    /// One line about the photo sync, or nil when it has nothing to say.
-    private var photoSummary: String? {
-        guard settings.photosEnabled else { return nil }
-        if let photoTransfer { return "Photos: \(photoTransfer)" }
-        if let refusal = photoReport.refusal { return "Photos: \(refusal)" }
-        let readiness = photoImporter.readiness
-        guard readiness.canImport else { return "Photos: \(readiness.summary)" }
-        if photoReport.pendingDecisions > 0 {
-            return "Photos: \(photoReport.pendingDecisions) waiting for a decision"
-        }
-        return "Photos: \(photoReport.imported) imported"
     }
 
     @objc private func syncPhotosNow() {
@@ -1175,13 +1111,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private static func bytes(_ value: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
-    }
-
-    private static func summarize(_ text: String) -> String {
-        let flattened = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return flattened.count <= 40 ? flattened : String(flattened.prefix(40)) + "…"
     }
 }
 
