@@ -18,6 +18,8 @@ final class FakePhotoLibrary: PhotoLibrary {
     private(set) var imported: [PhotoImportRequest] = []
     private(set) var deleteCalls: [[String]] = []
     private(set) var albumRequests = 0
+    /// Titles asked for, so a renamed album can be seen to take effect.
+    private(set) var albumTitles: [String] = []
     private var nextAsset = 0
 
     func requestAuthorization(_ done: @escaping (PhotoLibraryReadiness) -> Void) {
@@ -26,6 +28,7 @@ final class FakePhotoLibrary: PhotoLibrary {
 
     func ensureAlbum(named name: String, knownIdentifier: String?) throws -> String {
         albumRequests += 1
+        albumTitles.append(name)
         return knownIdentifier ?? albumIdentifier
     }
 
@@ -288,3 +291,86 @@ final class PhotoImporterTests: XCTestCase {
         XCTAssertTrue(PhotoImporter.isVideo(name: "no-extension", mime: "video/mp4"))
     }
 }
+
+/// The question this file answers: does the album name do what the settings
+/// window promises, and does a starting point ever tread on a live row?
+final class PhotoImporterAlbumTests: XCTestCase {
+
+    private var directory: URL!
+    private var library: FakePhotoLibrary!
+    private var index: PhotoIndexStore!
+    private var albumName = PhotoSyncSettings.defaultAlbumName
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacDroidSyncPhotoAlbum-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        library = FakePhotoLibrary()
+        index = PhotoIndexStore(url: directory.appendingPathComponent("photos-index.json"))
+        albumName = PhotoSyncSettings.defaultAlbumName
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+        directory = nil
+        library = nil
+        index = nil
+        try super.tearDownWithError()
+    }
+
+    private func makeImporter() -> PhotoImporter {
+        PhotoImporter(library: library, index: index, readAlbumName: { self.albumName })
+    }
+
+    private func store(_ key: String, using importer: PhotoImporter) throws {
+        let file = directory.appendingPathComponent(UUID().uuidString)
+        try Data("bytes".utf8).write(to: file)
+        try importer.store(stagedFile: file, key: key, filename: key, sha256: "h-\(key)",
+                           size: 100, captureAt: 1, isVideo: false)
+    }
+
+    /// The name is asked for at every import rather than held from construction,
+    /// so renaming the album in the settings window takes effect at once.
+    func testTheAlbumNameIsAskedForEveryTime() throws {
+        let importer = makeImporter()
+        try store("a", using: importer)
+        albumName = "Phone"
+        try store("b", using: importer)
+        XCTAssertEqual(library.albumTitles, [PhotoSyncSettings.defaultAlbumName, "Phone"])
+    }
+
+    func testAStartingPointNeverFlattensALiveRow() throws {
+        let importer = makeImporter()
+        try store("held", using: importer)
+        index.upsert(
+            PhotoIndexEntry(key: "refused", sha256: "x", size: 1, captureAt: 1,
+                            localIdentifier: nil, state: .removedByUser, importedAt: 1)
+        )
+
+        importer.adopt(
+            baseline: [
+                PhotoItem(key: "held", captureAt: 1, size: 100, sha256: "other"),
+                PhotoItem(key: "refused", captureAt: 1, size: 1, sha256: "y"),
+                PhotoItem(key: "stranger", captureAt: 1, size: 5, sha256: "z"),
+            ],
+            at: 2
+        )
+
+        XCTAssertEqual(index.entry(for: "held")?.state, .imported)
+        XCTAssertEqual(index.entry(for: "refused")?.state, .removedByUser)
+        XCTAssertEqual(index.entry(for: "stranger")?.state, .preexisting)
+    }
+
+    /// The same bytes are already accounted for; an edit made since is not.
+    func testAnOfferForAnUnchangedStartingPointItemIsRefused() {
+        let importer = makeImporter()
+        importer.adopt(
+            baseline: [PhotoItem(key: "a", captureAt: 1, size: 100, sha256: "AA")],
+            at: 2
+        )
+        XCTAssertFalse(importer.accepts(key: "a", sha256: "aa").accepted)
+        XCTAssertTrue(importer.accepts(key: "a", sha256: "edited").accepted)
+    }
+}
+

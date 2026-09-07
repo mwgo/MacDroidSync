@@ -61,7 +61,13 @@ class SyncService : Service() {
     private var loopJob: Job? = null
     private var drainJob: Job? = null
     private var photoJob: Job? = null
-    private var photoTimer: Job? = null
+    /**
+     * What the Mac told this phone to do about photos, for as long as this
+     * session lasts. Null means it has said nothing yet, and nothing is what
+     * this phone then describes.
+     */
+    @Volatile
+    private var photoConfig: PhotoConfig? = null
     /**
      * One sender at a time. A photo cycle holds this while it streams, and a
      * shared file takes it from the photos: explicit intent beats background work,
@@ -106,7 +112,6 @@ class SyncService : Service() {
         photos = PhotoSyncEngine(this, prefs)
         announcedBeacon = beaconWanted
         scope.launch { outbox.sweepIncomplete() }
-        startPhotoCycle()
 
         notifications.createChannels()
         showIdle()
@@ -140,7 +145,6 @@ class SyncService : Service() {
                 drainOutbox()
             }
             ACTION_LOCK_MAC -> lockTheMac()
-            ACTION_SYNC_PHOTOS -> describePhotos()
             ACTION_QUERY_STATUS -> broadcastStatus()
             ACTION_SILENCE -> silenceRing()
         }
@@ -239,6 +243,10 @@ class SyncService : Service() {
             runCatching { socket.close() }
             connection = null
             connectedMac = null
+            // The configuration belongs to the session that carried it. Keeping
+            // it would let this phone work to instructions from a Mac that is no
+            // longer here, and possibly no longer issues them at all.
+            photoConfig = null
             pendingAcks.values.forEach { it.complete(FileVerdict(ok = false, detail = null, delivered = false)) }
             pendingAcks.clear()
             // A file that was still arriving is thrown away, so Download never
@@ -292,13 +300,50 @@ class SyncService : Service() {
             notifications.showFileResult(name, ok = false, detail = reason)
         }
 
+        override fun onPhotoConfig(config: PhotoConfig) {
+            Log.i(
+                TAG,
+                "Photo configuration from the Mac: " +
+                    if (config.enabled) {
+                        "on, ${config.lastDays} day(s) back, " +
+                            "at most ${config.maxItemBytes / (1024 * 1024)} MB per item"
+                    } else {
+                        "off"
+                    },
+            )
+            photoConfig = config
+        }
+
         override fun onPhotoPull(keys: List<String>?, manifestId: String?) {
-            if (!prefs.photoSyncEnabled) return
-            if (keys == null) {
-                describePhotos()
-            } else {
-                sendPhotos(keys)
+            val config = photoConfig?.takeIf { it.enabled }
+            if (config == null) {
+                // Said out loud rather than ignored. An empty manifest would mean
+                // "everything was deleted"; ok:false is the documented way to say
+                // "I am not describing anything", and it gives the Mac a reason to
+                // show instead of leaving a feature silently doing nothing.
+                Log.i(TAG, "Photo pull ignored: no configuration from the Mac")
+                refusePhotos()
+                return
             }
+            if (keys == null) {
+                describePhotos(config)
+            } else {
+                sendPhotos(config, keys)
+            }
+        }
+    }
+
+    /** Tells the Mac why nothing is being described. */
+    private fun refusePhotos() {
+        scope.launch {
+            val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+            runCatching {
+                peer.sendPhotoManifest(
+                    PhotoPayload(),
+                    ok = false,
+                    reason = "this phone has no photo configuration from the Mac",
+                )
+            }.onFailure { Log.w(TAG, "Could not answer the photo pull", it) }
         }
     }
 
@@ -307,20 +352,20 @@ class SyncService : Service() {
     // region Photos
 
     /**
-     * Describes the camera folder, on the Mac's request or on the interval.
+     * Describes the camera folder, on the Mac's request.
      *
      * Runs on its own job so that a scan of five thousand rows never sits on the
-     * thread that reads the socket.
+     * thread that reads the socket - which is now the only thread this can be
+     * reached from, since the phone no longer keeps a cycle of its own.
      */
-    private fun describePhotos() {
+    private fun describePhotos(config: PhotoConfig) {
         if (photoJob?.isActive == true) return
         photoJob = scope.launch {
             val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
             photoSendLock.withLock {
-                runCatching { photos.describe(peer) }
+                runCatching { photos.describe(peer, config) }
                     .onFailure { Log.w(TAG, "Could not describe the camera folder", it) }
             }
-            prefs.lastPhotoCycleAt = System.currentTimeMillis()
         }
     }
 
@@ -331,13 +376,14 @@ class SyncService : Service() {
      * "send this file" beats background work, and the photo cycle simply picks up
      * where it left off next time.
      */
-    private fun sendPhotos(keys: List<String>) {
+    private fun sendPhotos(config: PhotoConfig, keys: List<String>) {
         if (keys.isEmpty()) return
         scope.launch {
             val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
             photoSendLock.withLock {
                 val failed = photos.send(
                     connection = peer,
+                    config = config,
                     keys = keys,
                     awaitAck = { fileId, name -> awaitPhotoAck(fileId, name) },
                     onProgress = { name, sent, total ->
@@ -367,25 +413,6 @@ class SyncService : Service() {
             return false
         }
         return verdict.ok
-    }
-
-    /**
-     * The interval. A cycle is skipped while nothing is connected, and skipped
-     * while one is already running - the phone owns the pace, and it is a slow one.
-     */
-    private fun startPhotoCycle() {
-        if (photoTimer?.isActive == true) return
-        photoTimer = scope.launch {
-            while (isActive) {
-                delay(PHOTO_CHECK_MS)
-                if (!prefs.photoSyncEnabled) continue
-                val due = System.currentTimeMillis() - prefs.lastPhotoCycleAt >=
-                    prefs.photoIntervalMinutes * 60_000L
-                if (!due) continue
-                if (connection?.isAuthenticated != true) continue
-                describePhotos()
-            }
-        }
     }
 
     // endregion
@@ -638,8 +665,7 @@ class SyncService : Service() {
         drainJob = null
         photoJob?.cancel()
         photoJob = null
-        photoTimer?.cancel()
-        photoTimer = null
+        photoConfig = null
         loopJob?.cancel()
         loopJob = null
         connection?.close()
@@ -692,8 +718,6 @@ class SyncService : Service() {
         const val ACTION_QUERY_STATUS = "pl.wojas.macdroidsync.QUERY_STATUS"
         const val ACTION_SILENCE = "pl.wojas.macdroidsync.SILENCE"
         const val ACTION_LOCK_MAC = "pl.wojas.macdroidsync.LOCK_MAC"
-        /** "Sync photos now", from the phone's own screen. */
-        const val ACTION_SYNC_PHOTOS = "pl.wojas.macdroidsync.SYNC_PHOTOS"
 
         const val BROADCAST_STATUS = "pl.wojas.macdroidsync.STATUS"
         const val EXTRA_TEXT = "text"
@@ -706,8 +730,6 @@ class SyncService : Service() {
         private const val HEARTBEAT_CHECK_MS = 5_000L
         private const val ACK_TIMEOUT_MS = 60_000L
         private const val PROGRESS_INTERVAL_MS = 500L
-        /** How often the interval is looked at, not how often a cycle runs. */
-        private const val PHOTO_CHECK_MS = 60_000L
         private const val GOODBYE_TIMEOUT_MS = 2_000L
         private const val MAX_ATTEMPTS = 3
         private val BACKOFF_MS = longArrayOf(1_000, 2_000, 5_000, 10_000, 30_000)

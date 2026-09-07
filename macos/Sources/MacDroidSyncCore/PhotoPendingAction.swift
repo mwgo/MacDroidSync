@@ -32,6 +32,11 @@ public enum PhotoActionIssue: String, Codable, Equatable {
     /// From `PhotoPlan.refusedDelete`: more deletions at once than this Mac
     /// would expect, so they are shown but never done quietly.
     case bulkDeleteGuard
+    /// The old copy of a photo the phone has edited. It is a removal like any
+    /// other, but for a completely different reason - and one the operator has
+    /// to be able to tell apart, because "the phone deleted this" and "this is
+    /// last week's version of a photo you still have" call for opposite answers.
+    case replacedVersion
 
     public init?(_ exclusion: PhotoExclusion) {
         switch exclusion {
@@ -50,6 +55,7 @@ public enum PhotoActionIssue: String, Codable, Equatable {
         case .excludedNoLocation: return "its location could not be read"
         case .excludedNoDate: return "no date could be established"
         case .bulkDeleteGuard: return "one of an unusually large batch"
+        case .replacedVersion: return "the older copy, replaced by an edit on the phone"
         }
     }
 }
@@ -109,11 +115,21 @@ public struct PhotoPendingAction: Codable, Equatable {
         }
     }
 
+    /// How a replaced version is marked in its key. One definition, used by the
+    /// importer that writes it and by everything that reads it back.
+    public static let replacedMarker = "#replaced-"
+
+    /// Whether this key belongs to the copy an edit replaced, rather than to a
+    /// photo the phone no longer has.
+    public static func isReplacedVersion(_ key: String) -> Bool {
+        key.contains(replacedMarker)
+    }
+
     /// The name to show. A replaced version carries a synthetic key so that the
     /// live key can belong to the new asset; the operator should still read the
     /// file's own name rather than that bookkeeping.
     public static func name(of key: String) -> String {
-        let base = key.components(separatedBy: "#replaced-").first ?? key
+        let base = key.components(separatedBy: replacedMarker).first ?? key
         return (base as NSString).lastPathComponent
     }
 }
@@ -140,9 +156,10 @@ public extension PhotoPlan {
         for item in want {
             let kind: PhotoActionKind
             switch byKey[item.key]?.state {
-            case .none, .deletedByUs:
+            case .none, .deletedByUs, .preexisting:
                 // Nothing of it is here, so this is an arrival however often the
-                // key has been seen before.
+                // key has been seen before - including a row from the starting
+                // point, which was only ever a note that the phone had it.
                 kind = .add
             default:
                 kind = .change
@@ -161,7 +178,7 @@ public extension PhotoPlan {
         }
 
         for entry in delete {
-            rows.append(Self.deletion(entry, issue: nil, now: now))
+            rows.append(Self.deletion(entry, issue: Self.reason(for: entry), now: now))
         }
         for entry in refusedDelete {
             rows.append(Self.deletion(entry, issue: .bulkDeleteGuard, now: now))
@@ -197,10 +214,16 @@ public extension PhotoPlan {
         let byKey = Dictionary(index.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
         return want.allSatisfy { item in
             switch byKey[item.key]?.state {
-            case .none, .deletedByUs: return true
+            case .none, .deletedByUs, .preexisting: return true
             default: return false
             }
         }
+    }
+
+    /// Why this row is being offered for removal, when there is more to say than
+    /// "the phone no longer has it".
+    private static func reason(for entry: PhotoIndexEntry) -> PhotoActionIssue? {
+        PhotoPendingAction.isReplacedVersion(entry.key) ? .replacedVersion : nil
     }
 
     private static func deletion(

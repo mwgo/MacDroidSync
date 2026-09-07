@@ -148,13 +148,13 @@
                 style="@style/SectionHeading"
                 android:text="@string/section_photos" />
 
-            <com.google.android.material.materialswitch.MaterialSwitch
-                android:id="@+id/photosSwitch"
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:minHeight="56dp"
-                android:text="@string/photos_switch"
-                android:textAppearance="?attr/textAppearanceBodyLarge" />
+                android:paddingVertical="4dp"
+                android:text="@string/photos_managed_by_mac"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?android:attr/textColorSecondary" />
 
             <!-- Clickable, like the beacon hint: whatever is missing is a screen
                  away, so the sentence that says so is also the way to get there. -->
@@ -168,14 +168,6 @@
                 android:visibility="gone"
                 tools:text="@string/photos_needs_permission"
                 tools:visibility="visible" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/syncPhotosButton"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/photos_sync_now" />
 
             <TextView
                 style="@style/SectionHeading"

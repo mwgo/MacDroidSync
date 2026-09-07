@@ -12,10 +12,10 @@ Clipboard sharing between macOS and Android over Wi-Fi, in the spirit of KDE Con
   menu, *Send to Android* in the Services menu, or *Send files to phone…* in the menu bar, and the file
   lands in the phone's Download folder. Files shared while the other device is away wait in a queue and
   are delivered on the next connection.
-* **Camera photos follow the phone.** Photos and videos taken on the phone are added to a `MacDroidSync`
-  album in the Mac's Photos library, byte for byte - EXIF and geotag included. Edits and deletions on the
-  phone are followed too, the window is bounded by a date and a number of days, and nothing is imported
-  before you have seen a report of what would move. Off until switched on; see *Photo sync* below.
+* **Camera photos follow the phone.** Photos and videos taken on the phone are added to an album in the
+  Mac's Photos library, byte for byte - EXIF and geotag included. Edits and deletions on the phone are
+  followed too, everything is set up on the Mac, and what the phone already held when you switched it on
+  counts as the starting point rather than as a backlog. Off until switched on; see *Photo sync* below.
 * **The status bar icon on Android only exists while a Mac is connected.** No connection, no icon.
 * **Ping** the phone straight from the Mac menu and get the round trip time.
 
@@ -191,14 +191,14 @@ Verify what came out before handing it to anyone:
     app/build/outputs/apk/release/app-release.apk
 ```
 
-For the photo sync, also in *Settings*: grant **Photos and videos** and **Photo locations**, set the date
-to start from and how many days back to look, then turn on *Send camera photos and videos to the Mac* on
-the main screen. The line under the two date fields spells out the resulting cut-off, because two bounds
-that both say "nothing older than this" do not add up to an obvious answer.
+For the photo sync, the phone needs two permissions and nothing else: grant **Photos and videos** and
+**Photo locations** in *Settings*. Everything else - whether it runs at all, how far back to look, how
+often, and how large an item may be - is set on the Mac and sent to the phone at the start of every
+connection.
 
-The main screen keeps only what is used day to day: the connection state, the three switches, *Send
-clipboard to the Mac*, *Sync photos now*, *Lock Now* and *Disconnect*. The pairing, the address, the port,
-the photo window and the permissions live in *Settings*; *About* names the author and the licence.
+The main screen keeps only what is used day to day: the connection state, the two switches, *Send
+clipboard to the Mac*, *Lock Now* and *Disconnect*. The pairing, the address, the port and the
+permissions live in *Settings*; *About* names the author and the licence.
 
 To send a file, share it from any app (*Share* → *Send to Mac*). That works whether or not clipboard sync
 is on: a shared file is an explicit request, so the app connects for it and goes back to idle afterwards.
@@ -214,15 +214,28 @@ tappable notification instead of being applied automatically.
 ## Photo sync
 
 Photos and videos from the phone's camera folder - `DCIM/Camera`, and nothing else - are added to a
-`MacDroidSync` album in the Mac's Photos library. It is off on both ends until switched on, and it is
-built so that nothing surprising can happen to a photo library that took years to fill.
+`MacDroidSync` album in the Mac's Photos library. It is off until switched on, and it is built so that
+nothing surprising can happen to a photo library that took years to fill.
 
-**The window.** Two settings on the phone, and each of them is a lower bound: a start date, and how many
-days back to look. The **stricter of the two wins**, which makes the day count a fuse - a start date of
-2005 cannot on its own put 46 GB on the wire. The settings screen shows the resulting date, because two
-bounds do not add up to an obvious answer. Eligibility is decided on **when the photo was taken**, never
-on when the file was last touched: copying a file around refreshes its modification time, and a photo
-from last year would otherwise walk back into the window and be sent again.
+**Everything is set up on the Mac**, in *Settings*, *Photos*: the album to import into, how far back the
+phone looks, how often this Mac asks, and the largest item worth starting. The phone holds none of it -
+it is sent at the start of every connection and kept only for as long as that connection lasts, so a
+phone that has not heard from a Mac describes nothing at all. What is left on the phone is the permission
+to read the camera folder, which is the one thing a Mac cannot grant.
+
+**The starting point.** The first complete list from the phone is not work: it is where the counting
+starts. Everything already on the phone at that moment is written down as accounted for, so nothing is
+fetched and nothing waits for you - only what changes from then on is offered. That is why there is no
+"photos taken from" date any more. If you ever want to draw the line again, *Start again…* in the Photos
+settings clears everything this Mac has recorded and takes whatever the phone holds now as the new
+starting point. The photos already in your library stay there untouched, but they stop being tracked:
+deleting one on the phone will no longer be offered here, and editing one will bring a second copy
+rather than replacing the first. It asks before doing it.
+
+Eligibility is decided on **when the photo was taken**, never on when the file was last touched: copying
+a file around refreshes its modification time, and a photo from last year would otherwise walk back into
+the window and be sent again. Making *Look back* larger brings older photos into range as ordinary
+additions - a large batch waits in the sync window rather than starting by itself.
 
 **The sync window.** Anything that is not a plain addition waits in `Photo sync…`, a window listing every
 item with what would happen to it - **Add**, **Update**, **Remove**, or **Problem** with the phone's own
@@ -230,15 +243,18 @@ reason. Pick any number of rows and either **Synchronise selected**, which carri
 rows, or **Ignore selected**, which drops them from the sync for good: an ignored item is treated as
 synchronised and is never offered again. Ignoring is irreversible, so it asks first.
 
-**What runs by itself, and what waits.** The first complete description of the camera folder produces a
-report and imports nothing at all - not even five photos. After that a plan of *only* additions runs on
-its own, unless it is over 200 items or 2 GiB, which stops and waits like everything else. Any other plan
+**What runs by itself, and what waits.** A plan of *only* additions runs on its own, unless it is over
+20 items or 200 MB, which stops and waits like everything else. Any other plan
 waits in the window in full, additions included: if photos are about to be removed, that is the moment to
 look at the whole picture rather than at one half of it. `Confirm new photos in the sync window too`, in
 the Photos settings, makes even plain additions wait.
 
-**Changes and deletions.** A photo edited on the phone arrives as a new asset, and the old one goes on the
-list as **Remove**. A photo deleted on the phone goes on the list too. Nothing on that list leaves the
+**Changes and deletions.** A photo edited on the phone arrives as a new asset, because Photos offers no way
+to replace the contents of an existing one. The copy it replaces is taken out on its own, without asking a
+second time: it exists only because you approved that change, and an album that quietly kept two of
+everything ever edited would be worse than one confirmation alert arriving a few seconds after your click.
+That applies **only** to replaced copies - a photo the phone deleted is a different question and still
+waits for its own answer, listed as **Remove** rather than **Replaced**. A photo deleted on the phone goes on the list too. Nothing on that list leaves the
 library until you ask for it in the window, and the reason is **macOS: it puts up its own confirmation
 alert before an app removes anything from the Photos library.** An alert that appears by itself, up to
 twice an hour while a sync runs, would be worse than the wait - so the sync writes the deletions down and

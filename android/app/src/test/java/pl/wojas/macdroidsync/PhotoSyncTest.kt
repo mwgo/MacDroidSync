@@ -139,31 +139,109 @@ class PhotoKeyTest {
     }
 }
 
-/** Both settings are lower bounds; the day count is the fuse. */
+/** The width comes from the Mac; the bound is computed here, on this clock. */
 class PhotoWindowTest {
 
     private val now = 1_800_000_000_000L
     private val day = 86_400_000L
 
     @Test
-    fun `the later bound wins`() {
-        assertEquals(now - 30 * day, PhotoWindow.effectiveFrom(1_000_000_000_000L, 30, now))
-    }
-
-    @Test
-    fun `a recent start date beats the day count`() {
-        assertEquals(now - day, PhotoWindow.effectiveFrom(now - day, 30, now))
+    fun `the bound is the day count back from now`() {
+        assertEquals(now - 30 * day, PhotoWindow.effectiveFrom(30, now))
     }
 
     @Test
     fun `a zero day count is read as one day not as everything`() {
-        assertEquals(now - day, PhotoWindow.effectiveFrom(0, 0, now))
+        assertEquals(now - day, PhotoWindow.effectiveFrom(0, now))
     }
 
     @Test
     fun `an unknown capture date is in no window at all`() {
         assertTrue(!PhotoWindow.contains(0, 0))
         assertTrue(PhotoWindow.contains(now, now - day))
+    }
+}
+
+/**
+ * What the Mac is allowed to ask for. Every field here is a place where a wrong
+ * answer moves gigabytes or sends nothing at all, so each one is pinned.
+ */
+class PhotoConfigTest {
+
+    @Test
+    fun `a full configuration is taken as it is`() {
+        val config = PhotoConfig.of(
+            PhotoPayload(enabled = true, lastDays = 45, maxItemBytes = 100L * 1024 * 1024),
+        )
+        assertEquals(true, config.enabled)
+        assertEquals(45, config.lastDays)
+        assertEquals(100L * 1024 * 1024, config.maxItemBytes)
+    }
+
+    /** The one that matters most: a missing field can never mean "send". */
+    @Test
+    fun `an absent enabled flag is off`() {
+        assertEquals(false, PhotoConfig.of(PhotoPayload()).enabled)
+        assertEquals(false, PhotoConfig.of(PhotoPayload(lastDays = 30)).enabled)
+    }
+
+    @Test
+    fun `an absent day count falls back to the default`() {
+        assertEquals(PhotoConfig.DEFAULT_LAST_DAYS, PhotoConfig.of(PhotoPayload()).lastDays)
+    }
+
+    @Test
+    fun `a day count outside the range is brought back into it`() {
+        assertEquals(1, PhotoConfig.of(PhotoPayload(lastDays = 0)).lastDays)
+        assertEquals(1, PhotoConfig.of(PhotoPayload(lastDays = -5)).lastDays)
+        assertEquals(3650, PhotoConfig.of(PhotoPayload(lastDays = 99_999)).lastDays)
+    }
+
+    /**
+     * The ceiling belongs to this phone: there is no resume in the protocol, so
+     * the Mac may lower the limit and must never be able to raise it.
+     */
+    @Test
+    fun `the item limit is clamped at both ends`() {
+        assertEquals(Wire.MAX_PHOTO_BYTES, PhotoConfig.of(PhotoPayload()).maxItemBytes)
+        assertEquals(
+            PhotoConfig.MIN_ITEM_BYTES,
+            PhotoConfig.of(PhotoPayload(maxItemBytes = 0)).maxItemBytes,
+        )
+        assertEquals(
+            Wire.MAX_PHOTO_BYTES,
+            PhotoConfig.of(PhotoPayload(maxItemBytes = 99L * 1024 * 1024 * 1024)).maxItemBytes,
+        )
+    }
+
+    @Test
+    fun `the configuration keys are the ones the Mac writes`() {
+        val json = PhotoPayload(enabled = true, lastDays = 30, maxItemBytes = 2048).toJson()
+        assertTrue(json.getBoolean("enabled"))
+        assertEquals(30, json.getInt("lastDays"))
+        assertEquals(2048L, json.getLong("maxItemBytes"))
+    }
+
+    @Test
+    fun `a configuration survives a whole message`() {
+        val message = Message(
+            seq = 4,
+            type = MessageType.PHOTO_CONFIG,
+            photo = PhotoPayload(enabled = true, lastDays = 7, maxItemBytes = 1234),
+        )
+        val parsed = Message.parse(message.toBytes())
+        assertEquals(MessageType.PHOTO_CONFIG, parsed.type)
+        assertEquals(PhotoConfig(enabled = true, lastDays = 7, maxItemBytes = 1024 * 1024),
+                     PhotoConfig.of(parsed.photo!!))
+    }
+
+    /** A newer Mac may add fields; that must not cost this phone the session. */
+    @Test
+    fun `an unexpected field is ignored rather than fatal`() {
+        val json = org.json.JSONObject("""{"enabled":true,"lastDays":10,"somethingNewer":"x"}""")
+        val config = PhotoConfig.of(PhotoPayload.fromJson(json))
+        assertEquals(true, config.enabled)
+        assertEquals(10, config.lastDays)
     }
 }
 
@@ -365,51 +443,6 @@ class PhotoTombstonesTest {
             ledger = listOf("a"), present = listOf("a", "new"), scanComplete = true,
         )
         assertTrue(gone.isEmpty())
-    }
-}
-
-/** The typed start date, both ways round. */
-class PhotoDateTest {
-
-    private val utc = 0
-
-    @Test
-    fun `a date is read as midnight that day`() {
-        // 2026-01-19 00:00:00 UTC
-        assertEquals(1_768_780_800_000L, PhotoDate.parse("2026-01-19", utc))
-    }
-
-    @Test
-    fun `the local offset is honoured so the day is the day you meant`() {
-        val plusTwo = 2 * 3_600_000
-        assertEquals(1_768_780_800_000L - plusTwo, PhotoDate.parse("2026-01-19", plusTwo))
-    }
-
-    @Test
-    fun `nonsense is refused rather than guessed at`() {
-        assertNull(PhotoDate.parse("", utc))
-        assertNull(PhotoDate.parse("19-01-2026", utc))
-        assertNull(PhotoDate.parse("2026-13-01", utc))
-        assertNull(PhotoDate.parse("2026-02-30", utc))
-        assertNull(PhotoDate.parse(null, utc))
-    }
-
-    @Test
-    fun `surrounding spaces do not matter`() {
-        assertEquals(PhotoDate.parse("2026-01-19", utc), PhotoDate.parse("  2026-01-19 ", utc))
-    }
-
-    @Test
-    fun `formatting is the inverse of parsing`() {
-        for (text in listOf("2026-01-19", "2024-02-29", "1999-12-31", "2000-01-01")) {
-            val millis = PhotoDate.parse(text, utc)!!
-            assertEquals(text, PhotoDate.format(millis, utc))
-        }
-    }
-
-    @Test
-    fun `nothing stored shows as nothing`() {
-        assertEquals("", PhotoDate.format(0, utc))
     }
 }
 

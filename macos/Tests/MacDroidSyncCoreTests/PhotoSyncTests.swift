@@ -40,7 +40,7 @@ final class PhotoDeltaTests: XCTestCase {
     /// "the user deleted everything".
     func testEmptyButCompleteManifestRefusesToDeleteTheLibrary() {
         let index = (1...300).map { entry("k\($0)", at: 5 * day, sha: "h\($0)") }
-        let plan = PhotoDelta.plan(items: [], from: day, index: index, isFirstRun: false)
+        let plan = PhotoDelta.plan(items: [], from: day, index: index)
         XCTAssertTrue(plan.delete.isEmpty)
         XCTAssertEqual(plan.refusedDelete.count, 300)
     }
@@ -51,7 +51,7 @@ final class PhotoDeltaTests: XCTestCase {
         var index = (1...300).map { entry("k\($0)", at: 5 * day, sha: "h\($0)") }
         let items = index.dropFirst(15).map { item($0.key, at: $0.captureAt, sha: $0.sha256) }
         index = Array(index)
-        let plan = PhotoDelta.plan(items: items, from: day, index: index, isFirstRun: false)
+        let plan = PhotoDelta.plan(items: items, from: day, index: index)
         XCTAssertEqual(plan.delete.count, 15)
         XCTAssertTrue(plan.refusedDelete.isEmpty)
     }
@@ -61,7 +61,7 @@ final class PhotoDeltaTests: XCTestCase {
     func testAgedOutEntryIsNotDeleted() {
         let index = [entry("old", at: 1 * day), entry("new", at: 10 * day)]
         let plan = PhotoDelta.plan(
-            items: [item("new", at: 10 * day)], from: 5 * day, index: index, isFirstRun: false
+            items: [item("new", at: 10 * day)], from: 5 * day, index: index
         )
         XCTAssertTrue(plan.delete.isEmpty)
         XCTAssertTrue(plan.refusedDelete.isEmpty)
@@ -72,7 +72,7 @@ final class PhotoDeltaTests: XCTestCase {
     func testTombstoneDeletesOutsideTheWindow() {
         let index = [entry("old", at: 1 * day)]
         let plan = PhotoDelta.plan(
-            items: [], from: 5 * day, tombstones: ["old"], index: index, isFirstRun: false
+            items: [], from: 5 * day, tombstones: ["old"], index: index
         )
         XCTAssertEqual(plan.delete.map(\.key), ["old"])
     }
@@ -83,7 +83,7 @@ final class PhotoDeltaTests: XCTestCase {
         let index = [entry("clip.mp4", at: 6 * day)]
         let plan = PhotoDelta.plan(
             items: [item("clip.mp4", at: 6 * day, size: 3_000_000_000, excluded: .size)],
-            from: 5 * day, index: index, isFirstRun: false
+            from: 5 * day, index: index
         )
         XCTAssertTrue(plan.want.isEmpty)
         XCTAssertTrue(plan.delete.isEmpty)
@@ -95,7 +95,7 @@ final class PhotoDeltaTests: XCTestCase {
     func testWhatTheUserDeletedInPhotosIsNotImportedAgain() {
         let index = [entry("gone", at: 6 * day, state: .removedByUser)]
         let plan = PhotoDelta.plan(
-            items: [item("gone", at: 6 * day)], from: 5 * day, index: index, isFirstRun: false
+            items: [item("gone", at: 6 * day)], from: 5 * day, index: index
         )
         XCTAssertTrue(plan.want.isEmpty)
     }
@@ -105,8 +105,7 @@ final class PhotoDeltaTests: XCTestCase {
     func testAnEditedPhotoTheUserDeletedStillDoesNotComeBack() {
         let index = [entry("gone", at: 6 * day, sha: "old", state: .removedByUser)]
         let plan = PhotoDelta.plan(
-            items: [item("gone", at: 6 * day, sha: "new")], from: 5 * day, index: index,
-            isFirstRun: false
+            items: [item("gone", at: 6 * day, sha: "new")], from: 5 * day, index: index
         )
         XCTAssertTrue(plan.want.isEmpty)
     }
@@ -117,7 +116,7 @@ final class PhotoDeltaTests: XCTestCase {
     func testAPhotoWeRemovedComesBackWhenThePhoneHasItAgain() {
         let index = [entry("k", at: 6 * day, state: .deletedByUs)]
         let plan = PhotoDelta.plan(
-            items: [item("k", at: 6 * day)], from: 5 * day, index: index, isFirstRun: false
+            items: [item("k", at: 6 * day)], from: 5 * day, index: index
         )
         XCTAssertEqual(plan.want.map(\.key), ["k"])
     }
@@ -125,8 +124,7 @@ final class PhotoDeltaTests: XCTestCase {
     func testRestoredFromTheBinCancelsThePendingDeletion() {
         let index = [entry("back", at: 6 * day, sha: "same", state: .pendingDelete)]
         let plan = PhotoDelta.plan(
-            items: [item("back", at: 6 * day, sha: "same")], from: 5 * day, index: index,
-            isFirstRun: false
+            items: [item("back", at: 6 * day, sha: "same")], from: 5 * day, index: index
         )
         XCTAssertEqual(plan.cancelPendingDelete, ["back"])
         XCTAssertTrue(plan.want.isEmpty)
@@ -139,42 +137,18 @@ final class PhotoDeltaTests: XCTestCase {
         let index = [entry("DCIM/Camera/a.jpg", at: 6 * day, sha: "same")]
         let plan = PhotoDelta.plan(
             items: [item("DCIM/Camera/b.jpg", at: 6 * day, sha: "same")],
-            from: 5 * day, index: index, isFirstRun: false
+            from: 5 * day, index: index
         )
         XCTAssertEqual(plan.renames, [PhotoRename(from: "DCIM/Camera/a.jpg", to: "DCIM/Camera/b.jpg")])
         XCTAssertTrue(plan.want.isEmpty)
         XCTAssertTrue(plan.delete.isEmpty)
     }
 
-    /// The same bytes under a second name while the first is still there is a
-    /// copy, not a move, and a copy has to be fetched.
-    func testACopyIsNotMistakenForARename() {
-        let index = [entry("DCIM/Camera/a.jpg", at: 6 * day, sha: "same")]
-        let plan = PhotoDelta.plan(
-            items: [item("DCIM/Camera/a.jpg", at: 6 * day, sha: "same"),
-                    item("DCIM/Camera/b.jpg", at: 6 * day, sha: "same")],
-            from: 5 * day, index: index, isFirstRun: false
-        )
-        XCTAssertTrue(plan.renames.isEmpty)
-        XCTAssertEqual(plan.want.map(\.key), ["DCIM/Camera/b.jpg"])
-    }
-
-    // MARK: - The approval gate
-
-    func testFirstRunAlwaysNeedsApprovalEvenForOnePhoto() {
-        let plan = PhotoDelta.plan(
-            items: [item("one", at: 6 * day)], from: 5 * day, index: [], isFirstRun: true
-        )
-        XCTAssertEqual(plan.want.count, 1)
-        XCTAssertTrue(plan.needsApproval)
-        XCTAssertNotNil(plan.approvalReason)
-    }
-
     func testASmallEverydayBatchNeedsNoApproval() {
         let items = (1...20).map { item("k\($0)", at: 6 * day, sha: "h\($0)") }
         let plan = PhotoDelta.plan(items: items, from: 5 * day, index: [
             entry("seen", at: 6 * day)
-        ], isFirstRun: false)
+        ])
         XCTAssertEqual(plan.want.count, 20)
         XCTAssertFalse(plan.needsApproval)
     }
@@ -183,7 +157,7 @@ final class PhotoDeltaTests: XCTestCase {
         let items = (1...250).map { item("k\($0)", at: 6 * day, sha: "h\($0)") }
         let plan = PhotoDelta.plan(items: items, from: 5 * day, index: [
             entry("seen", at: 6 * day)
-        ], isFirstRun: false)
+        ])
         XCTAssertTrue(plan.needsApproval)
     }
 
@@ -191,7 +165,7 @@ final class PhotoDeltaTests: XCTestCase {
         let items = (1...3).map { item("k\($0)", at: 6 * day, size: 1_000_000_000, sha: "h\($0)") }
         let plan = PhotoDelta.plan(items: items, from: 5 * day, index: [
             entry("seen", at: 6 * day)
-        ], isFirstRun: false)
+        ])
         XCTAssertTrue(plan.needsApproval)
         XCTAssertEqual(plan.wantBytes, 3_000_000_000)
     }
@@ -200,7 +174,7 @@ final class PhotoDeltaTests: XCTestCase {
     /// this month's photos before 2005's.
     func testAHugeBacklogIsParkedAndOrderedNewestFirst() {
         let items = (1...5000).map { item("k\($0)", at: Int64($0) * day, size: 9_000_000, sha: "h\($0)") }
-        let plan = PhotoDelta.plan(items: items, from: 0, index: [], isFirstRun: true)
+        let plan = PhotoDelta.plan(items: items, from: 0, index: [])
         XCTAssertTrue(plan.needsApproval)
         XCTAssertEqual(plan.want.first?.key, "k5000")
         XCTAssertEqual(plan.want.last?.key, "k1")
@@ -212,13 +186,13 @@ final class PhotoDeltaTests: XCTestCase {
         let index = [entry("k", at: 6 * day, size: 1_000, sha: "aa")]
         let same = PhotoDelta.plan(
             items: [item("k", at: 6 * day, size: 1_000, sha: nil)],
-            from: 5 * day, index: index, isFirstRun: false
+            from: 5 * day, index: index
         )
         XCTAssertTrue(same.want.isEmpty)
 
         let resized = PhotoDelta.plan(
             items: [item("k", at: 6 * day, size: 2_000, sha: nil)],
-            from: 5 * day, index: index, isFirstRun: false
+            from: 5 * day, index: index
         )
         XCTAssertEqual(resized.want.count, 1)
     }
@@ -227,7 +201,7 @@ final class PhotoDeltaTests: XCTestCase {
         let index = [entry("k", at: 6 * day, sha: "before")]
         let plan = PhotoDelta.plan(
             items: [item("k", at: 6 * day, sha: "after")],
-            from: 5 * day, index: index, isFirstRun: false
+            from: 5 * day, index: index
         )
         XCTAssertEqual(plan.want.map(\.key), ["k"])
         XCTAssertTrue(plan.delete.isEmpty)
@@ -237,9 +211,52 @@ final class PhotoDeltaTests: XCTestCase {
         let index = [entry("k", at: 6 * day, sha: "ABC")]
         let plan = PhotoDelta.plan(
             items: [item("k", at: 6 * day, sha: "abc")],
-            from: 5 * day, index: index, isFirstRun: false
+            from: 5 * day, index: index
         )
         XCTAssertTrue(plan.want.isEmpty)
+    }
+
+
+    // MARK: - The starting point
+
+    /// A row from the starting point is a note that the phone had it, not a
+    /// photo this Mac holds - so only a later edit of it is work.
+    func testAPreexistingKeyIsWantedOnlyWhenItsBytesChange() {
+        let index = [entry("a", at: 5 * day, sha: "held", state: .preexisting)]
+        let same = PhotoDelta.plan(items: [item("a", at: 5 * day, sha: "held")], from: 0,
+                                   index: index)
+        XCTAssertTrue(same.want.isEmpty)
+
+        let edited = PhotoDelta.plan(items: [item("a", at: 5 * day, sha: "edited")], from: 0,
+                                     index: index)
+        XCTAssertEqual(edited.want.map(\.key), ["a"])
+    }
+
+    /// The point of the whole thing: there is nothing here to remove, so its
+    /// disappearance is not a removal to confirm.
+    func testAPreexistingKeyIsNeverADeletionCandidate() {
+        let index = [entry("a", at: 5 * day, state: .preexisting)]
+        let plan = PhotoDelta.plan(items: [], from: 0, index: index)
+        XCTAssertTrue(plan.delete.isEmpty)
+        XCTAssertTrue(plan.refusedDelete.isEmpty)
+    }
+
+    /// Without this one video the phone will never send would be reported as a
+    /// problem on every cycle, for ever.
+    func testAnExcludedPreexistingItemIsNotReportedAgain() {
+        let index = [entry("clip.mp4", at: 5 * day, state: .preexisting)]
+        let plan = PhotoDelta.plan(items: [item("clip.mp4", at: 5 * day, excluded: .size)],
+                                   from: 0, index: index)
+        XCTAssertTrue(plan.excluded.isEmpty)
+    }
+
+    func testAPreexistingRowSurvivesARoundTrip() throws {
+        let row = entry("a", at: 5 * day, state: .preexisting)
+        let decoded = try JSONDecoder().decode(
+            PhotoIndexEntry.self, from: try JSONEncoder().encode(row)
+        )
+        XCTAssertEqual(decoded.state, .preexisting)
+        XCTAssertTrue(decoded.state.isSettled)
     }
 
     // MARK: - Rows for the sync window
@@ -254,7 +271,7 @@ final class PhotoDeltaTests: XCTestCase {
             items: [item("held", at: 5 * day, sha: "new"), item("fresh", at: 6 * day),
                     item("gone-here", at: 5 * day, sha: "bb"),
                     item("odd", at: 6 * day, excluded: .noDate)],
-            from: 0, index: index, isFirstRun: false
+            from: 0, index: index
         )
         let rows = plan.pendingActions(index: index, now: 42)
         XCTAssertEqual(rows.filter { $0.kind == .change }.map(\.key), ["held"])
@@ -265,7 +282,7 @@ final class PhotoDeltaTests: XCTestCase {
 
     func testADeletionRowCarriesWhatTheIndexKnows() {
         let index = [entry("gone", at: 5 * day)]
-        let plan = PhotoDelta.plan(items: [], from: 0, index: index, isFirstRun: false)
+        let plan = PhotoDelta.plan(items: [], from: 0, index: index)
         let rows = plan.pendingActions(index: index, now: 42)
         XCTAssertEqual(rows.map(\.kind), [.delete])
         XCTAssertEqual(rows.first?.name, "gone")
@@ -290,7 +307,7 @@ final class PhotoDeltaTests: XCTestCase {
             items: [item("elsewhere", at: 5 * day, sha: "same"),
                     item("back", at: 5 * day, sha: "bb"),
                     item("new", at: 6 * day, sha: "cc")],
-            from: 0, index: index, isFirstRun: false
+            from: 0, index: index
         )
         XCTAssertEqual(plan.renames.map(\.to), ["elsewhere"])
         XCTAssertEqual(plan.cancelPendingDelete, ["back"])
@@ -301,18 +318,17 @@ final class PhotoDeltaTests: XCTestCase {
     func testAChangeOrADeletionOrAProblemIsNotAdditionsOnly() {
         let held = [entry("held", at: 5 * day, sha: "old")]
         let changed = PhotoDelta.plan(items: [item("held", at: 5 * day, sha: "new")], from: 0,
-                                      index: held, isFirstRun: false)
+                                      index: held)
         XCTAssertFalse(changed.isAdditionsOnly(index: held))
 
-        let deleted = PhotoDelta.plan(items: [], from: 0, index: held, isFirstRun: false)
+        let deleted = PhotoDelta.plan(items: [], from: 0, index: held)
         XCTAssertFalse(deleted.isAdditionsOnly(index: held))
 
         let refused = PhotoDelta.plan(items: [item("odd", at: 5 * day, excluded: .size)], from: 0,
-                                      index: [], isFirstRun: false)
+                                      index: [])
         XCTAssertFalse(refused.isAdditionsOnly(index: []))
 
-        let plain = PhotoDelta.plan(items: [item("new", at: 5 * day)], from: 0, index: [],
-                                    isFirstRun: false)
+        let plain = PhotoDelta.plan(items: [item("new", at: 5 * day)], from: 0, index: [])
         XCTAssertTrue(plain.isAdditionsOnly(index: []))
     }
 
@@ -321,7 +337,7 @@ final class PhotoDeltaTests: XCTestCase {
     func testAnIgnoredKeyIsNeverWantedAgain() {
         let index = [entry("no", at: 5 * day, state: .ignoredByUser)]
         let plan = PhotoDelta.plan(items: [item("no", at: 5 * day, sha: "anything")], from: 0,
-                                   index: index, isFirstRun: false)
+                                   index: index)
         XCTAssertTrue(plan.want.isEmpty)
     }
 
@@ -330,11 +346,11 @@ final class PhotoDeltaTests: XCTestCase {
     func testAnIgnoredVersionIsRefusedButALaterEditIsNot() {
         let index = [entry("a", at: 5 * day, sha: "held", ignoredVersion: "edit-1")]
         let same = PhotoDelta.plan(items: [item("a", at: 5 * day, sha: "edit-1")], from: 0,
-                                   index: index, isFirstRun: false)
+                                   index: index)
         XCTAssertTrue(same.want.isEmpty)
 
         let later = PhotoDelta.plan(items: [item("a", at: 5 * day, sha: "edit-2")], from: 0,
-                                    index: index, isFirstRun: false)
+                                    index: index)
         XCTAssertEqual(later.want.map(\.key), ["a"])
     }
 
@@ -345,7 +361,7 @@ final class PhotoDeltaTests: XCTestCase {
         let unhashed = item("a", at: 5 * day, sha: nil)
         let index = [entry("a", at: 5 * day, sha: "held",
                            ignoredVersion: PhotoIndexEntry.fingerprint(of: unhashed))]
-        let plan = PhotoDelta.plan(items: [unhashed], from: 0, index: index, isFirstRun: false)
+        let plan = PhotoDelta.plan(items: [unhashed], from: 0, index: index)
         XCTAssertTrue(plan.want.isEmpty)
     }
 
@@ -354,39 +370,10 @@ final class PhotoDeltaTests: XCTestCase {
     func testAnIgnoredProblemIsNotReportedAgain() {
         let index = [entry("odd", at: 5 * day, state: .ignoredByUser)]
         let plan = PhotoDelta.plan(items: [item("odd", at: 5 * day, excluded: .noLocation)],
-                                   from: 0, index: index, isFirstRun: false)
+                                   from: 0, index: index)
         XCTAssertTrue(plan.excluded.isEmpty)
     }
 
-}
-
-/// The window is two lower bounds, and which one wins decides whether a wide
-/// start date can start a 46 GB import on its own. It cannot.
-final class PhotoWindowTests: XCTestCase {
-
-    private let now = Date(timeIntervalSince1970: 1_800_000_000)
-
-    func testTheLaterBoundWins() {
-        let old = Date(timeIntervalSince1970: 1_000_000_000)
-        let from = PhotoWindow.effectiveFrom(startDate: old, lastDays: 30, now: now)
-        XCTAssertEqual(from, Int64((now.timeIntervalSince1970 - 30 * 86_400) * 1000))
-    }
-
-    func testARecentStartDateBeatsTheDayCount() {
-        let recent = now.addingTimeInterval(-86_400)
-        let from = PhotoWindow.effectiveFrom(startDate: recent, lastDays: 30, now: now)
-        XCTAssertEqual(from, Int64(recent.timeIntervalSince1970 * 1000))
-    }
-
-    func testWithoutAStartDateTheDayCountIsTheWholeFuse() {
-        let from = PhotoWindow.effectiveFrom(startDate: nil, lastDays: 7, now: now)
-        XCTAssertEqual(from, Int64((now.timeIntervalSince1970 - 7 * 86_400) * 1000))
-    }
-
-    func testAZeroDayCountIsReadAsOneDayNotAsEverything() {
-        let from = PhotoWindow.effectiveFrom(startDate: nil, lastDays: 0, now: now)
-        XCTAssertEqual(from, Int64((now.timeIntervalSince1970 - 86_400) * 1000))
-    }
 }
 
 /// The wire shape, asserted key by key: Swift and Kotlin have to agree, and the
@@ -426,5 +413,15 @@ final class PhotoItemCodingTests: XCTestCase {
         encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(payload), as: UTF8.self)
         XCTAssertEqual(json, #"{"count":700,"from":99,"manifestId":"m1","page":1,"pages":2}"#)
+    }
+
+    /// The mirror of `PhotoConfigTest` on the phone: two hand written encoders
+    /// have to agree on these names or the settings simply never arrive.
+    func testTheConfigurationKeysAreTheOnesThePhoneReads() throws {
+        let payload = PhotoPayload(enabled: true, lastDays: 30, maxItemBytes: 2_147_483_648)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let json = String(decoding: try encoder.encode(payload), as: UTF8.self)
+        XCTAssertEqual(json, #"{"enabled":true,"lastDays":30,"maxItemBytes":2147483648}"#)
     }
 }

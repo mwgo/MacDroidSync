@@ -38,7 +38,7 @@ class PhotoSyncEngine(
      * as an empty manifest, because an empty manifest is how the Mac is told that
      * everything was deleted.
      */
-    fun describe(connection: PeerConnection) {
+    fun describe(connection: PeerConnection, config: PhotoConfig) {
         val scan = scanner.scan()
         if (!scan.complete) {
             Log.i(TAG, "Not describing the camera folder: ${scan.refusal}")
@@ -47,7 +47,7 @@ class PhotoSyncEngine(
         }
 
         val now = System.currentTimeMillis()
-        val from = PhotoWindow.effectiveFrom(prefs.photoStartDate, prefs.photoLastDays, now)
+        val from = PhotoWindow.effectiveFrom(config.lastDays, now)
         val id = "${prefs.deviceId}:$now"
         manifestId = id
 
@@ -59,7 +59,7 @@ class PhotoSyncEngine(
 
         val inWindow = scan.rows.filter { PhotoWindow.contains(it.captureAt, from) }
         val skippedWithoutDate = scan.rows.count { it.captureAt <= 0 }
-        val items = describe(inWindow)
+        val items = describe(inWindow, config.maxItemBytes)
         describedRows = inWindow.associateBy { it.key }
         ledger.save()
 
@@ -98,9 +98,8 @@ class PhotoSyncEngine(
      * An item that is excluded is still listed, with the reason: leaving it out
      * would read as a deletion, and a 2 GB video is not a deletion.
      */
-    private fun describe(rows: List<PhotoScanner.Row>): List<PhotoItem> {
+    private fun describe(rows: List<PhotoScanner.Row>, maxItemBytes: Long): List<PhotoItem> {
         var hashed = 0L
-        val maxItemBytes = prefs.photoMaxItemBytes
         return rows.sortedByDescending { it.captureAt }.map { row ->
             val cached = ledger.row(row.key)
             val exclusion = when {
@@ -173,6 +172,7 @@ class PhotoSyncEngine(
      */
     suspend fun send(
         connection: PeerConnection,
+        config: PhotoConfig,
         keys: List<String>,
         awaitAck: suspend (String, String) -> Boolean,
         onProgress: (String, Long, Long) -> Unit,
@@ -186,7 +186,7 @@ class PhotoSyncEngine(
                 continue
             }
             val size = scanner.currentSize(row) ?: row.size
-            if (size > prefs.photoMaxItemBytes) {
+            if (size > config.maxItemBytes) {
                 failures.add(key)
                 ledger.recordFailure(key, PhotoExclusion.SIZE)
                 continue

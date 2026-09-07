@@ -27,13 +27,15 @@ public struct PhotoSyncState: Codable, Equatable {
     public var pendingReason: String?
     /// Exactly the keys the operator saw and approved - not a general licence.
     public var approvedKeys: [String] = []
-    /// Whether the first-run report has been seen and accepted.
+    /// When the phone's own picture was adopted as the starting point.
     ///
-    /// This has to be remembered here rather than inferred from an empty index,
-    /// and the reason is a loop: the gate's condition would be cleared by an
-    /// import, and the gate is what stops the import. So the operator's click is
-    /// the thing that opens it, once.
-    public var approvedFirstRun: Bool = false
+    /// Nil means it has not happened yet, which on a fresh install is what makes
+    /// the first complete manifest a starting point rather than five thousand
+    /// items of work.
+    public var baselineAt: Int64?
+    /// Set by "Start again": the next complete manifest becomes a new starting
+    /// point even though this Mac already has history.
+    public var baselineWanted: Bool = false
     /// Keys the operator has already been told about. Without this the same
     /// list would raise a banner on every cycle, twice an hour, for ever.
     public var notifiedKeys: [String] = []
@@ -50,13 +52,13 @@ public struct PhotoSyncState: Codable, Equatable {
     public var awaitingBytes: Int64 { awaitingTransfer.reduce(0) { $0 + $1.size } }
 
     enum CodingKeys: String, CodingKey {
-        case pending, pendingReason, approvedKeys, approvedFirstRun, notifiedKeys
-        case skipped, lastCycleAt, windowFrom
+        case pending, pendingReason, approvedKeys, notifiedKeys
+        case skipped, lastCycleAt, windowFrom, baselineAt, baselineWanted
     }
 
-    /// Keys written by the build that had no sync window. Read, never written.
+    /// Keys written by earlier builds. Read, never written.
     private enum LegacyKeys: String, CodingKey {
-        case awaitingApproval, approvalReason
+        case awaitingApproval, approvalReason, approvedFirstRun
     }
 
     /// Written by hand rather than synthesised, and that is load-bearing.
@@ -71,8 +73,9 @@ public struct PhotoSyncState: Codable, Equatable {
         pending = try container.decodeIfPresent([PhotoPendingAction].self, forKey: .pending) ?? []
         pendingReason = try container.decodeIfPresent(String.self, forKey: .pendingReason)
         approvedKeys = try container.decodeIfPresent([String].self, forKey: .approvedKeys) ?? []
-        approvedFirstRun = try container.decodeIfPresent(Bool.self, forKey: .approvedFirstRun) ?? false
         notifiedKeys = try container.decodeIfPresent([String].self, forKey: .notifiedKeys) ?? []
+        baselineAt = try container.decodeIfPresent(Int64.self, forKey: .baselineAt)
+        baselineWanted = try container.decodeIfPresent(Bool.self, forKey: .baselineWanted) ?? false
         skipped = try container.decodeIfPresent([PhotoSkipped].self, forKey: .skipped) ?? []
         lastCycleAt = try container.decodeIfPresent(Int64.self, forKey: .lastCycleAt)
         windowFrom = try container.decodeIfPresent(Int64.self, forKey: .windowFrom)
@@ -80,6 +83,15 @@ public struct PhotoSyncState: Codable, Equatable {
         // A plan parked by the previous build. The same items, now as rows, so
         // an upgrade does not lose a decision the operator was already facing.
         let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        // An install from before the starting point existed has already been
+        // through the first-run report, so it has history whatever the index
+        // looks like. Adopting a starting point now would write its whole
+        // library off and stop it noticing anything, so the old flag is read one
+        // last time and turned into the fact it stood for.
+        if baselineAt == nil,
+           try legacy.decodeIfPresent(Bool.self, forKey: .approvedFirstRun) == true {
+            baselineAt = lastCycleAt ?? 0
+        }
         let items = try legacy.decodeIfPresent([PhotoItem].self, forKey: .awaitingApproval) ?? []
         if !items.isEmpty {
             pending += items.map {
@@ -173,6 +185,10 @@ public struct PhotoSyncReport: Equatable {
     public var pendingDeletions: Int = 0
     public var removedByUser: Int = 0
     public var ignored: Int = 0
+    /// Items that were on the phone before this Mac started looking.
+    public var preexisting: Int = 0
+    /// When that starting point was taken, or nil when it has not been.
+    public var baselineAt: Date?
     public var skipped: [PhotoSkipped] = []
     public var lastCycleAt: Date?
     public var windowFrom: Date?
@@ -235,6 +251,10 @@ public final class PhotoSyncCoordinator {
     /// Everything waiting for a decision.
     public var pendingActions: [PhotoPendingAction] { state.current.pending }
 
+    /// When the last complete manifest arrived, so the scheduler can tell
+    /// whether a cycle is due. Survives a restart, because the state file does.
+    public var lastCycleAt: Int64? { state.current.lastCycleAt }
+
     /// Carries out exactly the rows the operator picked.
     ///
     /// Deletions go first and go together: macOS puts one confirmation alert in
@@ -277,7 +297,6 @@ public final class PhotoSyncCoordinator {
                 // follow instead of needing another click.
                 state.update { snapshot in
                     snapshot.approvedKeys = Array(Set(snapshot.approvedKeys).union(items.map(\.key)))
-                    snapshot.approvedFirstRun = true
                 }
                 let asked = fetch(items)
                 if asked > 0 {
@@ -296,6 +315,59 @@ public final class PhotoSyncCoordinator {
             }
 
             drop(done)
+            publish()
+            return outcome
+        }
+    }
+
+    /// "Start again from what the phone has now."
+    ///
+    /// Deliberately a separate button rather than something the on/off switch
+    /// does: switching photo sync off for a week and on again should bring that
+    /// week, and a stray tap must never quietly write a holiday off.
+    public func resetBaseline() {
+        queue.sync {
+            // Everything this Mac knew goes, not merely the flag. A starting
+            // point is taken by writing down keys that are not spoken for, so
+            // leaving the old index in place would make "start again" a no-op on
+            // exactly the installs that ask for it - every key on the phone is
+            // already in there, decided one way or another.
+            importer.forgetEverything()
+            state.update { stored in
+                stored.baselineAt = nil
+                stored.baselineWanted = true
+                stored.pending = []
+                stored.pendingReason = nil
+                stored.approvedKeys = []
+                stored.notifiedKeys = []
+                stored.skipped = []
+            }
+            Log.info("Photo history cleared; the next list from the phone is the starting point")
+            publish()
+        }
+    }
+
+    /// Takes out the copies that edits replaced.
+    ///
+    /// Not a decision of its own, and that is the whole argument for doing it
+    /// without asking again: a replaced copy exists *only* because the operator
+    /// approved the change that replaced it, and a change never runs unasked -
+    /// it parks the cycle by definition. Leaving it behind means the album
+    /// quietly holds two of everything ever edited, and the second question
+    /// arrives minutes after the first, when the answer has stopped being
+    /// obvious.
+    ///
+    /// Strictly limited to keys carrying the replaced marker. A photo the phone
+    /// deleted is a different question and still waits for its own answer.
+    @discardableResult
+    public func flushReplacedVersions() -> PhotoDeletionOutcome {
+        queue.sync {
+            let replaced = Set(
+                importer.waitingDeletions.map(\.key).filter(PhotoPendingAction.isReplacedVersion)
+            )
+            guard !replaced.isEmpty else { return .nothingToDo }
+            let outcome = importer.flushDeletions(keys: replaced)
+            refreshPending()
             publish()
             return outcome
         }
@@ -326,7 +398,6 @@ public final class PhotoSyncCoordinator {
                 }
             }
             importer.ignore(decisions)
-            state.update { $0.approvedFirstRun = true }
             forget(picked)
             publish()
         }
@@ -367,17 +438,20 @@ public final class PhotoSyncCoordinator {
 
     private func apply(_ snapshot: PhotoManifestAssembler.Snapshot) {
         let stored = state.current
-        // The first-run gate is opened by the operator's click, not by the index:
-        // see `approvedFirstRun`.
-        let isFirstRun = importer.isFirstRun && !stored.approvedFirstRun
+        // The first thing a fresh install sees is not work: it is the starting
+        // point. Two conditions rather than one, so an install whose state file
+        // was lost but whose index is full still cannot write its library off.
+        if stored.baselineWanted || (stored.baselineAt == nil && !importer.hasHistory) {
+            adoptBaseline(snapshot)
+            return
+        }
         let indexBefore = importer.indexedKeys
         let plan = PhotoDelta.plan(
             items: snapshot.items,
             from: snapshot.from,
             tombstones: snapshot.tombstones,
             index: indexBefore,
-            limits: limits,
-            isFirstRun: isFirstRun
+            limits: limits
         )
 
         // Renames first: they are free, and doing them before the delete step
@@ -409,7 +483,7 @@ public final class PhotoSyncCoordinator {
         let approved = Set(stored.approvedKeys)
         let approvedWant = plan.want.filter { approved.contains($0.key) }
         let freshWant = plan.want.filter { !approved.contains($0.key) }
-        let gate = PhotoDelta.approvalReason(for: freshWant, limits: limits, isFirstRun: isFirstRun)
+        let gate = PhotoDelta.approvalReason(for: freshWant, limits: limits)
 
         // Deletions written down in an earlier cycle are still waiting: a
         // deletion appears in exactly one plan, because writing it down moves
@@ -466,6 +540,31 @@ public final class PhotoSyncCoordinator {
         publish()
     }
 
+    /// Takes the phone's own picture as the starting point.
+    ///
+    /// Everything in it is written down as accounted for: nothing is fetched,
+    /// nothing is offered and nothing stands in the sync window. Only the
+    /// changes from here on are work, which is the whole point - a library that
+    /// took years to fill is not a backlog.
+    ///
+    /// The index is written before the flag, so a crash between the two repeats
+    /// a no-op rather than losing the starting point.
+    private func adoptBaseline(_ snapshot: PhotoManifestAssembler.Snapshot) {
+        let now = Message.now()
+        importer.adopt(baseline: snapshot.items, at: now)
+        state.update { stored in
+            stored.baselineAt = now
+            stored.baselineWanted = false
+            stored.lastCycleAt = now
+            stored.windowFrom = snapshot.from
+            stored.skipped = []
+            stored.pending = []
+            stored.pendingReason = nil
+            stored.notifiedKeys = []
+        }
+        publish()
+    }
+
     /// Rows for assets already written down as gone, so they keep their place in
     /// the window over the cycles that follow.
     private func carriedDeletions(
@@ -478,14 +577,21 @@ public final class PhotoSyncCoordinator {
                 name: PhotoPendingAction.name(of: entry.key),
                 size: entry.size,
                 captureAt: entry.captureAt,
-                issue: existing.first { $0.key == entry.key }?.issue,
+                issue: PhotoPendingAction.isReplacedVersion(entry.key)
+                    ? .replacedVersion
+                    : existing.first { $0.key == entry.key }?.issue,
                 noticedAt: now
             )
         }
     }
 
     /// Rebuilds the list from what the index now says, without a new manifest.
-    private func refreshPending() {
+    ///
+    /// Public because it is also how the list comes back after a relaunch: the
+    /// waiting removals live in the index, not in the pending list, so without
+    /// this they would be invisible - in the window and in the menu count -
+    /// until the next manifest happened to arrive, which can be half an hour.
+    public func refreshPending() {
         let stored = state.current
         let carried = carriedDeletions(now: Message.now(), existing: stored.pending)
         let kept = stored.pending.filter { $0.kind != .delete }
@@ -569,6 +675,8 @@ public final class PhotoSyncCoordinator {
         report.pendingDeletions = importer.pendingDeletionCount
         report.removedByUser = importer.removedByUserCount
         report.ignored = importer.ignoredCount
+        report.preexisting = importer.preexistingCount
+        report.baselineAt = snapshot.baselineAt.map { Date(timeIntervalSince1970: Double($0) / 1000) }
         report.skipped = snapshot.skipped
         report.lastCycleAt = snapshot.lastCycleAt.map { Date(timeIntervalSince1970: Double($0) / 1000) }
         report.windowFrom = snapshot.windowFrom.map { Date(timeIntervalSince1970: Double($0) / 1000) }

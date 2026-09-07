@@ -71,6 +71,8 @@ public enum MessageType {
     /// What the Mac wants from that picture. Without `keys` it means "build a
     /// manifest now", which is what the manual sync uses.
     public static let photoPull = "photo-pull"
+    /// Mac to phone: how the phone should describe its camera folder.
+    public static let photoConfig = "photo-config"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.

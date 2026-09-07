@@ -56,18 +56,12 @@ class SettingsActivity : ScreenActivity() {
         binding.hostInput.setText(prefs.manualHost)
         binding.portInput.setText(prefs.port.toString())
 
-        binding.photoStartInput.setText(PhotoDate.format(prefs.photoStartDate, zoneOffset()))
-        binding.photoDaysInput.setText(prefs.photoLastDays.toString())
-        binding.photoIntervalInput.setText(prefs.photoIntervalMinutes.toString())
-        binding.photoMaxInput.setText((prefs.photoMaxItemBytes / MEGABYTE).toString())
-
         binding.saveButton.setOnClickListener { save() }
         binding.notificationsButton.setOnClickListener { requestNotifications() }
         binding.nearbyButton.setOnClickListener { requestNearby() }
         binding.overlayButton.setOnClickListener { requestOverlay() }
         binding.mediaButton.setOnClickListener { requestMedia() }
         binding.mediaLocationButton.setOnClickListener { requestMediaLocation() }
-        refreshPhotoWindow()
     }
 
     override fun onResume() {
@@ -82,27 +76,6 @@ class SettingsActivity : ScreenActivity() {
         prefs.manualHost = binding.hostInput.text.toString()
         prefs.port = port.coerceIn(1024, 65535)
         binding.portInput.setText(prefs.port.toString())
-
-        // The photo window. An unreadable date is left as it was rather than
-        // being reset to "everything": a typo in this field must not widen the
-        // window, only fail to narrow it.
-        val typedStart = binding.photoStartInput.text.toString()
-        if (typedStart.isBlank()) {
-            prefs.photoStartDate = 0
-        } else {
-            PhotoDate.parse(typedStart, zoneOffset())?.let { prefs.photoStartDate = it }
-        }
-        binding.photoStartInput.setText(PhotoDate.format(prefs.photoStartDate, zoneOffset()))
-
-        binding.photoDaysInput.text.toString().toIntOrNull()?.let { prefs.photoLastDays = it }
-        binding.photoDaysInput.setText(prefs.photoLastDays.toString())
-        binding.photoIntervalInput.text.toString().toIntOrNull()?.let { prefs.photoIntervalMinutes = it }
-        binding.photoIntervalInput.setText(prefs.photoIntervalMinutes.toString())
-        binding.photoMaxInput.text.toString().toLongOrNull()?.let {
-            prefs.photoMaxItemBytes = (it * MEGABYTE).coerceIn(MEGABYTE, Wire.MAX_PHOTO_BYTES)
-        }
-        binding.photoMaxInput.setText((prefs.photoMaxItemBytes / MEGABYTE).toString())
-        refreshPhotoWindow()
 
         val message = when {
             CryptoBox.normalize(prefs.pairingCode).length < MIN_CODE_LENGTH -> R.string.status_missing_code
@@ -180,24 +153,6 @@ class SettingsActivity : ScreenActivity() {
         )
     }
 
-    /**
-     * The effective bound, spelled out. Two fields that each say "nothing older
-     * than this" do not add up to an obvious answer, so the answer is shown.
-     */
-    private fun refreshPhotoWindow() {
-        val days = binding.photoDaysInput.text.toString().toIntOrNull() ?: prefs.photoLastDays
-        val typed = PhotoDate.parse(binding.photoStartInput.text.toString(), zoneOffset())
-        val from = PhotoWindow.effectiveFrom(typed ?: 0, days, System.currentTimeMillis())
-        binding.photoWindowText.text = if (typed != null && typed >= from) {
-            getString(R.string.photos_window_from, PhotoDate.format(from, zoneOffset()))
-        } else {
-            getString(R.string.photos_window_days, days.coerceAtLeast(1))
-        }
-    }
-
-    private fun zoneOffset(): Int =
-        java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis())
-
     private fun refreshPermissionRows() {
         row(Permissions.hasNotifications(this), binding.notificationsState, binding.notificationsButton)
         row(Permissions.hasNearby(this), binding.nearbyState, binding.nearbyButton)
@@ -222,7 +177,6 @@ class SettingsActivity : ScreenActivity() {
 
     companion object {
         private const val MIN_CODE_LENGTH = 8
-        private const val MEGABYTE = 1024L * 1024
 
         fun intent(context: android.content.Context): Intent = Intent(context, SettingsActivity::class.java)
     }

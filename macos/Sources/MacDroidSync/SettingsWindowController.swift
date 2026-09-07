@@ -26,6 +26,10 @@ struct SettingsHooks {
     var photosEnabledChanged: (Bool) -> Void = { _ in }
     var requestPhotoAccess: () -> Void = {}
     var openPhotoSyncWindow: () -> Void = {}
+    /// A photo setting changed: tell the phone and re-pace the cycle.
+    var photoSettingsChanged: () -> Void = {}
+    /// "Start again from what the phone has now."
+    var resetPhotoBaseline: () -> Void = {}
     var syncPhotosNow: () -> Void = {}
     var revealPhotoAlbum: () -> Void = {}
 
@@ -71,6 +75,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let photoCountsLabel = NSTextField(labelWithString: "")
     private let photoWaitingLabel = NSTextField(labelWithString: "")
     private let photoWindowButton = NSButton(title: "Review…", target: nil, action: nil)
+    private let photoAlbumField = NSTextField(string: "")
+    private let photoDaysField = NSTextField(string: "")
+    private let photoIntervalField = NSTextField(string: "")
+    private let photoMaxField = NSTextField(string: "")
+    private let photoBaselineLabel = NSTextField(labelWithString: "")
+    private let photoBaselineButton = NSButton(title: "Start again…", target: nil, action: nil)
+    private var photoAccessRow: NSGridRow?
+    private var photoSkippedRow: NSGridRow?
     private let photoApproveAdditionsBox = NSButton(
         checkboxWithTitle: "Confirm new photos in the sync window too", target: nil, action: nil
     )
@@ -670,9 +682,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         photosBox.action = #selector(togglePhotos)
         photoApproveAdditionsBox.target = self
         photoApproveAdditionsBox.action = #selector(togglePhotoApproveAdditions)
+        for (field, action) in [
+            (photoAlbumField, #selector(applyPhotoAlbum)),
+            (photoDaysField, #selector(applyPhotoNumbers)),
+            (photoIntervalField, #selector(applyPhotoNumbers)),
+            (photoMaxField, #selector(applyPhotoNumbers)),
+        ] {
+            field.target = self
+            field.action = action
+            // Committed by Return or by the button beside it, never by the field
+            // losing focus: a half typed number must not take effect.
+            field.cell?.sendsActionOnEndEditing = false
+        }
         for (button, action) in [
             (photoAccessButton, #selector(grantPhotoAccess)),
             (photoWindowButton, #selector(openPhotoSyncWindow)),
+            (photoBaselineButton, #selector(startPhotosAgain)),
         ] {
             button.target = self
             button.action = action
@@ -683,39 +708,59 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         photoAccessLabel.font = .systemFont(ofSize: 12)
         photoCountsLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         photoWaitingLabel.font = .systemFont(ofSize: 12)
+        photoBaselineLabel.font = .systemFont(ofSize: 12)
         photoWindowLabel.font = .systemFont(ofSize: 11)
         photoWindowLabel.textColor = .secondaryLabelColor
         photoSkippedLabel.font = .systemFont(ofSize: 11)
         photoSkippedLabel.textColor = .secondaryLabelColor
         photoSkippedLabel.preferredMaxLayoutWidth = 420
 
+        // The long explanations live on the controls as tooltips rather than in
+        // the tab. Six paragraphs of prose made this the tallest tab in the
+        // window, and the one that had to be scrolled to reach its own buttons.
+        photoAlbumField.toolTip = "New photos go into an album with this name from now on. "
+            + "The ones already in Photos stay where they are - nothing in your library is renamed."
+        photoDaysField.toolTip = "How far back the phone looks. Making this larger brings older "
+            + "photos into range; they arrive like any other addition, and a large batch waits in "
+            + "the sync window rather than starting by itself."
+        photoIntervalField.toolTip = "How often this Mac asks the phone what it has. Nothing is "
+            + "asked while the phone is away or this Mac is asleep."
+        photoMaxField.toolTip = "There is no resume in the protocol, so anything bigger starts "
+            + "from zero again after every dropped connection. The phone lists items over this "
+            + "and never sends them."
+        photoApproveAdditionsBox.toolTip = "Off: new photos are added on their own, and only "
+            + "removals, replaced versions and items the phone could not send wait for you. "
+            + "On: everything waits in the sync window, including plain additions."
+        photoBaselineButton.toolTip = "Treat whatever the phone holds now as already "
+            + "synchronised, and count changes from there."
+
         let grid = NSGridView(views: [
             [NSGridCell.emptyContentView, photosBox],
+            [label("Album:"), row([sized(photoAlbumField, width: 160)])],
+            [label("Look back:"), row([sized(photoDaysField, width: 50), label("days"),
+                                       spacer(12),
+                                       label("every"), sized(photoIntervalField, width: 50),
+                                       label("min"),
+                                       spacer(12),
+                                       label("max"), sized(photoMaxField, width: 60),
+                                       label("MB"),
+                                       button("Apply", #selector(applyPhotoNumbers))])],
             [NSGridCell.emptyContentView, hint(
-                "The phone decides what is in range - the start date, how many days back, and how "
-                + "often - because it is the side doing the looking. This Mac decides what to do "
-                + "with it."
+                "This Mac decides what is in range and how often to look, and tells the phone at "
+                + "the start of every connection. Hover a field for what it does."
             )],
             [NSGridCell.emptyContentView, photoApproveAdditionsBox],
-            [NSGridCell.emptyContentView, hint(
-                "Off: new photos are added on their own, and only removals, replaced versions and "
-                + "items the phone could not send wait for you. On: everything waits in the sync "
-                + "window, including plain additions."
-            )],
             [label("Photos access:"), row([photoAccessLabel, photoAccessButton])],
             [label("In Photos:"), photoCountsLabel],
-            [label("Waiting:"), row([photoWaitingLabel, photoWindowButton])],
-            [label("This window:"), photoWindowLabel],
+            [label("Waiting:"), row([photoWaitingLabel, photoWindowButton,
+                                     button("Sync now", #selector(syncPhotosNow))])],
+            [label("Starting point:"), row([photoBaselineLabel, photoBaselineButton])],
+            [label("Phone reports:"), photoWindowLabel],
             [label("Not sent:"), photoSkippedLabel],
-            [NSGridCell.emptyContentView, row([button("Sync photos now", #selector(syncPhotosNow))])],
-            [NSGridCell.emptyContentView, hint(
-                "Anything that is not a plain addition waits in the photo sync window, where each "
-                + "item says what would happen to it. Nothing leaves Photos until you ask for it "
-                + "there - macOS asks for a confirmation, and an alert appearing by itself twice an "
-                + "hour would be worse than the wait. Removed photos go to Recently Deleted, so there "
-                + "are 30 days in which to change your mind."
-            )],
         ])
+        // Kept for hiding: a row that has nothing to say is worse than no row.
+        photoAccessRow = grid.row(at: 5)
+        photoSkippedRow = grid.row(at: 10)
         return configure(grid)
     }
 
@@ -723,6 +768,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let enabled = photosBox.state == .on
         Settings.shared.photosEnabled = enabled
         hooks.photosEnabledChanged(enabled)
+        // The phone does nothing without being told, so the switch has to reach it.
+        hooks.photoSettingsChanged()
         // Asking for the permission is a user action, and this click is it.
         if enabled { hooks.requestPhotoAccess() }
         refreshAfterChange()
@@ -730,6 +777,75 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     @objc private func grantPhotoAccess() {
         hooks.requestPhotoAccess()
+    }
+
+    @objc private func applyPhotoAlbum() {
+        settings.photosAlbumName = photoAlbumField.stringValue
+        refreshAfterChange()
+    }
+
+    /// One button for the three numbers, so the row stays a row.
+    ///
+    /// Each is validated on its own and the first complaint stops the lot: a
+    /// half-typed interval must not take a valid day count down with it, and it
+    /// must not quietly apply either.
+    @objc private func applyPhotoNumbers() {
+        guard let days = photoNumber(photoDaysField, in: PhotoSyncSettings.days, what: "days") else {
+            return
+        }
+        guard let interval = photoNumber(
+            photoIntervalField, in: PhotoSyncSettings.intervalMinutes, what: "minutes"
+        ) else { return }
+        guard let megabytes = photoNumber(
+            photoMaxField, in: PhotoSyncSettings.maxItemMB, what: "megabytes"
+        ) else { return }
+
+        settings.photosLastDays = days
+        settings.photosIntervalMinutes = interval
+        settings.photosMaxItemMB = megabytes
+        hooks.photoSettingsChanged()
+        refreshAfterChange()
+    }
+
+    private func photoNumber(
+        _ field: NSTextField, in range: ClosedRange<Int>, what: String
+    ) -> Int? {
+        let text = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard let value = Int(text), range.contains(value) else {
+            report(
+                title: "Invalid number of \(what)",
+                message: "Use a number between \(range.lowerBound) and \(range.upperBound)."
+            )
+            refreshAfterChange()
+            return nil
+        }
+        return value
+    }
+
+    /// Treats whatever the phone holds now as already synchronised. Asked about
+    /// first, because it is a one way door: the photos it writes off are never
+    /// offered again.
+    @objc private func startPhotosAgain() {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Start again from what the phone has now?"
+        alert.informativeText = "Everything on the phone today will count as already "
+            + "synchronised, and only what changes from now on will be offered.\n\n"
+            + "This Mac also forgets what it has taken so far. The photos stay in your library, "
+            + "untouched, but they stop being tracked: deleting one on the phone will no longer "
+            + "be offered here, and editing one will bring a second copy rather than replacing "
+            + "the first. This cannot be undone."
+        alert.addButton(withTitle: "Start again")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        alert.buttons[0].keyEquivalent = ""
+        alert.buttons[1].keyEquivalent = "\r"
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.hooks.resetPhotoBaseline()
+            self?.refreshAfterChange()
+        }
     }
 
     @objc private func togglePhotoApproveAdditions() {
@@ -758,7 +874,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let report = hooks.photoReport()
         photosBox.state = Settings.shared.photosEnabled ? .on : .off
         photoApproveAdditionsBox.state = Settings.shared.photosApproveAdditions ? .on : .off
-        photoAccessLabel.stringValue = hooks.photoReadiness()
+        write(settings.photosAlbumName, into: photoAlbumField)
+        write(String(settings.photosLastDays), into: photoDaysField)
+        write(String(settings.photosIntervalMinutes), into: photoIntervalField)
+        write(String(settings.photosMaxItemMB), into: photoMaxField)
+        for field in [photoAlbumField, photoDaysField, photoIntervalField, photoMaxField] {
+            field.isEnabled = Settings.shared.photosEnabled
+        }
+        photoApproveAdditionsBox.isEnabled = Settings.shared.photosEnabled
+
+        if let taken = report.baselineAt {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            photoBaselineLabel.stringValue = report.preexisting > 0
+                ? "\(report.preexisting) item(s) already on the phone on \(formatter.string(from: taken))"
+                : "taken on \(formatter.string(from: taken))"
+        } else {
+            photoBaselineLabel.stringValue =
+                "nothing yet - the next list from the phone becomes the starting point"
+        }
+        photoBaselineButton.isHidden = report.baselineAt == nil
+        let readiness = hooks.photoReadiness()
+        photoAccessLabel.stringValue = readiness
         photoCountsLabel.stringValue = "\(report.imported) imported, \(report.removedByUser) removed here"
             + (report.ignored > 0 ? ", \(report.ignored) ignored" : "")
         var waiting: [String] = []
@@ -785,6 +923,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             photoWindowLabel.stringValue = "nothing described yet"
         }
 
+        // A row with nothing to say is worse than no row: the access line only
+        // matters when access is missing, and "nothing was left out" is the
+        // ordinary case rather than news.
+        photoAccessRow?.isHidden = readiness == "ready"
+        photoSkippedRow?.isHidden = report.skipped.isEmpty
         photoSkippedLabel.stringValue = report.skipped.isEmpty
             ? "nothing was left out"
             : report.skipped.map {
@@ -963,6 +1106,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         stack.alignment = .firstBaseline
         stack.spacing = 8
         return stack
+    }
+
+    /// A fixed gap, for grouping controls inside one row.
+    private func spacer(_ width: CGFloat) -> NSView {
+        let view = NSView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return view
     }
 
     private func sized(_ field: NSTextField, width: CGFloat) -> NSTextField {

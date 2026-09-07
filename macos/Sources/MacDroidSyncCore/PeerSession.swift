@@ -55,6 +55,9 @@ public final class PeerSession {
 
     /// Where incoming files are written; without a sink they are refused.
     public var fileSink: FileSink?
+    /// Asked for the photo configuration to send during the handshake. Read at
+    /// that moment rather than held, so it is always the current settings.
+    public var photoConfigProvider: (() -> PhotoPayload?)?
 
     public private(set) var remoteDeviceName: String?
     public private(set) var isAuthenticated = false
@@ -314,6 +317,18 @@ public final class PeerSession {
                 device: localDeviceName,
                 deviceId: localDeviceId
             ))
+            // Sent from inside the handshake, on this queue, so that it cannot
+            // be overtaken by the first `photo-pull` of the session. The phone
+            // refuses to describe anything without it, so the order is not a
+            // nicety: a manifest built before it arrived would be built to the
+            // wrong window.
+            if let config = photoConfigProvider?() {
+                try send(Message(
+                    seq: codec.nextSequence(),
+                    type: MessageType.photoConfig,
+                    photo: config
+                ))
+            }
             Log.info("Authenticated with \(remoteDeviceName!) (\(remoteDescription))")
             onAuthenticated?(remoteDeviceName!)
             if let beacon = message.beacon {
@@ -378,6 +393,15 @@ public final class PeerSession {
     /// means "build a manifest now", which is what the manual sync sends - there
     /// is deliberately no separate message type for that, because it is the same
     /// request with nothing yet to ask for.
+    public func sendPhotoConfig(_ payload: PhotoPayload) throws {
+        guard isAuthenticated else { return }
+        try send(Message(
+            seq: codec.nextSequence(),
+            type: MessageType.photoConfig,
+            photo: payload
+        ))
+    }
+
     public func requestPhotos(keys: [String]? = nil, manifestId: String? = nil) throws {
         guard isAuthenticated else { return }
         try send(Message(

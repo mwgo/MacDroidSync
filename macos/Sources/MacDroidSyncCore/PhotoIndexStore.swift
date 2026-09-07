@@ -41,11 +41,13 @@ public final class PhotoIndexStore {
         queue.sync { entries.values.filter { $0.state == state }.count }
     }
 
-    /// Nothing has ever been delivered, so the next plan is a first run and only
-    /// reports. Rows the user deleted count as delivery: the report is a safety
-    /// net for a fresh install, not something to see again after a clear-out.
-    public var isFirstRun: Bool {
-        queue.sync { entries.values.allSatisfy { $0.state == .deletedByUs } }
+    /// Whether this Mac has ever written anything down about a photo.
+    ///
+    /// The question the starting point asks: an index with any row at all means
+    /// this install has already been talking to a phone, and adopting a starting
+    /// point now would write off a library it is already tracking.
+    public var hasHistory: Bool {
+        queue.sync { !entries.isEmpty }
     }
 
     /// The assets to remove from Photos, oldest request first.
@@ -72,6 +74,23 @@ public final class PhotoIndexStore {
     /// stub, holding no asset, saying only "never offer this again". It must
     /// never overwrite a live `imported` row, which is the whole reason it is
     /// not a plain `upsert`.
+    /// The same thing for a whole manifest, in one hop and one write.
+    ///
+    /// A per-row version over five thousand rows would rewrite a growing JSON
+    /// file five thousand times, which is the difference between a starting
+    /// point that is instant and one that stalls the app.
+    public func upsertIfAbsent(_ rows: [PhotoIndexEntry]) {
+        guard !rows.isEmpty else { return }
+        queue.sync {
+            var added = false
+            for row in rows where entries[row.key] == nil {
+                entries[row.key] = row
+                added = true
+            }
+            if added { persist() }
+        }
+    }
+
     public func upsertIfAbsent(_ entry: PhotoIndexEntry) {
         queue.sync {
             guard entries[entry.key] == nil else { return }

@@ -90,6 +90,18 @@ public struct PhotoPayload: Codable, Equatable {
     public var keys: [String]?
     /// Items the phone could not place in time, for the report.
     public var skipped: Int?
+    /// On `photo-config`: whether the phone describes its camera folder at all.
+    ///
+    /// These three carry the settings that used to live on the phone. They are
+    /// deliberately plain booleans and numbers: `PhotoExclusion` decodes
+    /// strictly, so a value the other side does not recognise would throw and
+    /// take the session with it. A new field must never be an enum until that
+    /// changes.
+    public var enabled: Bool?
+    /// How many days back the phone should look.
+    public var lastDays: Int?
+    /// The largest item worth starting. The phone may lower this, never raise it.
+    public var maxItemBytes: Int64?
 
     public init(
         key: String? = nil,
@@ -102,7 +114,10 @@ public struct PhotoPayload: Codable, Equatable {
         items: [PhotoItem]? = nil,
         gone: [String]? = nil,
         keys: [String]? = nil,
-        skipped: Int? = nil
+        skipped: Int? = nil,
+        enabled: Bool? = nil,
+        lastDays: Int? = nil,
+        maxItemBytes: Int64? = nil
     ) {
         self.key = key
         self.manifestId = manifestId
@@ -115,25 +130,9 @@ public struct PhotoPayload: Codable, Equatable {
         self.gone = gone
         self.keys = keys
         self.skipped = skipped
-    }
-}
-
-// MARK: - The window
-
-public enum PhotoWindow {
-    /// The lower bound of the sync window, in milliseconds since 1970.
-    ///
-    /// Both settings are lower bounds - "nothing older than this date" and
-    /// "nothing older than this many days" - so the effective bound is the
-    /// **later** of the two. That is what makes the day count a fuse: a start
-    /// date set to 2005 cannot on its own open the floodgates.
-    public static func effectiveFrom(startDate: Date?, lastDays: Int, now: Date) -> Int64 {
-        // A day count of zero or less would mean "everything", which is never
-        // what the setting is for; one day is the tightest honest reading.
-        let days = max(1, lastDays)
-        let byDays = now.addingTimeInterval(-Double(days) * 86_400).timeIntervalSince1970
-        let byDate = startDate?.timeIntervalSince1970 ?? -.greatestFiniteMagnitude
-        return Int64((max(byDays, byDate) * 1000).rounded())
+        self.enabled = enabled
+        self.lastDays = lastDays
+        self.maxItemBytes = maxItemBytes
     }
 }
 
@@ -158,9 +157,20 @@ public enum PhotoIndexState: String, Codable, Equatable {
     /// `removedByUser` and for the same reason: a decision taken here outranks
     /// whatever the phone says about it afterwards.
     case ignoredByUser
+    /// It was on the phone before this Mac started looking. Not fetched, not
+    /// deleted and not reported: the starting point changes are counted from.
+    ///
+    /// Kept apart from `ignoredByUser` because the two differ where it matters.
+    /// Nobody refused this photo, so a later *edit* of it is ordinary work and
+    /// is fetched; and calling five thousand of these "ignored" in the report
+    /// would be a plain lie about what the operator did.
+    case preexisting
 
-    /// The two states that mean "never again, whatever the phone offers".
-    public var isRefusedForever: Bool { self == .removedByUser || self == .ignoredByUser }
+    /// The states where this Mac already has an answer for a key and does not
+    /// need to put the question in front of anybody again.
+    public var isSettled: Bool {
+        self == .removedByUser || self == .ignoredByUser || self == .preexisting
+    }
 
     /// An unknown state is read as the most cautious thing this file can say.
     ///
@@ -169,6 +179,8 @@ public enum PhotoIndexState: String, Codable, Equatable {
     /// empty", and every "never again" recorded here is forgotten - the feature
     /// then re-imports the lot. Falling back to `removedByUser` means neither
     /// fetch nor delete: only `imported` rows are ever deletion candidates.
+    /// (An older build reading a `preexisting` row lands here too, which is the
+    /// right side to fail on: it shows in the wrong counter and does nothing.)
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = PhotoIndexState(rawValue: raw) ?? .removedByUser
@@ -255,15 +267,24 @@ public struct PhotoRename: Equatable {
 
 public struct PhotoSyncLimits: Equatable {
     /// Above either of these, the cycle stops and waits for the operator.
+    ///
+    /// Set low on purpose. What runs unattended should be an ordinary day's
+    /// photos - a handful from a walk, a couple of short clips - and anything
+    /// beyond that is worth a glance before it moves, because the list is also
+    /// where deletions and replaced versions turn up. Twenty items or two
+    /// hundred megabytes is roughly the line between "the feature working" and
+    /// "something happened that I should know about".
     public var approvalItems: Int
     public var approvalBytes: Int64
-    /// How much one approved cycle may move.
+    /// How much one approved cycle may move. Deliberately far larger than the
+    /// approval limits: once the operator has said yes to a backlog, the point
+    /// is to drain it, not to make them say yes again every twenty photos.
     public var itemsPerCycle: Int
     public var bytesPerCycle: Int64
 
     public init(
-        approvalItems: Int = 200,
-        approvalBytes: Int64 = 2 * 1024 * 1024 * 1024,
+        approvalItems: Int = 20,
+        approvalBytes: Int64 = 200 * 1024 * 1024,
         itemsPerCycle: Int = 200,
         bytesPerCycle: Int64 = 2 * 1024 * 1024 * 1024
     ) {
@@ -271,6 +292,47 @@ public struct PhotoSyncLimits: Equatable {
         self.approvalBytes = approvalBytes
         self.itemsPerCycle = itemsPerCycle
         self.bytesPerCycle = bytesPerCycle
+    }
+}
+
+/// The settings this Mac now owns, and the range each one is honest in.
+///
+/// One place, because each is enforced in three: the field in the settings
+/// window, the property in `Settings`, and the message that carries it to the
+/// phone. Plain functions rather than logic inside the properties, so the
+/// clamping can be tested without `UserDefaults` and without a singleton.
+public enum PhotoSyncSettings {
+
+    public static let days = 1...3650
+    public static let defaultDays = 30
+    public static let intervalMinutes = 5...1440
+    public static let defaultIntervalMinutes = 30
+    public static let maxItemMB = 1...2048
+    public static let defaultMaxItemMB = 2048
+    public static let defaultAlbumName = "MacDroidSync"
+
+    /// Zero means the key has never been written - `UserDefaults.integer`
+    /// cannot tell that from a real zero, and zero is not a sane value for any
+    /// of these - so it reads as the default rather than as "nothing".
+    public static func days(from stored: Int) -> Int {
+        stored == 0 ? defaultDays : min(max(stored, days.lowerBound), days.upperBound)
+    }
+
+    public static func intervalMinutes(from stored: Int) -> Int {
+        stored == 0
+            ? defaultIntervalMinutes
+            : min(max(stored, intervalMinutes.lowerBound), intervalMinutes.upperBound)
+    }
+
+    public static func maxItemMB(from stored: Int) -> Int {
+        stored == 0 ? defaultMaxItemMB : min(max(stored, maxItemMB.lowerBound), maxItemMB.upperBound)
+    }
+
+    /// A blank name is the default rather than an error: there is no sensible
+    /// reading of "no album" here, and refusing to save would be worse.
+    public static func albumName(from stored: String?) -> String {
+        let trimmed = stored?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? defaultAlbumName : trimmed
     }
 }
 
@@ -323,8 +385,7 @@ public enum PhotoDelta {
         from: Int64,
         tombstones: [String] = [],
         index: [PhotoIndexEntry],
-        limits: PhotoSyncLimits = PhotoSyncLimits(),
-        isFirstRun: Bool
+        limits: PhotoSyncLimits = PhotoSyncLimits()
     ) -> PhotoPlan {
         var plan = PhotoPlan()
         let byKey = Dictionary(index.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
@@ -342,7 +403,7 @@ public enum PhotoDelta {
                 // Not reported once the operator has refused it. Without this an
                 // item the phone will never send - one photo with no location,
                 // say - would park every cycle for the rest of time.
-                if byKey[item.key]?.state.isRefusedForever != true {
+                if byKey[item.key]?.state.isSettled != true {
                     plan.excluded.append(item)
                 }
                 continue
@@ -377,9 +438,11 @@ public enum PhotoDelta {
                 // We took it out because the phone had; it is back, so fetch it.
                 // Nothing of it is left here, so the hash cannot be compared.
                 plan.want.append(item)
-            case .imported:
+            case .imported, .preexisting:
                 // A refused edit is not wanted; a *different* later edit is,
-                // because that is a question nobody has answered yet.
+                // because that is a question nobody has answered yet. A row from
+                // the starting point behaves the same way: it was here before we
+                // began, so only a later edit of it is work.
                 if !unchanged(item, entry), !entry.refuses(item) {
                     plan.want.append(item)
                 }
@@ -417,7 +480,7 @@ public enum PhotoDelta {
 
         // 5. The approval gate.
         plan.approvalReason = approvalReason(
-            for: plan.want, limits: limits, isFirstRun: isFirstRun
+            for: plan.want, limits: limits
         )
         plan.needsApproval = plan.approvalReason != nil
         return plan
@@ -430,13 +493,9 @@ public enum PhotoDelta {
     /// past this gate, while anything that turned up afterwards is not.
     public static func approvalReason(
         for want: [PhotoItem],
-        limits: PhotoSyncLimits,
-        isFirstRun: Bool
+        limits: PhotoSyncLimits
     ) -> String? {
         guard !want.isEmpty else { return nil }
-        if isFirstRun {
-            return "first run: nothing is imported before you have seen the report"
-        }
         if want.count > limits.approvalItems {
             return "\(want.count) items is more than the \(limits.approvalItems) "
                 + "this Mac imports without asking"

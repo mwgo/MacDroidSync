@@ -33,16 +33,24 @@ final class PhotoIndexStoreTests: XCTestCase {
                         localIdentifier: "asset/\(key)", state: state, importedAt: importedAt)
     }
 
-    func testAnEmptyStoreReportsAFirstRun() {
+    func testAnEmptyStoreHasNoHistory() {
         let store = PhotoIndexStore(url: storeURL)
-        XCTAssertTrue(store.isFirstRun)
+        XCTAssertFalse(store.hasHistory)
         XCTAssertTrue(store.all.isEmpty)
     }
 
-    func testOneImportEndsTheFirstRun() {
+    /// Any row at all counts. This is what the starting point turns on, and it
+    /// has to be the widest possible reading of "this install already talked to
+    /// a phone" - taking a starting point on a library already being tracked
+    /// would stop the Mac noticing anything about it again.
+    func testAnyRowAtAllCountsAsHistory() {
         let store = PhotoIndexStore(url: storeURL)
         store.upsert(entry("a"))
-        XCTAssertFalse(store.isFirstRun)
+        XCTAssertTrue(store.hasHistory)
+
+        let other = PhotoIndexStore(url: directory.appendingPathComponent("other.json"))
+        other.upsert(entry("b", state: .deletedByUs))
+        XCTAssertTrue(other.hasHistory)
     }
 
     func testTheIndexSurvivesARestart() {
@@ -85,15 +93,13 @@ final class PhotoIndexStoreTests: XCTestCase {
     }
 
     /// The point of `deletedByUs`: nobody rejected the photo on this Mac, so a
-    /// store holding only those rows is a first run again as far as the report is
-    /// concerned - while a photo the user deleted is not.
-    func testOnlyOurOwnDeletionsLeaveTheStoreLookingUntouched() {
+    /// Our own deletions stay in the file as a record of what was here.
+    func testOurOwnDeletionsStayInTheStore() {
         let store = PhotoIndexStore(url: storeURL)
         store.upsert(entry("a", state: .deletedByUs))
-        XCTAssertTrue(store.isFirstRun)
-
         store.upsert(entry("b", state: .removedByUser))
-        XCTAssertFalse(store.isFirstRun)
+        XCTAssertEqual(store.count(in: .deletedByUs), 1)
+        XCTAssertEqual(store.count(in: .removedByUser), 1)
     }
 
     func testCountingByState() {
@@ -121,7 +127,7 @@ final class PhotoIndexStoreTests: XCTestCase {
         try Data("not json at all".utf8).write(to: storeURL)
         let store = PhotoIndexStore(url: storeURL)
         XCTAssertTrue(store.all.isEmpty)
-        XCTAssertTrue(store.isFirstRun)
+        XCTAssertFalse(store.hasHistory)
     }
 
     func testTheFileGoesAwayWhenTheLastRowDoes() {

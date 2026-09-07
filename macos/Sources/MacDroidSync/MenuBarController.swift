@@ -17,6 +17,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private lazy var photoImporter = PhotoImporter(
         library: PhotoKitLibrary(),
         index: photoIndex,
+        readAlbumName: { Settings.shared.photosAlbumName },
         readAlbumIdentifier: { Settings.shared.photosAlbumIdentifier },
         writeAlbumIdentifier: { Settings.shared.photosAlbumIdentifier = $0 }
     )
@@ -28,6 +29,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // crossed off the list, so the answer is carried back rather than dropped.
         self?.server.requestPhotos(keys: keys, manifestId: id) ?? false
     }
+    /// The pace of the photo sync, which used to belong to the phone.
+    private lazy var photoScheduler = PhotoSyncScheduler(
+        intervalMinutes: { Settings.shared.photosIntervalMinutes },
+        isEligible: { [weak self] in
+            guard let self else { return false }
+            // Nothing is asked while the phone is away, while the feature is off,
+            // or in the middle of a transfer. A Mac that went to sleep needs no
+            // special case: the server suspends, so `isConnected` says no.
+            return Settings.shared.photosEnabled
+                && self.server.isConnected
+                && self.photoTransfer == nil
+        },
+        lastCycleAt: { [weak self] in self?.photoSync.lastCycleAt },
+        fire: { [weak self] in self?.photoSync.syncNow() }
+    )
     private var photoReport = PhotoSyncReport()
     /// The photo in flight, shown on the photo line while it arrives.
     private var photoTransfer: String?
@@ -67,6 +83,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// The first report after launch says nothing: a backlog from before the
     /// restart is not news.
     private var photoNoticesArmed = false
+    private var replacedFlushWork: DispatchWorkItem?
     private lazy var serviceProvider = ServiceProvider { [weak self] urls in
         self?.enqueue(files: urls)
     }
@@ -135,6 +152,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         shareWatcher = nil
         snoozeWorkItem?.cancel()
         countdown.hide()
+        replacedFlushWork?.cancel()
+        photoScheduler.stop()
         settingsWindow?.close()
         photoSyncWindow?.close()
         lockStateObservers.forEach(DistributedNotificationCenter.default().removeObserver)
@@ -344,6 +363,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             if state == .connected {
                 self.flushPending()
                 self.drainOutbox()
+                // The configuration is not sent from here: the session sends it
+                // inside the handshake, which is both earlier and ordered against
+                // the first request. Doing it again here only put a second copy
+                // on the wire.
+                self.photoScheduler.connected()
             }
         }
         server.onClipboardReceived = { [weak self] text in
@@ -774,6 +798,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             }
             return sink
         }
+        // Worked out at the moment of the handshake, on the session's own queue,
+        // so it always reaches the phone before the first request of a session.
+        server.makePhotoConfig = { Self.photoConfig() }
         server.onPhotoManifest = { [weak self] payload, ok, reason in
             guard Settings.shared.photosEnabled else { return }
             self?.photoSync.handle(manifest: payload, ok: ok, reason: reason)
@@ -807,8 +834,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         // The banner's only job is to open the window.
         notifier.onOpenPhotoSync = { [weak self] in self?.showPhotoSync(nil) }
+        photoScheduler.start()
         photoImporter.onImported = { [weak self] name in
             Log.info("Added \(name) to Photos")
+            // An edit lands as an import plus a removal, because Photos offers no
+            // way to replace an asset's contents. The removal half follows on its
+            // own so that approving "Update" means what it says.
+            self?.scheduleReplacedFlush()
             // The count has to be re-read, not remembered: the import finishes on
             // its own queue, well after the cycle that asked for it published its
             // report, so a cached number would sit there saying zero.
@@ -822,7 +854,39 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard Settings.shared.photosEnabled else { return }
             self?.photoImporter.reconcile()
+            // What is still waiting to leave Photos lives in the index. Bringing
+            // it back onto the list at startup is what stops a pending removal
+            // from being invisible until the next manifest turns up.
+            self?.photoSync.refreshPending()
             self?.refreshPhotoReport()
+        }
+    }
+
+    /// Takes out the copies edits replaced, once the arrivals have settled.
+    ///
+    /// Debounced rather than immediate: bytes arrive one photo at a time, and
+    /// macOS puts up its own alert once per call into the library. Waiting for
+    /// the run to finish turns twenty alerts into one. The wait also keeps this
+    /// honest about where it came from - it is the tail of the operator's own
+    /// click, seconds earlier, not something that happens by itself.
+    private func scheduleReplacedFlush() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.replacedFlushWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                switch self.photoSync.flushReplacedVersions() {
+                case .cancelledByUser:
+                    Log.info("The replaced copies were left in Photos; they stay on the list")
+                case .failed(let why):
+                    Log.error("Could not remove the replaced copies: \(why)")
+                case .deleted, .nothingToDo:
+                    break
+                }
+                self.refreshPhotoReport()
+            }
+            self.replacedFlushWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
         }
     }
 
@@ -851,7 +915,33 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func syncPhotosNow() {
+        requestPhotoManifest()
+    }
+
+    /// The one path a manual "ask the phone now" takes.
+    ///
+    /// Both the menu item and the button in the settings window come here, so
+    /// that asking by hand also restarts the countdown - otherwise the timer
+    /// would fire moments later and put a second manifest on the wire.
+    private func requestPhotoManifest() {
+        photoScheduler.noteAsked()
         photoSync.syncNow()
+    }
+
+    /// What the phone is told about photos: the settings, worked out fresh.
+    private static func photoConfig() -> PhotoPayload {
+        let settings = Settings.shared
+        return PhotoPayload(
+            enabled: settings.photosEnabled,
+            lastDays: settings.photosLastDays,
+            maxItemBytes: settings.photosMaxItemBytes
+        )
+    }
+
+    /// Sends it now, if the phone is here. Nothing is queued when it is not: the
+    /// handshake works it out again from the same settings.
+    private func pushPhotoConfig() {
+        server.sendPhotoConfig(Self.photoConfig())
     }
 
     /// Asks the system for the Photos library. The window is brought forward
@@ -993,7 +1083,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 self?.requestPhotoAccess()
             },
             openPhotoSyncWindow: { [weak self] in self?.showPhotoSync(nil) },
-            syncPhotosNow: { [weak self] in self?.syncPhotosNow() },
+            photoSettingsChanged: { [weak self] in
+                guard let self else { return }
+                // The phone holds the configuration only for a session, so a
+                // change has to go out now as well as at the next handshake.
+                self.pushPhotoConfig()
+                self.refreshPhotoReport()
+            },
+            resetPhotoBaseline: { [weak self] in
+                guard let self else { return }
+                self.photoSync.resetBaseline()
+                // Nothing changes until the phone describes itself again, so the
+                // ask goes out at once rather than waiting for the interval.
+                self.requestPhotoManifest()
+                self.refreshPhotoReport()
+            },
+            syncPhotosNow: { [weak self] in self?.requestPhotoManifest() },
             revealPhotoAlbum: {
                 guard let photos = NSWorkspace.shared.urlForApplication(
                     withBundleIdentifier: "com.apple.Photos"

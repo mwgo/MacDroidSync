@@ -38,6 +38,8 @@ public final class SyncServer {
     /// Builds the sink for each session. The default keeps the behaviour the app
     /// had before photos existed: everything lands in the Downloads folder.
     public var makeFileSink: ((URL) -> FileSink)?
+    /// What to tell the phone about photos when a session starts.
+    public var makePhotoConfig: (() -> PhotoPayload)?
 
     public private(set) var state: PeerState = .disconnected {
         didSet {
@@ -219,6 +221,7 @@ public final class SyncServer {
         self.session = session
         session.fileSink = makeFileSink?(destinationDirectory)
             ?? FileReceiver(directory: destinationDirectory)
+        session.photoConfigProvider = makePhotoConfig
         state = .connecting
 
         session.onAuthenticated = { [weak self, weak session] deviceName in
@@ -305,6 +308,26 @@ public final class SyncServer {
             guard !session.isSendingFile else { return false }
             try session.startSendingFile(url: url)
             return true
+        }
+    }
+
+    /// Tells the phone how to describe its camera folder.
+    ///
+    /// Nothing is queued when the phone is away, and nothing needs to be: the
+    /// configuration is state, not an event, so it is worked out afresh from the
+    /// current settings at every handshake. There is no way to deliver a stale
+    /// one because none is ever kept.
+    @discardableResult
+    public func sendPhotoConfig(_ payload: PhotoPayload) -> Bool {
+        queue.sync {
+            guard let session, session.isAuthenticated else { return false }
+            do {
+                try session.sendPhotoConfig(payload)
+                return true
+            } catch {
+                Log.error("Could not send the photo configuration: \(error.localizedDescription)")
+                return false
+            }
         }
     }
 

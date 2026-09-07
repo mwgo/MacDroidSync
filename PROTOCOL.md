@@ -72,10 +72,23 @@ The plaintext of every sealed frame is a JSON object. Absent fields are omitted.
 
 Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
 `request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`, `file-offer`, `file-chunk`,
-`file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`.
+`file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`,
+`photo-config`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
 that connection (replay and reordering protection).
+
+### Adding to this protocol
+
+`v` is carried on every message and is informational: neither side checks it, and
+compatibility rests on three rules instead.
+
+* An **unknown message type** is logged and ignored, so a new type is safe to add.
+* An **unknown field** is ignored by both decoders, so a new field is safe to add.
+* A **new field must not be an enum.** `x` on a photo item decodes strictly, and a
+  value the other side does not recognise throws, which drops the whole session.
+  Booleans and numbers are safe; a new closed set of names is not, until that
+  decoder learns a fallback the way the Mac's own index states did.
 
 ## 4. Session flow
 
@@ -86,6 +99,7 @@ client                                        server (macOS)
   |                                              |
   |----- 0x02 {"type":"hello","challenge",...} ->|   proves knowledge of the key
   |<---- 0x02 {"type":"hello-ack",...} ----------|   connection is now authenticated
+  |<---- 0x02 {"type":"photo-config",...} -------|   before any photo request, see 8
   |                                              |
   |<---- 0x02 {"type":"clipboard","text"} -------|   every macOS copy, plus the
   |----- 0x02 {"type":"clipboard-ack"} --------->|   queued item after a reconnect
@@ -354,14 +368,15 @@ direction. The Mac ignores it only when the screen is already locked.
 
 ## 8. Photo sync
 
-One way only: the phone's camera folder to the Mac's Photos library. The phone
-describes, the Mac decides, and the bytes travel over the file transfer of
-section 5 with one field added.
+One way only: the phone's camera folder to the Mac's Photos library. The Mac
+configures and decides, the phone describes and sends, and the bytes travel over
+the file transfer of section 5 with one field added.
 
-Two message types carry the conversation.
+Three message types carry the conversation.
 
 ```
 phone                                          Mac
+  |<- photo-config {enabled, lastDays, ...} -- |  inside the handshake, every session
   |<- photo-pull {}  ------------------------- |  "describe your camera folder"
   |-- photo-manifest {page 1..n} ------------->|  what the phone has, in pages
   |<- photo-pull {keys} ---------------------- |  "send me these"
@@ -383,6 +398,9 @@ phone                                          Mac
 | `gone` | `photo-manifest` | keys the phone asserts are gone; **not** bounded by the window |
 | `keys` | `photo-pull` | the batch to send; absent means "describe the folder" |
 | `skipped` | `photo-manifest` | items whose capture date could not be established |
+| `enabled` | `photo-config` | whether the phone describes its camera folder at all |
+| `lastDays` | `photo-config` | how many days back to look |
+| `maxItemBytes` | `photo-config` | the largest item worth starting |
 
 One item, with single letter keys because a full camera folder sends thousands of
 them:
@@ -396,13 +414,42 @@ them:
 | `h` | lowercase hex SHA-256, **optional** |
 | `x` | why it will not be sent: `size`, `unreadable`, `noLocation`, `noDate` |
 
+### The configuration belongs to the Mac
+
+Every setting lives on the Mac and reaches the phone as `photo-config`. The phone
+keeps it **for the length of the session and never writes it down**, and without
+one it describes nothing at all: a phone that stored a configuration would go on
+working to the instructions of a Mac that is no longer there, possibly one that
+has since been downgraded and no longer issues them.
+
+That makes "off" the only possible reading of silence, which is the property
+worth having. An absent `enabled` is `false`, never `true`. The phone clamps what
+it is given - days to 1..3650, `maxItemBytes` to at most the 2 GiB of section 5 -
+so the Mac can lower that ceiling and never raise it; the ceiling follows from
+there being no resume, which is the phone's business.
+
+`photo-config` is sent from inside the handshake, immediately after `hello-ack`,
+on the session's own queue. The order is load bearing rather than tidy: a
+manifest built before the configuration arrived would be built to the wrong
+window. Nothing is queued when the phone is away, and nothing needs to be - the
+configuration is state, not an event, so it is worked out afresh from the current
+settings at every handshake and a stale one can never be delivered.
+
+There is no acknowledgement, because a better one already exists: the `from` in
+the next manifest is observable proof of the window the phone actually applied,
+after its own clamps and on its own clock.
+
+The cycle belongs to the Mac too. It sends `photo-pull {}` on its own interval;
+the phone keeps no timer and no cursor of its own.
+
 ### The window belongs to the phone
 
-`from` is the number the phone applied, and the Mac uses that and never a bound
-of its own. This is not a detail: if both sides computed
-`max(startDate, now - lastDays)` independently, a clock skew or a setting changed
-mid transfer would put items in the gap between the two answers, and **every one
-of them would look deleted**. Declaring the bound removes the whole class of
+The *width* of the window comes from the Mac, but the *bound* is computed and
+declared by the phone: `from` is the number it applied, and the Mac uses that and
+never one of its own. This is not a detail: if both sides computed
+`now - lastDays` independently, a clock skew or a setting changed mid transfer
+would put items in the gap between the two answers, and **every one of them would
+look deleted**. Declaring the bound removes the whole class of
 mistake, and gives "a photo that aged out is not a deletion" for free, because
 its capture time is below `from`.
 
@@ -446,6 +493,8 @@ item the phone listed but will not send parks the whole plan in the sync window,
 where the operator decides row by row.
 
 Deletions are recorded and carried out only when the operator asks, in one batch.
+The single exception is the copy an edit replaced: it exists because the operator
+approved that edit, so it is taken out with it rather than asked about again.
 That is not caution for its own sake: macOS shows a confirmation alert before an
 app removes anything from the Photos library, so a sync that deleted by itself
 would put that alert on screen unasked, twice an hour.

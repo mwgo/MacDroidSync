@@ -54,6 +54,9 @@ object MessageType {
     /** Photo sync, see PROTOCOL.md section 8. */
     const val PHOTO_MANIFEST = "photo-manifest"
     const val PHOTO_PULL = "photo-pull"
+
+    /** Mac to phone: how this phone should describe its camera folder. */
+    const val PHOTO_CONFIG = "photo-config"
 }
 
 /** One protocol message; absent fields are left out of the JSON payload. */

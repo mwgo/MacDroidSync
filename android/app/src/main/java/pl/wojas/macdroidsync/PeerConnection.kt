@@ -39,6 +39,13 @@ class PeerConnection(
          * for yet, which is what its manual sync sends.
          */
         fun onPhotoPull(keys: List<String>?, manifestId: String?)
+
+        /**
+         * The Mac saying how this phone should describe its camera folder. It
+         * arrives inside the handshake, so it is always in hand before the first
+         * pull of a session.
+         */
+        fun onPhotoConfig(config: PhotoConfig)
     }
 
     /** Where files coming from the Mac are written; without it they are refused. */
@@ -340,6 +347,9 @@ class PeerConnection(
                 message.photo?.keys,
                 message.photo?.manifestId,
             )
+            MessageType.PHOTO_CONFIG -> message.photo?.let {
+                listener.onPhotoConfig(PhotoConfig.of(it))
+            }
             MessageType.FILE_OFFER -> handleFileOffer(message, listener)
             MessageType.FILE_CHUNK -> handleFileChunk(message, listener)
             MessageType.FILE_END -> handleFileEnd(message, listener)

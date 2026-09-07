@@ -99,6 +99,20 @@ data class PhotoPayload(
     /** On photo-pull: what to send. Absent means "build a manifest now". */
     val keys: List<String>? = null,
     val skipped: Int? = null,
+    /**
+     * On photo-config: whether this phone describes its camera folder at all.
+     *
+     * These three carry the settings that used to live in [Prefs]. They are
+     * deliberately plain booleans and numbers: [PhotoExclusion] decodes
+     * strictly on the Mac, so a value the other side does not recognise would
+     * throw and take the session with it. A new field must never be an enum
+     * until that changes.
+     */
+    val enabled: Boolean? = null,
+    /** How many days back to look. */
+    val lastDays: Int? = null,
+    /** The largest item worth starting. This phone may lower it, never raise it. */
+    val maxItemBytes: Long? = null,
 ) {
     fun toJson(): JSONObject {
         val json = JSONObject()
@@ -113,6 +127,9 @@ data class PhotoPayload(
         gone?.let { list -> json.put("gone", JSONArray(list)) }
         keys?.let { list -> json.put("keys", JSONArray(list)) }
         skipped?.let { json.put("skipped", it) }
+        enabled?.let { json.put("enabled", it) }
+        lastDays?.let { json.put("lastDays", it) }
+        maxItemBytes?.let { json.put("maxItemBytes", it) }
         return json
     }
 
@@ -131,6 +148,9 @@ data class PhotoPayload(
             gone = json.optJSONArray("gone")?.strings(),
             keys = json.optJSONArray("keys")?.strings(),
             skipped = if (json.has("skipped")) json.optInt("skipped") else null,
+            enabled = if (json.has("enabled")) json.optBoolean("enabled") else null,
+            lastDays = if (json.has("lastDays")) json.optInt("lastDays") else null,
+            maxItemBytes = if (json.has("maxItemBytes")) json.optLong("maxItemBytes") else null,
         )
 
         private fun JSONObject.stringOrNull(key: String): String? =
@@ -170,19 +190,58 @@ object PhotoKey {
     }
 }
 
-/** The two lower bounds of the window, and which of them wins. */
+/**
+ * What the Mac told this phone to do, and the only thing that lets it act.
+ *
+ * Held for the length of a session and never written down. A stored copy would
+ * be a way for a phone to keep working to a Mac's instructions long after that
+ * Mac stopped issuing them - including one that has since been downgraded and
+ * no longer knows about any of this.
+ */
+data class PhotoConfig(
+    val enabled: Boolean,
+    val lastDays: Int,
+    val maxItemBytes: Long,
+) {
+    companion object {
+        const val DEFAULT_LAST_DAYS = 30
+        const val MIN_ITEM_BYTES = 1L * 1024 * 1024
+        val DAYS = 1..3650
+
+        /**
+         * Reads a configuration off the wire, clamped to what this phone is
+         * willing to do.
+         *
+         * `enabled` absent means **off**: a missing field can never be read as
+         * permission to send. `maxItemBytes` is clamped at the top by
+         * [Wire.MAX_PHOTO_BYTES], so the Mac can lower the limit and never raise
+         * it - the ceiling belongs to this side because it follows from there
+         * being no resume in the protocol.
+         */
+        fun of(payload: PhotoPayload): PhotoConfig = PhotoConfig(
+            enabled = payload.enabled ?: false,
+            lastDays = (payload.lastDays ?: DEFAULT_LAST_DAYS)
+                .coerceIn(DAYS.first, DAYS.last),
+            maxItemBytes = (payload.maxItemBytes ?: Wire.MAX_PHOTO_BYTES)
+                .coerceIn(MIN_ITEM_BYTES, Wire.MAX_PHOTO_BYTES),
+        )
+    }
+}
+
+/** The lower bound of the window the Mac asked for. */
 object PhotoWindow {
 
     /**
-     * The effective lower bound in milliseconds. Both settings say "nothing
-     * older than this", so the stricter - the later - of the two applies. That
-     * is what makes the day count a fuse: a start date in 2005 cannot on its own
-     * put the whole library in the window.
+     * The effective lower bound in milliseconds.
+     *
+     * The width comes from the Mac, but the bound is still computed and
+     * declared here, on this clock. That split is deliberate: the Mac reads the
+     * `from` this phone reports and never recomputes it, so the two sides can
+     * never disagree about which photos were in range.
      */
-    fun effectiveFrom(startDateMillis: Long, lastDays: Int, nowMillis: Long): Long {
+    fun effectiveFrom(lastDays: Int, nowMillis: Long): Long {
         val days = if (lastDays < 1) 1 else lastDays
-        val byDays = nowMillis - days * 86_400_000L
-        return maxOf(byDays, startDateMillis)
+        return nowMillis - days * 86_400_000L
     }
 
     fun contains(captureAt: Long, from: Long): Boolean = captureAt > 0 && captureAt >= from
@@ -244,25 +303,6 @@ object CivilDate {
         for (m in 0 until month - 1) days += lengths[m]
         days += (day - 1)
         return ((days * 24 + hour) * 60 + minute) * 60_000L + second * 1_000L
-    }
-
-    /** `YYYY-MM-DD` of a moment, the inverse of the above at midnight. */
-    fun text(millis: Long): String {
-        var days = millis / 86_400_000L
-        var year = 1970
-        while (true) {
-            val length = if (isLeap(year)) 366 else 365
-            if (days < length) break
-            days -= length
-            year++
-        }
-        val lengths = monthLengths(year)
-        var month = 0
-        while (month < 12 && days >= lengths[month]) {
-            days -= lengths[month]
-            month++
-        }
-        return "%04d-%02d-%02d".format(year, month + 1, days + 1)
     }
 
     private fun monthLengths(year: Int) =
@@ -428,33 +468,6 @@ object PhotoTombstones {
         if (!scanComplete) return emptyList()
         val seen = present.toHashSet()
         return ledger.filterNot { seen.contains(it) }.sorted()
-    }
-}
-
-/**
- * The start date, as the settings screen writes it and reads it back.
- *
- * A plain `YYYY-MM-DD` field rather than a date picker, because this is a value
- * that is typed once and then left alone - and because a pure parser can be
- * tested, which a dialog cannot.
- */
-object PhotoDate {
-
-    private val PATTERN = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$")
-
-    /** Midnight local time on that day, or null when the text is not a date. */
-    fun parse(text: String?, zoneOffsetMillis: Int): Long? {
-        val match = PATTERN.find(text?.trim().orEmpty()) ?: return null
-        val (year, month, day) = match.destructured
-        val utc = CivilDate.utcMillis(year.toInt(), month.toInt(), day.toInt(), 0, 0, 0)
-        if (utc <= 0) return null
-        return utc - zoneOffsetMillis
-    }
-
-    /** The other direction, for showing what is stored. Empty when nothing is. */
-    fun format(millis: Long, zoneOffsetMillis: Int): String {
-        if (millis <= 0) return ""
-        return CivilDate.text(millis + zoneOffsetMillis)
     }
 }
 

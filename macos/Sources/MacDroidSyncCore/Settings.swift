@@ -29,6 +29,10 @@ public final class Settings: SyncConfiguration {
         static let photosEnabled = "photosEnabled"
         static let photosAlbumIdentifier = "photosAlbumIdentifier"
         static let photosApproveAdditions = "photosApproveAdditions"
+        static let photosLastDays = "photosLastDays"
+        static let photosIntervalMinutes = "photosIntervalMinutes"
+        static let photosMaxItemMB = "photosMaxItemMB"
+        static let photosAlbumName = "photosAlbumName"
     }
 
     private let defaults = UserDefaults.standard
@@ -183,6 +187,59 @@ public final class Settings: SyncConfiguration {
     public var photosApproveAdditions: Bool {
         get { defaults.bool(forKey: Keys.photosApproveAdditions) }
         set { defaults.set(newValue, forKey: Keys.photosApproveAdditions) }
+    }
+
+    /// How far back the phone should look, in days.
+    ///
+    /// Clamped on the way out as well as on the way in: a value put there by
+    /// `defaults write`, or by a build that allowed a wider range, must not open
+    /// the floodgates just because it is already stored.
+    public var photosLastDays: Int {
+        get { PhotoSyncSettings.days(from: defaults.integer(forKey: Keys.photosLastDays)) }
+        set { defaults.set(PhotoSyncSettings.days(from: newValue), forKey: Keys.photosLastDays) }
+    }
+
+    /// How often this Mac asks the phone what it has.
+    public var photosIntervalMinutes: Int {
+        get {
+            PhotoSyncSettings.intervalMinutes(
+                from: defaults.integer(forKey: Keys.photosIntervalMinutes)
+            )
+        }
+        set {
+            defaults.set(
+                PhotoSyncSettings.intervalMinutes(from: newValue),
+                forKey: Keys.photosIntervalMinutes
+            )
+        }
+    }
+
+    /// The largest item worth starting, in megabytes. Stored in MB because
+    /// `UserDefaults` has no `Int64` and the field is in MB anyway.
+    public var photosMaxItemMB: Int {
+        get { PhotoSyncSettings.maxItemMB(from: defaults.integer(forKey: Keys.photosMaxItemMB)) }
+        set { defaults.set(PhotoSyncSettings.maxItemMB(from: newValue), forKey: Keys.photosMaxItemMB) }
+    }
+
+    public var photosMaxItemBytes: Int64 { Int64(photosMaxItemMB) * 1024 * 1024 }
+
+    /// The album new photos go into.
+    ///
+    /// Changing it points *new* photos at a new album; the ones already in
+    /// Photos stay where they are. Nothing in the library is renamed, which is
+    /// what keeps `photosAlbumIdentifier` the source of truth and lets the user
+    /// rename the album themselves without breaking anything.
+    public var photosAlbumName: String {
+        get { PhotoSyncSettings.albumName(from: defaults.string(forKey: Keys.photosAlbumName)) }
+        set {
+            let name = PhotoSyncSettings.albumName(from: newValue)
+            guard name != photosAlbumName else { return }
+            defaults.set(name, forKey: Keys.photosAlbumName)
+            // The album is found by identifier, and that lookup ignores the
+            // title - so without forgetting it, a new name would change nothing.
+            photosAlbumIdentifier = nil
+            Log.info("Photos will go into a new album named \(name)")
+        }
     }
 
     /// The album imports go into, by identifier rather than by title: titles are

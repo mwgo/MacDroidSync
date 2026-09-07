@@ -302,7 +302,7 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         let cell = NSTableCellView()
 
         if id == "kind" {
-            let look = Self.appearance(action.kind)
+            let look = Self.appearance(action)
             let image = NSImageView()
             image.image = NSImage(systemSymbolName: look.symbol, accessibilityDescription: look.word)
             image.contentTintColor = look.tint
@@ -477,9 +477,16 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
     /// Colour never carries the meaning on its own: every row shows a symbol and
     /// the word as well.
     private static func appearance(
-        _ kind: PhotoActionKind
+        _ action: PhotoPendingAction
     ) -> (symbol: String, word: String, tint: NSColor) {
-        switch kind {
+        // The old copy of an edited photo is a removal, but not one the phone
+        // asked for - and answering it "yes" means something quite different
+        // from answering "yes" to a photo somebody deleted. It gets its own
+        // word so the two cannot be picked off the list as if they were alike.
+        if action.issue == .replacedVersion {
+            return ("arrow.triangle.2.circlepath", "Replaced", .systemBlue)
+        }
+        switch action.kind {
         case .add: return ("arrow.down.circle.fill", "Add", .systemGreen)
         case .change: return ("arrow.triangle.2.circlepath", "Update", .systemBlue)
         // Orange rather than red: removed photos sit in Recently Deleted for

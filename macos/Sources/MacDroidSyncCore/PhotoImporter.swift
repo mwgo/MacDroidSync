@@ -39,7 +39,7 @@ public final class PhotoImporter {
 
     private let library: PhotoLibrary
     private let index: PhotoIndexStore
-    private let albumName: String
+    private let readAlbumName: () -> String
     private let readAlbumIdentifier: () -> String?
     private let writeAlbumIdentifier: (String) -> Void
     private let queue = DispatchQueue(label: "\(Log.subsystem).photo-importer")
@@ -52,13 +52,13 @@ public final class PhotoImporter {
     public init(
         library: PhotoLibrary,
         index: PhotoIndexStore = PhotoIndexStore(),
-        albumName: String = "MacDroidSync",
+        readAlbumName: @escaping () -> String = { PhotoSyncSettings.defaultAlbumName },
         readAlbumIdentifier: @escaping () -> String? = { nil },
         writeAlbumIdentifier: @escaping (String) -> Void = { _ in }
     ) {
         self.library = library
         self.index = index
-        self.albumName = albumName
+        self.readAlbumName = readAlbumName
         self.readAlbumIdentifier = readAlbumIdentifier
         self.writeAlbumIdentifier = writeAlbumIdentifier
     }
@@ -71,7 +71,8 @@ public final class PhotoImporter {
     /// The assets waiting to leave Photos, so the window can list them rather
     /// than only count them.
     public var waitingDeletions: [PhotoIndexEntry] { index.pendingDeletions }
-    public var isFirstRun: Bool { index.isFirstRun }
+    public var hasHistory: Bool { index.hasHistory }
+    public var preexistingCount: Int { index.count(in: .preexisting) }
     public var indexedKeys: [PhotoIndexEntry] { index.all }
 
     // MARK: - Before the bytes move
@@ -91,6 +92,11 @@ public final class PhotoImporter {
             return .no("removed from Photos on this Mac")
         case .ignoredByUser:
             return .no("ignored in the photo sync window")
+        case .preexisting:
+            // It was on the phone before this Mac started looking. The same
+            // bytes are not wanted; an edit made since is.
+            guard let sha256, sha256.lowercased() == entry.sha256.lowercased() else { return .yes }
+            return .no("already on the phone when photo sync was switched on")
         case .imported, .pendingDelete:
             // Checked before the hash comparison: this is the version the
             // operator refused, and the phone may already be sending it.
@@ -129,8 +135,10 @@ public final class PhotoImporter {
                 return library.attributes(of: identifier)
             }
 
+            // Asked for on every import rather than held from construction, so
+            // renaming the album in the settings window takes effect at once.
             let albumIdentifier = try? library.ensureAlbum(
-                named: albumName, knownIdentifier: readAlbumIdentifier()
+                named: readAlbumName(), knownIdentifier: readAlbumIdentifier()
             )
             if let albumIdentifier, albumIdentifier != readAlbumIdentifier() {
                 writeAlbumIdentifier(albumIdentifier)
@@ -186,7 +194,7 @@ public final class PhotoImporter {
     /// belongs to the new asset. It is never offered to the phone, only used to
     /// remember which asset is still to be removed.
     private func staleKey(for key: String) -> String {
-        "\(key)#replaced-\(Message.now())"
+        "\(key)\(PhotoPendingAction.replacedMarker)\(Message.now())"
     }
 
     // MARK: - What the phone says is gone
@@ -211,6 +219,44 @@ public final class PhotoImporter {
 
     public func rename(from: String, to: String) {
         index.rename(from: from, to: to)
+    }
+
+    /// Writes the phone's own picture down as the starting point.
+    ///
+    /// Every key becomes a row saying "accounted for": nothing is fetched,
+    /// nothing is offered, nothing stands in the sync window. `upsertIfAbsent`
+    /// rather than `upsert`, so a live row can never be flattened by this -
+    /// which is what makes "Start again" safe to press on a working install.
+    public func adopt(baseline items: [PhotoItem], at now: Int64) {
+        guard !items.isEmpty else { return }
+        index.upsertIfAbsent(
+            items.map { item in
+                PhotoIndexEntry(
+                    key: item.key,
+                    sha256: item.sha256?.lowercased() ?? "",
+                    size: item.size,
+                    captureAt: item.captureAt,
+                    localIdentifier: nil,
+                    state: .preexisting,
+                    importedAt: now
+                )
+            }
+        )
+        Log.info("Photo sync starting point: \(items.count) item(s) already on the phone")
+        report()
+    }
+
+    /// Forgets everything this Mac recorded about photos.
+    ///
+    /// Nothing leaves Photos: the assets stay exactly where they are. What goes
+    /// is the record of which phone key each came from - and with it the ability
+    /// to notice that one of them was deleted on the phone, or to take out the
+    /// copy an edit replaces. That is the price of a clean slate, and it is why
+    /// this is only ever reached through a confirmation.
+    public func forgetEverything() {
+        index.removeAll()
+        Log.info("Forgot everything this Mac had recorded about photos")
+        report()
     }
 
     // MARK: - What the operator refuses
