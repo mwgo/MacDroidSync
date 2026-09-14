@@ -100,6 +100,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private var networks: [SafeNetworkStore.Network] = []
 
     private var ticker: DispatchSourceTimer?
+    /// One page of the window: its name, and the icon that stands for it in
+    /// the toolbar. Several symbol names are given and the first one the system
+    /// has wins, so a name withdrawn by a future macOS degrades to a neighbour
+    /// instead of leaving a blank button - the same arrangement as StatusIcon.
+    private struct Page {
+        let id: NSToolbarItem.Identifier
+        let title: String
+        let symbols: [String]
+    }
+
+    /// The pages in the order they appear. One list feeds both the tab view
+    /// that holds them and the toolbar that switches between them, so the two
+    /// can never disagree about a name or an order.
+    private static let pages: [Page] = [
+        Page(id: .init("general"), title: "General", symbols: ["gearshape"]),
+        Page(id: .init("autoLock"), title: "Auto lock", symbols: ["lock.laptopcomputer", "lock"]),
+        Page(id: .init("safeNetworks"), title: "Safe networks", symbols: ["wifi"]),
+        Page(id: .init("photos"), title: "Photos", symbols: ["photo.on.rectangle", "photo"]),
+        Page(id: .init("about"), title: "About", symbols: ["info.circle"]),
+    ]
+
     private var tabs: NSTabView?
     /// Width of the roomiest tab, so the window never jumps sideways.
     private var bodyWidth: CGFloat = 0
@@ -121,6 +142,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         window.delegate = self
         window.contentView = buildTabs()
+        installToolbar(on: window)
         window.setContentSize(window.contentView?.fittingSize ?? window.frame.size)
         window.center()
     }
@@ -152,7 +174,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        // Whichever side did the switching, the toolbar shows the result.
+        if let id = tabViewItem?.identifier as? String {
+            window?.toolbar?.selectedItemIdentifier = NSToolbarItem.Identifier(id)
+        }
         fitWindow(to: tabViewItem, animated: true)
+    }
+
+    /// Icons with names along the top, in place of a strip of tab buttons - the
+    /// shape the system's own settings windows have. The toolbar only switches
+    /// pages; the tab view underneath still holds them, because it already knows
+    /// how to show one at a time and how tall each one wants to be.
+    private func installToolbar(on window: NSWindow) {
+        let toolbar = NSToolbar(identifier: "settings")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconAndLabel
+        toolbar.allowsUserCustomization = false
+        toolbar.selectedItemIdentifier = Self.pages.first?.id
+        window.toolbarStyle = .preference
+        window.toolbar = toolbar
+    }
+
+    @objc private func selectPage(_ sender: NSToolbarItem) {
+        tabs?.selectTabViewItem(withIdentifier: sender.itemIdentifier.rawValue)
     }
 
     /// Each tab gets the window height it needs, instead of every tab getting the
@@ -493,30 +537,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             pad(buildPhotosTab()), pad(buildAboutTab()),
         ]
 
-        let general = NSTabViewItem(identifier: "general")
-        general.label = "General"
-        general.view = bodies[0]
-        tabs.addTabViewItem(general)
-
-        let autoLock = NSTabViewItem(identifier: "autoLock")
-        autoLock.label = "Auto lock"
-        autoLock.view = bodies[1]
-        tabs.addTabViewItem(autoLock)
-
-        let networks = NSTabViewItem(identifier: "safeNetworks")
-        networks.label = "Safe networks"
-        networks.view = bodies[2]
-        tabs.addTabViewItem(networks)
-
-        let photos = NSTabViewItem(identifier: "photos")
-        photos.label = "Photos"
-        photos.view = bodies[3]
-        tabs.addTabViewItem(photos)
-
-        let about = NSTabViewItem(identifier: "about")
-        about.label = "About"
-        about.view = bodies[4]
-        tabs.addTabViewItem(about)
+        // No strip of tab buttons and no border: the toolbar does the switching,
+        // and the pages sit directly under it.
+        tabs.tabViewType = .noTabsNoBorder
+        for (page, body) in zip(Self.pages, bodies) {
+            let item = NSTabViewItem(identifier: page.id.rawValue)
+            item.label = page.title
+            item.view = body
+            tabs.addTabViewItem(item)
+        }
 
         // One width for every tab, so switching them does not make the window
         // jump sideways; the height follows whichever tab is showing.
@@ -1155,5 +1184,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.beginSheetModal(for: window!)
+    }
+}
+
+// MARK: - NSToolbarDelegate
+
+/// One toolbar item per page, all of them selectable and none of them
+/// removable: the toolbar is navigation here, not a shelf of shortcuts.
+extension SettingsWindowController: NSToolbarDelegate {
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        Self.pages.map(\.id)
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        Self.pages.map(\.id)
+    }
+
+    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        Self.pages.map(\.id)
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        guard let page = Self.pages.first(where: { $0.id == itemIdentifier }) else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.label = page.title
+        item.toolTip = page.title
+        item.image = page.symbols.lazy
+            .compactMap { NSImage(systemSymbolName: $0, accessibilityDescription: page.title) }
+            .first
+        item.target = self
+        item.action = #selector(selectPage(_:))
+        return item
     }
 }

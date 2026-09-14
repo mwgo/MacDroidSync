@@ -93,7 +93,7 @@ lives in *Settings…* instead:
 
 #### The settings window
 
-Five tabs, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
+Five pages, each behind an icon in the window's toolbar, opened from `Settings…` in the menu - or with ⌘, while the menu is open, the same as the
 other shortcuts there:
 
 | Tab | What is in it |
