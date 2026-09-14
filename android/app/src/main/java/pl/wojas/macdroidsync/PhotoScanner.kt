@@ -2,10 +2,13 @@ package pl.wojas.macdroidsync
 
 import android.content.ContentResolver
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Size
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.util.TimeZone
 
@@ -230,6 +233,57 @@ class PhotoScanner(private val context: Context) {
             Log.w(TAG, "Could not open the original of ${row.name}", error)
             null
         }
+    }
+
+    /**
+     * A small JPEG of one item, no side longer than [maxPixel], for the Mac to
+     * look at before deciding about it. Photos and videos alike: MediaStore keeps
+     * a thumbnail for both, and for a video that frame is exactly what tells the
+     * operator which clip this is.
+     *
+     * The redacted thumbnail is what is wanted here, not the original - a
+     * picture to glance at carries no location and needs none - so there is no
+     * `setRequireOriginal` and nothing to fail on when that permission is gone.
+     */
+    fun thumbnail(row: Row, maxPixel: Int): ByteArray? {
+        val bitmap = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                resolver.loadThumbnail(itemUri(row), Size(maxPixel, maxPixel), null)
+            } else if (row.isVideo) {
+                @Suppress("DEPRECATION")
+                MediaStore.Video.Thumbnails.getThumbnail(
+                    resolver, row.id, MediaStore.Video.Thumbnails.MINI_KIND, null,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                MediaStore.Images.Thumbnails.getThumbnail(
+                    resolver, row.id, MediaStore.Images.Thumbnails.MINI_KIND, null,
+                )
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not draw a thumbnail of ${row.name}", error)
+            null
+        } ?: return null
+
+        // The older API answers in its own size, so the bound is applied here
+        // as well rather than trusted.
+        val longest = maxOf(bitmap.width, bitmap.height)
+        val bounded = if (longest > maxPixel) {
+            val scale = maxPixel.toFloat() / longest
+            Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1),
+                true,
+            )
+        } else {
+            bitmap
+        }
+        val out = ByteArrayOutputStream()
+        bounded.compress(Bitmap.CompressFormat.JPEG, 70, out)
+        if (bounded !== bitmap) bounded.recycle()
+        bitmap.recycle()
+        return out.toByteArray()
     }
 
     /**

@@ -235,6 +235,45 @@ class PhotoConfigTest {
                      PhotoConfig.of(parsed.photo!!))
     }
 
+    /**
+     * The preview rides on fields every message already has, so an older Mac
+     * that knows nothing of the type still parses the frame and ignores it.
+     */
+    @Test
+    fun `a preview carries its key and its picture through a whole message`() {
+        val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0, 1, 2, 3)
+        val message = Message(
+            seq = 9,
+            type = MessageType.PHOTO_PREVIEW,
+            mime = "image/jpeg",
+            // java.util rather than android.util, which is a stub on the JVM;
+            // the two agree byte for byte, as the Mac's decoder relies on.
+            data = java.util.Base64.getEncoder().encodeToString(jpeg),
+            photo = PhotoPayload(keys = listOf("DCIM/Camera/a.jpg")),
+        )
+        val parsed = Message.parse(message.toBytes())
+        assertEquals(MessageType.PHOTO_PREVIEW, parsed.type)
+        assertEquals(listOf("DCIM/Camera/a.jpg"), parsed.photo?.keys)
+        assertEquals("image/jpeg", parsed.mime)
+        assertTrue(jpeg.contentEquals(java.util.Base64.getDecoder().decode(parsed.data)))
+        assertEquals(null, parsed.ok)
+    }
+
+    @Test
+    fun `a preview the phone cannot draw says so instead of sending nothing`() {
+        val message = Message(
+            seq = 10,
+            type = MessageType.PHOTO_PREVIEW,
+            ok = false,
+            reason = "this phone has no picture of it",
+            photo = PhotoPayload(keys = listOf("DCIM/Camera/gone.jpg")),
+        )
+        val parsed = Message.parse(message.toBytes())
+        assertEquals(false, parsed.ok)
+        assertEquals("this phone has no picture of it", parsed.reason)
+        assertEquals(null, parsed.data)
+    }
+
     /** A newer Mac may add fields; that must not cost this phone the session. */
     @Test
     fun `an unexpected field is ignored rather than fatal`() {

@@ -31,6 +31,8 @@ public final class SyncServer {
     /// One page of the phone's picture of its camera folder, with the message's
     /// own `ok` and `reason`.
     public var onPhotoManifest: ((PhotoPayload, Bool, String?) -> Void)?
+    /// The phone's answer to `requestPhotoPreview`: key, JPEG bytes or nil, reason.
+    public var onPhotoPreview: ((String, Data?, String?) -> Void)?
     /// A gallery item arriving, kept apart from the ordinary file callbacks so a
     /// photo sync never shows up as the user's own transfer.
     public var onPhotoProgress: ((String, Int64, Int64) -> Void)?
@@ -263,6 +265,9 @@ public final class SyncServer {
         session.onPhotoManifest = { [weak self] payload, ok, reason in
             DispatchQueue.main.async { self?.onPhotoManifest?(payload, ok, reason) }
         }
+        session.onPhotoPreview = { [weak self] key, bytes, reason in
+            DispatchQueue.main.async { self?.onPhotoPreview?(key, bytes, reason) }
+        }
         session.onPhotoProgress = { [weak self] name, received, total in
             DispatchQueue.main.async { self?.onPhotoProgress?(name, received, total) }
         }
@@ -342,6 +347,22 @@ public final class SyncServer {
                 return true
             } catch {
                 Log.error("Could not ask the phone for photos: \(error.localizedDescription)")
+                return false
+            }
+        }
+    }
+
+    /// Asks the phone for a small picture of one item. False when there is no
+    /// phone to ask, which the caller shows rather than waits on.
+    @discardableResult
+    public func requestPhotoPreview(key: String) -> Bool {
+        queue.sync {
+            guard let session, session.isAuthenticated else { return false }
+            do {
+                try session.requestPhotoPreview(key: key)
+                return true
+            } catch {
+                Log.error("Could not ask the phone for a preview: \(error.localizedDescription)")
                 return false
             }
         }

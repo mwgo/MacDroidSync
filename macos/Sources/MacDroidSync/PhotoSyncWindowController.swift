@@ -15,6 +15,12 @@ struct PhotoSyncHooks {
     /// Irreversible. The window asks before calling this.
     var ignore: ([String]) -> Void = { _ in }
     var syncNow: () -> Void = {}
+    /// A picture of an item that is already in the Photos library - the rows
+    /// about to be removed or replaced - drawn locally and at once.
+    var previewFromLibrary: (String) -> NSImage? = { _ in nil }
+    /// Asks the phone for a picture of an item that is not here yet. False when
+    /// there is no phone to ask; the answer comes back through `receivePreview`.
+    var requestPreview: (String) -> Bool = { _ in false }
     /// Why the feature is doing nothing, when it is doing nothing.
     var status: () -> String? = { nil }
 }
@@ -53,6 +59,26 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
     private let ignoreButton = NSButton(title: "Ignore selected…", target: nil, action: nil)
     private let syncNowButton = NSButton(title: "Sync photos now", target: nil, action: nil)
 
+    // The preview, to the right of the table: a small picture of the one row
+    // that is selected, enough to tell what a file is before deciding about it.
+    private let previewImage = NSImageView()
+    private let previewCaption = NSTextField(wrappingLabelWithString: "")
+    private let previewNote = NSTextField(wrappingLabelWithString: "")
+    /// Pictures already fetched, by key, for the life of the window. A row is
+    /// looked at several times while a list is worked through, and the phone
+    /// should be asked about each file once.
+    private var previews: [String: NSImage] = [:]
+    /// Why a picture could not be had, by key, so the same failure is not
+    /// asked for again either.
+    private var previewFailures: [String: String] = [:]
+    /// The key whose answer from the phone is outstanding, and the timer that
+    /// gives up on it. An answer for any other key is stored and otherwise ignored.
+    private var awaitingPreview: String?
+    private var previewTimeout: DispatchWorkItem?
+    /// Arrow keys run through the list faster than the phone can answer, so the
+    /// ask waits until the selection has stood still for a moment.
+    private var previewDebounce: DispatchWorkItem?
+
     /// What the table is showing. The data source reads this and nothing else:
     /// asking the hooks again mid-reload is how a table ends up drawing a row
     /// that has already gone.
@@ -73,7 +99,7 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         // The app is an accessory: without this the window is deallocated on
         // close and the next click reopens nothing.
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 620, height: 320)
+        window.minSize = NSSize(width: 860, height: 320)
         super.init(window: window)
         window.delegate = self
         window.contentView = buildBody()
@@ -109,6 +135,23 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         statusResetWork?.cancel()
         statusResetWork = nil
         statusLabel.stringValue = ""
+        previewDebounce?.cancel()
+        previewTimeout?.cancel()
+        awaitingPreview = nil
+    }
+
+    /// The phone's answer to a preview request. Stored whatever the selection
+    /// is by now, shown only if the row is still the one being looked at.
+    func receivePreview(key: String, bytes: Data?, reason: String?) {
+        if let bytes, let image = NSImage(data: bytes) {
+            previews[key] = image
+        } else {
+            previewFailures[key] = reason ?? "the phone sent no picture"
+        }
+        guard awaitingPreview == key else { return }
+        awaitingPreview = nil
+        previewTimeout?.cancel()
+        showPreview(for: selectedRow())
     }
 
     private func reload() {
@@ -166,7 +209,17 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         let header = row([summaryLabel, spacer(), syncNowButton])
         let footer = row([selectionLabel, spacer(), ignoreButton, syncButton])
 
-        let stack = NSStackView(views: [header, statusLabel, middle, footer])
+        // The list and, to its right, the preview of the selected row. The list
+        // takes whatever width is left; the preview is a fixed column, so the
+        // table's columns do not shuffle when a picture appears or goes.
+        let content = NSStackView(views: [middle, buildPreviewPane()])
+        content.orientation = .horizontal
+        content.alignment = .top
+        content.spacing = 12
+        content.translatesAutoresizingMaskIntoConstraints = false
+        middle.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let stack = NSStackView(views: [header, statusLabel, content, footer])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -181,10 +234,134 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
             stack.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -16),
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            middle.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            content.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            middle.heightAnchor.constraint(equalTo: content.heightAnchor),
         ])
         return body
     }
+
+    /// A picture the size of a large thumbnail, its file name under it, and one
+    /// line for what is going on when there is no picture. Not a viewer: it only
+    /// has to answer "what is this file" before the operator decides about it.
+    private func buildPreviewPane() -> NSView {
+        previewImage.imageScaling = .scaleProportionallyDown
+        previewImage.imageAlignment = .alignCenter
+        previewImage.imageFrameStyle = .none
+        previewImage.wantsLayer = true
+        previewImage.layer?.cornerRadius = 6
+        previewImage.layer?.masksToBounds = true
+        previewImage.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+        previewImage.translatesAutoresizingMaskIntoConstraints = false
+        previewImage.setAccessibilityLabel("Preview of the selected item")
+
+        previewCaption.font = .systemFont(ofSize: 11)
+        previewCaption.alignment = .center
+        previewCaption.lineBreakMode = .byTruncatingMiddle
+        previewCaption.maximumNumberOfLines = 2
+
+        previewNote.font = .systemFont(ofSize: 11)
+        previewNote.textColor = .secondaryLabelColor
+        previewNote.alignment = .center
+        previewNote.maximumNumberOfLines = 3
+
+        let pane = NSStackView(views: [previewImage, previewCaption, previewNote])
+        pane.orientation = .vertical
+        pane.alignment = .centerX
+        pane.spacing = 6
+        pane.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            pane.widthAnchor.constraint(equalToConstant: Self.previewSide),
+            previewImage.widthAnchor.constraint(equalToConstant: Self.previewSide),
+            previewImage.heightAnchor.constraint(equalToConstant: Self.previewSide),
+            previewCaption.widthAnchor.constraint(equalTo: pane.widthAnchor),
+            previewNote.widthAnchor.constraint(equalTo: pane.widthAnchor),
+        ])
+        showPreview(for: nil)
+        return pane
+    }
+
+    // MARK: - The preview
+
+    /// The one row that is selected, or nil when none or several are.
+    private func selectedRow() -> PhotoPendingAction? {
+        let picked = table.selectedRowIndexes.filter { rows.indices.contains($0) }
+        guard picked.count == 1, let index = picked.first else { return nil }
+        return rows[index]
+    }
+
+    /// Shows what is known about the selected row right now, and if that is
+    /// nothing yet, sets about finding out.
+    private func showPreview(for action: PhotoPendingAction?) {
+        previewDebounce?.cancel()
+        guard let action else {
+            let picked = table.selectedRowIndexes.count
+            previewImage.image = nil
+            previewCaption.stringValue = ""
+            previewNote.stringValue = picked > 1
+                ? "\(picked) items selected - pick one to see it"
+                : (rows.isEmpty ? "" : "Select an item to see it")
+            return
+        }
+        previewCaption.stringValue = action.name
+
+        if let image = previews[action.key] {
+            previewImage.image = image
+            previewNote.stringValue = Self.describe(image)
+            return
+        }
+        if let reason = previewFailures[action.key] {
+            previewImage.image = nil
+            previewNote.stringValue = "No preview: \(reason)"
+            return
+        }
+
+        // Rows about assets this Mac already holds are drawn from the library,
+        // at once and without bothering the phone. Everything else - and an
+        // asset the library could not draw - is asked for.
+        if action.kind == .delete || action.kind == .change,
+           let image = hooks.previewFromLibrary(action.key) {
+            previews[action.key] = image
+            previewImage.image = image
+            previewNote.stringValue = Self.describe(image)
+            return
+        }
+
+        previewImage.image = nil
+        previewNote.stringValue = "Asking the phone…"
+        let work = DispatchWorkItem { [weak self] in self?.askPhoneForPreview(of: action) }
+        previewDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private func askPhoneForPreview(of action: PhotoPendingAction) {
+        // Only if this is still the row being looked at.
+        guard selectedRow()?.key == action.key else { return }
+        previewTimeout?.cancel()
+        guard hooks.requestPreview(action.key) else {
+            awaitingPreview = nil
+            previewNote.stringValue = "No preview: the phone is not connected"
+            return
+        }
+        awaitingPreview = action.key
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, self.awaitingPreview == action.key else { return }
+            self.awaitingPreview = nil
+            // Not remembered as a failure: a phone that was busy sending a
+            // video may well answer next time.
+            if self.selectedRow()?.key == action.key {
+                self.previewNote.stringValue = "No preview: the phone did not answer"
+            }
+        }
+        previewTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+    }
+
+    private static func describe(_ image: NSImage) -> String {
+        guard let rep = image.representations.first, rep.pixelsWide > 0 else { return "" }
+        return "\(rep.pixelsWide) × \(rep.pixelsHigh) preview"
+    }
+
+    private static let previewSide: CGFloat = 220
 
     private func buildTable() -> NSScrollView {
         for column in Self.columns {
@@ -267,6 +444,7 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
             table.selectRowIndexes(restored, byExtendingSelection: false)
         }
         refreshChrome()
+        showPreview(for: selectedRow())
     }
 
     private func refreshChrome() {
@@ -289,9 +467,26 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         let doable = picked.contains { rows[$0].isSynchronizable }
         syncButton.isEnabled = doable && blocker == nil
         ignoreButton.isEnabled = !picked.isEmpty
-        syncButton.toolTip = picked.isEmpty || doable
-            ? nil
-            : "These items cannot be transferred; you can only stop being asked about them."
+        // A greyed out button has to say why, every time. The blocker used to be
+        // shown only when the list was empty, which left a full list with a dead
+        // button and no explanation anywhere in the window.
+        if let blocker {
+            syncButton.toolTip = blocker
+        } else if !picked.isEmpty, !doable {
+            syncButton.toolTip = "These items cannot be transferred; you can only stop being asked about them."
+        } else {
+            syncButton.toolTip = nil
+        }
+        if statusResetWork == nil {
+            statusLabel.stringValue = restingStatus()
+        }
+    }
+
+    /// What the status line says when nothing has just happened: the reason the
+    /// feature cannot act, or nothing at all.
+    private func restingStatus() -> String {
+        guard !rows.isEmpty, let blocker = hooks.status() else { return "" }
+        return "Nothing can be synchronised right now: \(blocker)"
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -359,6 +554,7 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         refreshChrome()
+        showPreview(for: selectedRow())
     }
 
     // MARK: - The two decisions
@@ -447,11 +643,16 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         alert.beginSheetModal(for: window) { [weak self] _ in self?.isSheetUp = false }
     }
 
-    /// A line that says what just happened and then gets out of the way.
+    /// A line that says what just happened and then gets out of the way - back
+    /// to the standing reason nothing can be done, if there is one.
     private func show(status: String) {
         statusResetWork?.cancel()
         statusLabel.stringValue = status
-        let work = DispatchWorkItem { [weak self] in self?.statusLabel.stringValue = "" }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.statusResetWork = nil
+            self.statusLabel.stringValue = self.restingStatus()
+        }
         statusResetWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
     }

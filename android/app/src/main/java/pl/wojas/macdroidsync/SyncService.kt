@@ -314,6 +314,21 @@ class SyncService : Service() {
             photoConfig = config
         }
 
+        override fun onPhotoPreview(key: String) {
+            // Off the socket thread, but deliberately not behind the send lock:
+            // the whole point is to answer while the operator is looking, and a
+            // video in flight would otherwise hold the answer for minutes.
+            scope.launch {
+                val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+                val jpeg = runCatching { photos.preview(key) }
+                    .onFailure { Log.w(TAG, "Could not draw a preview of $key", it) }
+                    .getOrNull()
+                runCatching {
+                    peer.sendPhotoPreview(key, jpeg, reason = "this phone has no picture of it")
+                }.onFailure { Log.w(TAG, "Could not send the preview of $key", it) }
+            }
+        }
+
         override fun onPhotoPull(keys: List<String>?, manifestId: String?) {
             val config = photoConfig?.takeIf { it.enabled }
             if (config == null) {

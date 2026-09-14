@@ -73,6 +73,12 @@ public enum MessageType {
     public static let photoPull = "photo-pull"
     /// Mac to phone: how the phone should describe its camera folder.
     public static let photoConfig = "photo-config"
+    /// Both ways. From the Mac, with one key in `photo.keys`: "show me what this
+    /// is". From the phone, the same key back with a small JPEG in `data`, or
+    /// `ok: false` and a reason. The bytes of an item waiting for a decision are
+    /// not on the Mac yet - that is what the decision is about - so a preview has
+    /// to be asked for.
+    public static let photoPreview = "photo-preview"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.

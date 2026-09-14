@@ -239,6 +239,11 @@ reason. Pick any number of rows and either **Synchronise selected**, which carri
 rows, or **Ignore selected**, which drops them from the sync for good: an ignored item is treated as
 synchronised and is never offered again. Ignoring is irreversible, so it asks first.
 
+Select one row and a small picture of it appears to the right of the list - enough to tell what the file
+is, not a viewer. A photo about to be removed or replaced is drawn from your own Photos library at once;
+anything not here yet is asked of the phone, which answers with a thumbnail a moment later, videos
+included. Each item is fetched once for as long as the window is open.
+
 **What runs by itself, and what waits.** A plan of *only* additions runs on its own, unless it is over
 20 items or 200 MB, which stops and waits like everything else. Any other plan
 waits in the window in full, additions included: if photos are about to be removed, that is the moment to

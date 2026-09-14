@@ -41,6 +41,13 @@ class PeerConnection(
         fun onPhotoPull(keys: List<String>?, manifestId: String?)
 
         /**
+         * The Mac wants a small picture of one item before deciding about it.
+         * Answered with [sendPhotoPreview]; a key this phone no longer has is
+         * answered too, with a reason, so the Mac is not left waiting.
+         */
+        fun onPhotoPreview(key: String)
+
+        /**
          * The Mac saying how this phone should describe its camera folder. It
          * arrives inside the handshake, so it is always in hand before the first
          * pull of a session.
@@ -156,6 +163,25 @@ class PeerConnection(
             )
         )
         return true
+    }
+
+    /**
+     * A small picture of one item, or the reason there is none. The key travels
+     * back in the same place it arrived in, so the Mac can match the answer to
+     * whatever its window is showing by now.
+     */
+    fun sendPhotoPreview(key: String, jpeg: ByteArray?, reason: String? = null) {
+        send(
+            Message(
+                type = MessageType.PHOTO_PREVIEW,
+                seq = codec.nextSequence(),
+                mime = if (jpeg != null) "image/jpeg" else null,
+                data = jpeg?.let { Base64.encodeToString(it, Base64.NO_WRAP) },
+                ok = if (jpeg != null) null else false,
+                reason = if (jpeg != null) null else reason,
+                photo = PhotoPayload(keys = listOf(key)),
+            )
+        )
     }
 
     /** One page of the phone's picture of its camera folder. */
@@ -347,6 +373,9 @@ class PeerConnection(
                 message.photo?.keys,
                 message.photo?.manifestId,
             )
+            MessageType.PHOTO_PREVIEW -> message.photo?.keys?.firstOrNull()?.let {
+                listener.onPhotoPreview(it)
+            }
             MessageType.PHOTO_CONFIG -> message.photo?.let {
                 listener.onPhotoConfig(PhotoConfig.of(it))
             }

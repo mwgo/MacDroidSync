@@ -73,7 +73,7 @@ The plaintext of every sealed frame is a JSON object. Absent fields are omitted.
 Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
 `request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`, `file-offer`, `file-chunk`,
 `file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`,
-`photo-config`.
+`photo-config`, `photo-preview`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
 that connection (replay and reordering protection).
@@ -372,13 +372,15 @@ One way only: the phone's camera folder to the Mac's Photos library. The Mac
 configures and decides, the phone describes and sends, and the bytes travel over
 the file transfer of section 5 with one field added.
 
-Three message types carry the conversation.
+Four message types carry the conversation.
 
 ```
 phone                                          Mac
   |<- photo-config {enabled, lastDays, ...} -- |  inside the handshake, every session
   |<- photo-pull {}  ------------------------- |  "describe your camera folder"
   |-- photo-manifest {page 1..n} ------------->|  what the phone has, in pages
+  |<- photo-preview {keys:[k]} --------------- |  "what is this one?", see below
+  |-- photo-preview {keys:[k], data} --------->|  a small JPEG, or ok:false + reason
   |<- photo-pull {keys} ---------------------- |  "send me these"
   |-- file-offer {photo:{key}} --------------->|  then chunks, end, ack as usual
 ```
@@ -397,6 +399,7 @@ phone                                          Mac
 | `items` | `photo-manifest` | this page's items |
 | `gone` | `photo-manifest` | keys the phone asserts are gone; **not** bounded by the window |
 | `keys` | `photo-pull` | the batch to send; absent means "describe the folder" |
+| `keys` | `photo-preview` | exactly one key, both ways: the item to picture, and which item the picture is of |
 | `skipped` | `photo-manifest` | items whose capture date could not be established |
 | `enabled` | `photo-config` | whether the phone describes its camera folder at all |
 | `lastDays` | `photo-config` | how many days back to look |
@@ -413,6 +416,24 @@ them:
 | `m` | MIME type, informational |
 | `h` | lowercase hex SHA-256, **optional** |
 | `x` | why it will not be sent: `size`, `unreadable`, `noLocation`, `noDate` |
+
+### Looking at an item before deciding
+
+The bytes of an item waiting in the Mac's sync window are not on the Mac - that is
+what the wait is about - so the window asks: `photo-preview` with one key in
+`keys`. The phone answers with the same type and key, a JPEG no longer than
+320 px on its longest side in `data` (base64) with `mime: "image/jpeg"`, or with
+`ok: false` and a `reason` when it has nothing to show, including for a key it no
+longer has. It is the redacted thumbnail MediaStore keeps, never the original:
+a picture to glance at carries no location and needs none, and it works for a
+video, whose frame is precisely what tells the operator which clip this is.
+
+One key per message, because the request follows a selection: the answer to a
+row nobody is looking at any more is stored for later or dropped, and there is
+nothing to correlate. Nothing new is added to the message for this - `data`,
+`mime`, `ok` and `reason` are fields every message already has - so a peer that
+predates the type parses the frame and ignores it under the rules above, and a
+Mac talking to such a phone simply sees no answer and says so after a while.
 
 ### The configuration belongs to the Mac
 

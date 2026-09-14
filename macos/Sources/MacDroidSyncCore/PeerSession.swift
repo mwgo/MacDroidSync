@@ -52,6 +52,9 @@ public final class PeerSession {
     /// own `ok` and `reason`: a refusal is as meaningful as a page of items, and
     /// is what stops a narrowed media permission from reading as a mass deletion.
     public var onPhotoManifest: ((PhotoPayload, Bool, String?) -> Void)?
+    /// The phone's answer to `requestPhotoPreview`: the key, the JPEG bytes, or
+    /// nil bytes and the phone's reason when it has none to give.
+    public var onPhotoPreview: ((String, Data?, String?) -> Void)?
 
     /// Where incoming files are written; without a sink they are refused.
     public var fileSink: FileSink?
@@ -377,6 +380,10 @@ public final class PeerSession {
         case MessageType.photoManifest:
             guard let photo = message.photo else { return }
             onPhotoManifest?(photo, message.ok ?? true, message.reason)
+        case MessageType.photoPreview:
+            guard let key = message.photo?.keys?.first else { return }
+            let bytes = (message.ok ?? true) ? message.data.flatMap { Data(base64Encoded: $0) } : nil
+            onPhotoPreview?(key, bytes, message.reason)
         case MessageType.bye:
             Log.info("Peer said goodbye: \(message.reason ?? "no reason")")
             connection.cancel()
@@ -408,6 +415,18 @@ public final class PeerSession {
             seq: codec.nextSequence(),
             type: MessageType.photoPull,
             photo: PhotoPayload(manifestId: manifestId, keys: keys)
+        ))
+    }
+
+    /// Asks for a small picture of one item, to look at before deciding about
+    /// it. One key at a time: this follows the selection in a window, and the
+    /// answer to a key nobody is looking at any more is simply dropped there.
+    public func requestPhotoPreview(key: String) throws {
+        guard isAuthenticated else { return }
+        try send(Message(
+            seq: codec.nextSequence(),
+            type: MessageType.photoPreview,
+            photo: PhotoPayload(manifestId: nil, keys: [key])
         ))
     }
 

@@ -319,6 +319,64 @@ final class SyncServerTests: XCTestCase {
         return file
     }
 
+    /// The sync window's preview: the Mac asks for one key, the phone answers
+    /// with a picture, and the picture comes out the other end as bytes.
+    func testAPreviewIsAskedForAndComesBack() throws {
+        let peer = try connectedPeer()
+        let key = "DCIM/Camera/20260119_184146.jpg"
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0, 1, 2, 3])
+
+        let asked = expectation(description: "phone asked for a preview of the key")
+        peer.onMessage = { message in
+            guard message.type == MessageType.photoPreview else { return }
+            XCTAssertEqual(message.photo?.keys, [key])
+            asked.fulfill()
+            peer.send(
+                type: MessageType.photoPreview,
+                mime: "image/jpeg",
+                data: jpeg.base64EncodedString(),
+                photo: PhotoPayload(manifestId: nil, keys: [key])
+            )
+        }
+        let answered = expectation(description: "preview delivered")
+        server.onPhotoPreview = { gotKey, bytes, reason in
+            XCTAssertEqual(gotKey, key)
+            XCTAssertEqual(bytes, jpeg)
+            XCTAssertNil(reason)
+            answered.fulfill()
+        }
+
+        XCTAssertTrue(server.requestPhotoPreview(key: key))
+        wait(for: [asked, answered], timeout: 5)
+        peer.close()
+    }
+
+    /// A phone with nothing to show says so, and the reason - not a picture -
+    /// is what arrives.
+    func testAPreviewThePhoneCannotDrawArrivesAsAReason() throws {
+        let peer = try connectedPeer()
+        let key = "DCIM/Camera/gone.jpg"
+        let answered = expectation(description: "refusal delivered")
+        server.onPhotoPreview = { gotKey, bytes, reason in
+            XCTAssertEqual(gotKey, key)
+            XCTAssertNil(bytes)
+            XCTAssertEqual(reason, "this phone has no picture of it")
+            answered.fulfill()
+        }
+        peer.send(
+            type: MessageType.photoPreview,
+            ok: false,
+            reason: "this phone has no picture of it",
+            photo: PhotoPayload(manifestId: nil, keys: [key])
+        )
+        wait(for: [answered], timeout: 5)
+        peer.close()
+    }
+
+    func testNoPreviewIsAskedForWithoutAPhone() {
+        XCTAssertFalse(server.requestPhotoPreview(key: "DCIM/Camera/a.jpg"))
+    }
+
     /// Starts the server, connects a peer and returns once the handshake is done.
     private func connectedPeer() throws -> TestPeer {
         let listening = expectation(description: "listener ready")
@@ -422,7 +480,8 @@ private final class TestPeer {
         data: String? = nil,
         ok: Bool? = nil,
         path: String? = nil,
-        reason: String? = nil
+        reason: String? = nil,
+        photo: PhotoPayload? = nil
     ) {
         let message = Message(
             seq: codec.nextSequence(),
@@ -440,7 +499,8 @@ private final class TestPeer {
             sha256: sha256,
             data: data,
             ok: ok,
-            path: path
+            path: path,
+            photo: photo
         )
         guard let body = try? codec.seal(try message.encoded()) else { return }
         connection.send(content: Framing.frame(kind: .encrypted, body: body), completion: .idempotent)

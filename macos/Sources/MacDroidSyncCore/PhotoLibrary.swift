@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 #if canImport(Photos)
@@ -144,6 +145,13 @@ public protocol PhotoLibrary: AnyObject {
     /// to suppress that - which is why this is only ever called from a row the
     /// operator picked in the sync window.
     func delete(_ identifiers: [String]) -> PhotoDeletionOutcome
+}
+
+public extension PhotoLibrary {
+    /// A small picture of an asset already in the library, or nil. Optional on
+    /// purpose: it is a convenience for the sync window, and a library that
+    /// cannot draw one loses nothing that matters.
+    func thumbnail(of identifier: String, maxPixel: CGFloat) -> NSImage? { nil }
 }
 
 #if canImport(Photos)
@@ -336,6 +344,32 @@ public final class PhotoKitLibrary: PhotoLibrary {
             return PhotoAssetAttributes(
                 favorite: asset.isFavorite, hidden: asset.isHidden, albumIndex: nil
             )
+        }
+        return found ?? nil
+    }
+
+    /// Drawn by PhotoKit from whatever it holds locally. Deliberately never from
+    /// iCloud: a preview that stalls the window for a download is worse than no
+    /// preview, so an offloaded original simply comes back as nil and the window
+    /// asks the phone instead.
+    public func thumbnail(of identifier: String, maxPixel: CGFloat) -> NSImage? {
+        let found: NSImage?? = Self.timed {
+            guard let asset = PHAsset.fetchAssets(
+                withLocalIdentifiers: [identifier], options: nil
+            ).firstObject else { return nil }
+            let options = PHImageRequestOptions()
+            options.isSynchronous = true
+            options.isNetworkAccessAllowed = false
+            options.deliveryMode = .highQualityFormat
+            options.resizeMode = .fast
+            var image: NSImage?
+            PHImageManager.default().requestImage(
+                for: asset,
+                targetSize: CGSize(width: maxPixel, height: maxPixel),
+                contentMode: .aspectFit,
+                options: options
+            ) { result, _ in image = result }
+            return image
         }
         return found ?? nil
     }

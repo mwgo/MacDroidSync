@@ -226,6 +226,17 @@ class PhotoSyncEngine(
         return failures
     }
 
+    /**
+     * A small picture of one item for the Mac's sync window, or null when this
+     * phone has nothing to show for that key. The same lookup as [send]: the
+     * rows just described, then the ledger, so a key the Mac remembered across
+     * its own restart can still be drawn.
+     */
+    fun preview(key: String): ByteArray? {
+        val row = describedRows[key] ?: ledgerRowAsScanRow(key) ?: return null
+        return scanner.thumbnail(row, maxPixel = PREVIEW_MAX_PIXEL)
+    }
+
     /** A key the Mac asked for that was described in an earlier cycle. */
     private fun ledgerRowAsScanRow(key: String): PhotoScanner.Row? {
         val row = ledger.row(key) ?: return null
@@ -245,6 +256,12 @@ class PhotoSyncEngine(
     private companion object {
         private const val TAG = Prefs.TAG
         private const val MAX_ATTEMPTS = 3
+        /**
+         * Longest side of a preview. Enough to tell what a file is on a Mac's
+         * screen at a couple of hundred points, and at JPEG quality 70 it comes
+         * to a few tens of kilobytes - one frame, not a transfer.
+         */
+        private const val PREVIEW_MAX_PIXEL = 320
         private val VIDEO_EXTENSIONS = setOf("mp4", "mov", "3gp", "mkv", "webm", "m4v")
     }
 }

@@ -14,8 +14,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let safeNetworks = SafeNetworkStore()
     private let network = NetworkMonitor()
     private let photoIndex = PhotoIndexStore()
+    /// Held here as well as handed to the importer: the sync window draws its
+    /// previews of already imported photos straight from the library.
+    private let photoLibrary = PhotoKitLibrary()
     private lazy var photoImporter = PhotoImporter(
-        library: PhotoKitLibrary(),
+        library: photoLibrary,
         index: photoIndex,
         readAlbumName: { Settings.shared.photosAlbumName },
         readAlbumIdentifier: { Settings.shared.photosAlbumIdentifier },
@@ -754,6 +757,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             guard Settings.shared.photosEnabled else { return }
             self?.photoSync.handle(manifest: payload, ok: ok, reason: reason)
         }
+        // Straight to the window, which is the only thing that ever asks. An
+        // answer that arrives after the window closed has nowhere to go and
+        // nothing to do, which is fine: it was only ever a picture to look at.
+        server.onPhotoPreview = { [weak self] key, bytes, reason in
+            self?.photoSyncWindow?.receivePreview(key: key, bytes: bytes, reason: reason)
+        }
         // A photo transfer speaks on its own line only. It gets no notification
         // and no "Received: …" entry: a holiday's worth of photos arriving is
         // background work, and the file line belongs to what the user asked for.
@@ -918,6 +927,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 self.refreshPhotoReport()
             },
             syncNow: { [weak self] in self?.syncPhotosNow() },
+            previewFromLibrary: { [weak self] key in
+                guard let self, let id = self.photoIndex.entry(for: key)?.localIdentifier else { return nil }
+                return self.photoLibrary.thumbnail(of: id, maxPixel: 480)
+            },
+            requestPreview: { [weak self] key in self?.server.requestPhotoPreview(key: key) ?? false },
             status: { [weak self] in
                 guard let self else { return nil }
                 guard Settings.shared.photosEnabled else {

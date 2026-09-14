@@ -57,6 +57,14 @@ object MessageType {
 
     /** Mac to phone: how this phone should describe its camera folder. */
     const val PHOTO_CONFIG = "photo-config"
+
+    /**
+     * Both ways. From the Mac with one key in photo.keys: "show me what this
+     * is". Back from this phone: the same key, a small JPEG in data, or ok:false
+     * and a reason. The Mac does not have the bytes of an item it is still
+     * deciding about, so a picture of it has to come from here.
+     */
+    const val PHOTO_PREVIEW = "photo-preview"
 }
 
 /** One protocol message; absent fields are left out of the JSON payload. */
