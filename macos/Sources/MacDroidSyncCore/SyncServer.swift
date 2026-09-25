@@ -61,6 +61,10 @@ public final class SyncServer {
     private var listener: NWListener?
     private var session: PeerSession?
     private var isSuspended = false
+    /// Right after a reboot mDNSResponder may not be running yet and the
+    /// listener fails with ServiceNotRunning; it has to be tried again.
+    private var retryWork: DispatchWorkItem?
+    private var retryAttempt = 0
 
     public init(
         settings: SyncConfiguration = Settings.shared,
@@ -83,6 +87,7 @@ public final class SyncServer {
 
     public func stop() {
         queue.async {
+            self.cancelRetry()
             self.session?.close(reason: "macOS app is quitting")
             self.session = nil
             self.listener?.cancel()
@@ -98,6 +103,7 @@ public final class SyncServer {
         let closing: PeerSession? = queue.sync {
             guard !isSuspended else { return nil }
             isSuspended = true
+            cancelRetry()
             let current = session
             session = nil
             connectedDeviceName = nil
@@ -125,12 +131,34 @@ public final class SyncServer {
     /// dropping the current session.
     public func restart() {
         queue.async {
+            self.cancelRetry()
             self.session?.close(reason: "settings changed")
             self.session = nil
             self.listener?.cancel()
             self.listener = nil
             self.startLocked()
         }
+    }
+
+    private func cancelRetry() {
+        retryWork?.cancel()
+        retryWork = nil
+        retryAttempt = 0
+    }
+
+    private func scheduleRetry() {
+        guard !isSuspended, retryWork == nil else { return }
+        let delay = min(pow(2, Double(retryAttempt)), 30)
+        retryAttempt += 1
+        Log.info("Trying the listener again in \(Int(delay)) s")
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.retryWork = nil
+            guard !self.isSuspended, self.listener == nil else { return }
+            self.startLocked()
+        }
+        retryWork = work
+        queue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func startLocked() {
@@ -166,12 +194,19 @@ public final class SyncServer {
                 guard let self else { return }
                 switch state {
                 case .ready:
+                    self.cancelRetry()
                     Log.info("Listening on port \(self.port), advertising \(Wire.bonjourServiceType)")
                     if self.session == nil { self.state = .disconnected }
                     let port = self.port
                     DispatchQueue.main.async { self.onListening?(port) }
                 case .failed(let error):
                     self.report(failure: "Listener failed: \(error.localizedDescription)")
+                    // A failed listener never recovers on its own.
+                    if self.listener === listener {
+                        listener.cancel()
+                        self.listener = nil
+                    }
+                    self.scheduleRetry()
                 default:
                     break
                 }
@@ -183,6 +218,7 @@ public final class SyncServer {
             self.listener = listener
         } catch {
             report(failure: "Could not listen on port \(port): \(error.localizedDescription)")
+            scheduleRetry()
         }
     }
 
