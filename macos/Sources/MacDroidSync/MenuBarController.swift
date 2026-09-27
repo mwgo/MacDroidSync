@@ -67,6 +67,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
 
     private let notifier = Notifier()
+    private let updater = Updater()
     private let countdown = LockCountdownWindow()
     /// Built on first use: the window is the exception in a menu bar app, not
     /// something every session needs.
@@ -126,6 +127,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         power.start()
         network.start()
         notifier.requestAuthorization()
+        wireUpdater()
+        updater.start()
 
         // Says in the log where the auto lock stands before anything else has
         // happened. Without it the first word on the subject waits for the
@@ -149,6 +152,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         countdown.hide()
         replacedFlushWork?.cancel()
         photoScheduler.stop()
+        updater.stop()
         settingsWindow?.close()
         photoSyncWindow?.close()
         lockStateObservers.forEach(DistributedNotificationCenter.default().removeObserver)
@@ -994,6 +998,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         settingsWindow?.present()
     }
 
+    private func wireUpdater() {
+        updater.onStatusChange = { [weak self] in self?.settingsWindow?.refresh() }
+        updater.canRestartNow = { [weak self] in
+            guard let self else { return true }
+            return !self.server.isSendingFile && self.sendingItemId == nil && self.photoTransfer == nil
+        }
+        // Notification permission is still being asked about at launch.
+        updater.onInstalled = { [weak self] version in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self?.notifier.appUpdated(to: version) }
+        }
+    }
+
     /// The window changes settings; these are the paths that make a change take
     /// effect, and they are the same ones the menu uses.
     private func makeSettingsHooks() -> SettingsHooks {
@@ -1066,7 +1082,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 guard let self else { return }
                 self.safeNetworks.remove(id: id)
                 self.updatePresenceScanning()
-            }
+            },
+            autoUpdateChanged: { [weak self] in self?.updater.enabledChanged() },
+            checkForUpdates: { [weak self] in
+                self?.updater.check(install: Settings.shared.autoUpdateEnabled)
+            },
+            updateStatus: { [weak self] in self?.updater.status ?? "" }
         )
     }
 

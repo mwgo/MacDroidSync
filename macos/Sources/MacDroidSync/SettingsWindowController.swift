@@ -38,6 +38,10 @@ struct SettingsHooks {
     var safeNetworks: () -> [SafeNetworkStore.Network] = { [] }
     var addCurrentNetwork: () -> Void = {}
     var removeNetwork: (String) -> Void = { _ in }
+
+    var autoUpdateChanged: () -> Void = {}
+    var checkForUpdates: () -> Void = {}
+    var updateStatus: () -> String = { "" }
 }
 
 /// The settings window: everything that is configured once and then left alone.
@@ -56,6 +60,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let pairingField = NSTextField(labelWithString: "")
     private let portField = NSTextField(string: "")
     private let launchAtLoginBox = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
+    private let autoUpdateBox = NSButton(checkboxWithTitle: "Install updates automatically", target: nil, action: nil)
+    private let updateStatusLabel = NSTextField(labelWithString: "")
     private let downloadsLabel = NSTextField(labelWithString: "")
 
     // Auto lock
@@ -262,6 +268,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         write(String(settings.port), into: portField)
         pairingField.stringValue = settings.knownPairingCode ?? "Loading…"
         launchAtLoginBox.state = settings.launchAtLoginEnabled ? .on : .off
+        autoUpdateBox.state = settings.autoUpdateEnabled ? .on : .off
+        updateStatusLabel.stringValue = hooks.updateStatus()
         downloadsLabel.stringValue = hooks.downloadsPath()
 
         let autoLock = settings.autoLockEnabled
@@ -475,6 +483,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         hooks.revealDownloads()
     }
 
+    @objc private func toggleAutoUpdate() {
+        settings.autoUpdateEnabled = autoUpdateBox.state == .on
+        hooks.autoUpdateChanged()
+        refreshAfterChange()
+    }
+
+    @objc private func checkForUpdates() {
+        hooks.checkForUpdates()
+    }
+
     // MARK: - Auto lock actions
 
     @objc private func toggleAutoLock() {
@@ -575,6 +593,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         portField.cell?.sendsActionOnEndEditing = false
         launchAtLoginBox.target = self
         launchAtLoginBox.action = #selector(toggleLaunchAtLogin)
+        autoUpdateBox.target = self
+        autoUpdateBox.action = #selector(toggleAutoUpdate)
+        updateStatusLabel.font = .systemFont(ofSize: 11)
+        updateStatusLabel.textColor = .secondaryLabelColor
+        updateStatusLabel.lineBreakMode = .byTruncatingTail
 
         pairingField.isSelectable = true
         pairingField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -592,6 +615,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             [label("Port:"), row([sized(portField, width: 90), button("Apply", #selector(applyPort))])],
             [NSGridCell.emptyContentView, hint("Both apps must use the same port. Default is \(Wire.defaultPort).")],
             [label("Startup:"), launchAtLoginBox],
+            [label("Updates:"), autoUpdateBox],
+            [NSGridCell.emptyContentView, row([updateStatusLabel, button("Check now", #selector(checkForUpdates))])],
+            [NSGridCell.emptyContentView, hint("Checked on GitHub once a day while the app runs. A new version is installed only if it carries a valid signature, then the app restarts.")],
             [label("Incoming files:"), row([downloadsLabel, button("Reveal…", #selector(revealDownloads))])],
         ])
         return configure(grid)

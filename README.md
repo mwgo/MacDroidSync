@@ -98,7 +98,7 @@ other shortcuts there:
 
 | Tab | What is in it |
 |---|---|
-| **General** | the pairing code with *Copy* and *Regenerate…*, the listening port, *Launch at login*, and where incoming files are saved |
+| **General** | the pairing code with *Copy* and *Regenerate…*, the listening port, *Launch at login*, *Install updates automatically* with *Check now*, and where incoming files are saved |
 | **Auto lock** | the *Lock when the phone leaves* switch, the three sensitivity presets with their numbers spelled out, the away threshold in dBm, the live reading next to it, and the pause |
 | **Safe networks** | the networks on which the Mac does not lock itself, with **+** adding the one it is on, and the identifier of that network under the list; see *Safe networks* below |
 | **Photos** | the switch that lets photos into the Photos library, the state of the Photos permission, what is imported and what is waiting, the window the phone is using, and the list of items that were not sent with the reason |
@@ -123,6 +123,42 @@ The menu bar icon reflects the connection:
 | clipboard or a file moving | brief flash of the circular sync arrows |
 | suspended (lid closed, or the Mac asleep) | dimmed moon |
 | error (port taken, listener failed) | red warning triangle, details in the menu |
+
+#### Automatic updates
+
+Off until *Install updates automatically* is ticked in *Settings*, *General*. Then, once a day while the app
+runs, it asks GitHub for the latest release; a newer one is downloaded, checked and installed over the
+running copy, and the app restarts itself - postponed while a file or a photo is on the wire - and says so
+in a notification. *Check now* asks straight away; with the switch off it only reports what is available.
+
+Nothing is installed unless the archive carries a valid **Ed25519 signature**. The app is signed ad hoc,
+so its own code signature proves nothing about who built it, and a checksum published next to the file
+comes from the same place as the file. The public key is compiled into the app as `UpdateKey.publicKey`
+in `AppUpdate.swift`; the private key never leaves your machine. After the signature, the unpacked bundle
+must also have the same bundle identifier, the version the release announced, and pass
+`codesign --verify --deep --strict` before it replaces anything.
+
+Once, to set up signing - keep the key outside the repository and back it up, exactly like the Android
+keystore:
+
+```bash
+swift Tools/sign-update.swift generate ~/keys/macdroidsync-update.key
+```
+
+It prints the public key; put it into `UpdateKey.publicKey`. Then for every release, after `build.sh`
+and zipping:
+
+```bash
+swift Tools/sign-update.swift sign ~/keys/macdroidsync-update.key MacDroidSync-0.3-macos.zip
+```
+
+and upload `MacDroidSync-0.3-macos.zip.sig` next to the archive. The names are the contract: the app looks
+for `MacDroidSync-<version>-macos.zip` and the same name with `.sig` in the release tagged `v<version>`.
+Drafts and prereleases are never offered.
+
+Two things follow from the ad hoc signature. Every update is a new app as far as macOS is concerned, so
+the Photos permission, the keychain and the Downloads folder may ask again after one. And a copy running
+from a quarantined download is translocated to a read-only path; move it to `/Applications` first.
 
 ### Android
 

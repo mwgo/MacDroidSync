@@ -33,6 +33,9 @@ public final class Settings: SyncConfiguration {
         static let photosIntervalMinutes = "photosIntervalMinutes"
         static let photosMaxItemMB = "photosMaxItemMB"
         static let photosAlbumName = "photosAlbumName"
+        static let autoUpdateEnabled = "autoUpdateEnabled"
+        static let lastUpdateCheckAt = "lastUpdateCheckAt"
+        static let pendingUpdateNotice = "pendingUpdateNotice"
     }
 
     private let defaults = UserDefaults.standard
@@ -177,6 +180,26 @@ public final class Settings: SyncConfiguration {
     public var photosEnabled: Bool {
         get { defaults.bool(forKey: Keys.photosEnabled) }
         set { defaults.set(newValue, forKey: Keys.photosEnabled) }
+    }
+
+    /// Off until switched on in the settings.
+    public var autoUpdateEnabled: Bool {
+        get { defaults.bool(forKey: Keys.autoUpdateEnabled) }
+        set { defaults.set(newValue, forKey: Keys.autoUpdateEnabled) }
+    }
+
+    public var lastUpdateCheckAt: Date? {
+        get {
+            let stored = defaults.double(forKey: Keys.lastUpdateCheckAt)
+            return stored > 0 ? Date(timeIntervalSince1970: stored) : nil
+        }
+        set { defaults.set(newValue?.timeIntervalSince1970 ?? 0, forKey: Keys.lastUpdateCheckAt) }
+    }
+
+    /// The version just installed, so the relaunched app can say so once.
+    public var pendingUpdateNotice: String? {
+        get { defaults.string(forKey: Keys.pendingUpdateNotice) }
+        set { defaults.set(newValue, forKey: Keys.pendingUpdateNotice) }
     }
 
     /// Whether plain additions wait in the sync window as well.

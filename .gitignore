@@ -25,6 +25,8 @@ android/captures/
 android/keystore.properties
 *.jks
 *.keystore
+# The Mac's update signing key, see README, "Automatic updates".
+*-update.key
 
 # IDE
 .idea/

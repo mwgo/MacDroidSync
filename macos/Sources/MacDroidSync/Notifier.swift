@@ -79,6 +79,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(content)
     }
 
+    func appUpdated(to version: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "MacDroidSync updated"
+        content.body = "Now running version \(version)."
+        content.sound = nil
+        post(content)
+    }
+
     func fileFailed(name: String, reason: String) {
         let content = UNMutableNotificationContent()
         content.title = "File not received"
