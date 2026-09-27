@@ -594,7 +594,12 @@ session.
 
 The phone watches its messaging database for the length of an authenticated
 session. When the session starts it notes the newest received row of each table,
-so what arrived before is not news. A change after that is read against those
+and sends what is still unread - received in the last seven days, at most 50 - as
+`sms-new`, so a message that came in while the Mac was away is announced too. The
+Mac keeps, per conversation and on disk, the newest message it already announced,
+and announces only what is newer; the phone sends the same unread messages on
+every reconnect, and that is what keeps a banner from coming back. Opening a
+conversation on the Mac counts as announcing it. A change after that is read against those
 marks: received rows above them go out as `sms-new`, one per conversation, and the
 marks move up. Any other change - a message sent from the phone, one deleted, a
 delivery report - goes out as `sms-changed`, and the Mac fetches the list again.

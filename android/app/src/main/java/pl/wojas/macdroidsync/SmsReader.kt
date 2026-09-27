@@ -116,6 +116,53 @@ class SmsReader(private val context: Context) {
     }
 
     /**
+     * Received messages still unread on this phone, newer than [sinceMs], at
+     * most [limit] of them, newest kept, grouped by conversation. What the Mac
+     * is told about when a session starts, so a message that came in while it
+     * was away still gets its notification.
+     */
+    fun unread(sinceMs: Long, limit: Int): Map<Long, List<SmsMessage>> {
+        val found = mutableListOf<Pair<Long, SmsMessage>>()
+        resolver.query(
+            Telephony.Sms.Inbox.CONTENT_URI,
+            arrayOf(Telephony.Sms._ID, Telephony.Sms.THREAD_ID, Telephony.Sms.DATE, Telephony.Sms.BODY, Telephony.Sms.ADDRESS),
+            "${Telephony.Sms.READ} = 0 AND ${Telephony.Sms.DATE} > ?",
+            arrayOf(sinceMs.toString()),
+            "${Telephony.Sms.DATE} DESC",
+        )?.use { cursor ->
+            while (cursor.moveToNext() && found.size < limit) {
+                found += cursor.getLong(1) to SmsMessage(
+                    id = "s${cursor.getLong(0)}",
+                    date = cursor.getLong(2),
+                    fromMe = false,
+                    text = cursor.getStringOrNull(3),
+                    address = cursor.getStringOrNull(4),
+                )
+            }
+        }
+        runCatching {
+            resolver.query(
+                Telephony.Mms.Inbox.CONTENT_URI,
+                arrayOf(Telephony.Mms._ID, Telephony.Mms.THREAD_ID, Telephony.Mms.DATE),
+                "${Telephony.Mms.READ} = 0 AND ${Telephony.Mms.DATE} > ?",
+                arrayOf((sinceMs / 1000).toString()),
+                "${Telephony.Mms.DATE} DESC",
+            )?.use { cursor ->
+                var taken = 0
+                while (cursor.moveToNext() && taken < limit) {
+                    found += cursor.getLong(1) to mmsMessage(cursor.getLong(0), cursor.getLong(2) * 1000, box = 1)
+                    taken++
+                }
+            }
+        }.onFailure { Log.w(TAG, "Unread MMS could not be read", it) }
+        return found
+            .sortedByDescending { it.second.date }
+            .take(limit)
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, messages) -> messages.sortedBy { it.date } }
+    }
+
+    /**
      * One MMS picture as a JPEG, no side longer than [maxPixel]. Null when the
      * part is gone or is not a picture.
      */

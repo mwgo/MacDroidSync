@@ -22,6 +22,8 @@ public final class SmsStore {
     private let imageLimit: Int
     private var threadList: [SmsThread]
     private var files: [Int64: ThreadFile] = [:]
+    /// Per conversation, the newest received message already announced.
+    private var announced: [Int64: Int64]
 
     public init(directory: URL? = nil, imageDirectory: URL? = nil, imageLimit: Int = 200 * 1024 * 1024) {
         self.directory = directory ?? AppPaths.supportDirectory.appendingPathComponent("Messages", isDirectory: true)
@@ -29,6 +31,23 @@ public final class SmsStore {
             .appendingPathComponent("Library/Caches/MacDroidSync/MessageImages", isDirectory: true)
         self.imageLimit = imageLimit
         threadList = Self.read([SmsThread].self, from: self.directory.appendingPathComponent("threads.json")) ?? []
+        announced = Self.read([String: Int64].self, from: self.directory.appendingPathComponent("announced.json"))
+            .map { Dictionary(uniqueKeysWithValues: $0.compactMap { key, value in Int64(key).map { ($0, value) } }) } ?? [:]
+    }
+
+    // MARK: - Notifications
+
+    /// Kept on disk: the phone reports what is unread every time it connects,
+    /// and a reconnect must not announce the same message twice.
+    public func announcedUpTo(_ threadId: Int64) -> Int64? {
+        announced[threadId]
+    }
+
+    public func markAnnounced(_ threadId: Int64, upTo date: Int64) {
+        guard date > (announced[threadId] ?? Int64.min) else { return }
+        announced[threadId] = date
+        write(Dictionary(uniqueKeysWithValues: announced.map { (String($0.key), $0.value) }),
+              to: directory.appendingPathComponent("announced.json"))
     }
 
     // MARK: - Conversations
@@ -140,6 +159,7 @@ public final class SmsStore {
     public func removeAll() {
         threadList = []
         files = [:]
+        announced = [:]
         try? FileManager.default.removeItem(at: directory)
         try? FileManager.default.removeItem(at: imageDirectory)
     }

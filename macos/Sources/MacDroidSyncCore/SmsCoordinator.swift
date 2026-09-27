@@ -148,6 +148,8 @@ public final class SmsCoordinator {
     public func markSeen(_ threadId: Int64) {
         guard let thread = store.thread(threadId) else { return }
         seen[threadId] = thread.date
+        // Read here counts as announced: no banner later for what was on screen.
+        store.markAnnounced(threadId, upTo: thread.date)
     }
 
     public func isUnread(_ thread: SmsThread) -> Bool {
@@ -182,7 +184,14 @@ public final class SmsCoordinator {
             store.appendIncoming(thread: thread, messages: messages)
             onEvent?(.threads)
             onEvent?(.messages(thread.id))
-            if !messages.isEmpty { onIncoming?(thread, messages) }
+            // New to this Mac only: the phone repeats what is unread every
+            // time it connects.
+            let since = store.announcedUpTo(thread.id) ?? Int64.min
+            let fresh = messages.filter { !$0.fromMe && $0.date > since }
+            if let newest = fresh.map(\.date).max() {
+                store.markAnnounced(thread.id, upTo: newest)
+                onIncoming?(thread, fresh)
+            }
             return
         case MessageType.smsChanged:
             refreshThreads()

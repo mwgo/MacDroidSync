@@ -265,8 +265,10 @@ to reply in.
   *Sent* or *Delivered*, or *Not sent* in red with the phone's reason. Sender names such as `BANK` and
   group conversations take no reply.
 * **A new message raises a notification** on the Mac, one per conversation; clicking it opens that
-  conversation. None is shown for the conversation you are looking at, and none for what arrived while
-  the Mac was away. Switched off in *Settings › General*.
+  conversation. Messages still unread on the phone are announced when it connects, so nothing that
+  came in while the Mac was away is missed; each message is announced once, however often the phone
+  reconnects. None is shown for the conversation you are looking at. Switched off in *Settings ›
+  General*.
 * **Contact photos** from the phone stand in for the initials, in the list, above the conversation and
   on the notification. They are fetched once and kept with the pictures; a changed photo is fetched
   again.

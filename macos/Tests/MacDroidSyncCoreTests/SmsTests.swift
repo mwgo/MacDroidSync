@@ -286,6 +286,33 @@ final class SmsCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.unreadCount, 0)
     }
 
+    func testWhatWasAnnouncedIsNotAnnouncedAgainAfterAReconnect() {
+        let first = makeCoordinator()
+        var announced: [[String]] = []
+        first.onIncoming = { _, messages in announced.append(messages.map(\.id)) }
+        let old = SmsMessage(id: "s1", date: 100, fromMe: false, text: "Hej")
+        first.handle(SmsReply(type: MessageType.smsNew, payload: SmsPayload(messages: [old], thread: thread)))
+
+        // A new session, a new process even: the phone repeats what is unread.
+        let second = makeCoordinator()
+        second.onIncoming = { _, messages in announced.append(messages.map(\.id)) }
+        let newer = SmsMessage(id: "s2", date: 200, fromMe: false, text: "Jesteś?")
+        second.handle(SmsReply(type: MessageType.smsNew, payload: SmsPayload(messages: [old, newer], thread: thread)))
+        second.handle(SmsReply(type: MessageType.smsNew, payload: SmsPayload(messages: [old, newer], thread: thread)))
+        XCTAssertEqual(announced, [["s1"], ["s2"]])
+    }
+
+    func testAConversationOpenedHereIsNotAnnouncedLater() {
+        let coordinator = makeCoordinator()
+        coordinator.store.replaceThreads([thread])
+        coordinator.markSeen(3)
+        var announced = false
+        coordinator.onIncoming = { _, _ in announced = true }
+        let message = SmsMessage(id: "s1", date: 100, fromMe: false, text: "Hej")
+        coordinator.handle(SmsReply(type: MessageType.smsNew, payload: SmsPayload(messages: [message], thread: thread)))
+        XCTAssertFalse(announced)
+    }
+
     func testAChangeRefreshesTheList() {
         let coordinator = makeCoordinator()
         coordinator.handle(SmsReply(type: MessageType.smsChanged, payload: SmsPayload()))

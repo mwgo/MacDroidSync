@@ -478,10 +478,38 @@ class SyncService : Service() {
     private fun startWatchingSms() {
         if (!Permissions.hasSmsRead(this)) return
         scope.launch {
-            smsMarks = runCatching { smsReader.inboxMarks() }
-                .onFailure { Log.w(TAG, "Could not read the message database", it) }
-                .getOrNull()
+            smsLock.withLock {
+                smsMarks = runCatching { smsReader.inboxMarks() }
+                    .onFailure { Log.w(TAG, "Could not read the message database", it) }
+                    .getOrNull()
+                reportUnread()
+            }
             withContext(Dispatchers.Main) { smsWatcher.start() }
+        }
+    }
+
+    /**
+     * What is still unread here goes out as sms-new at the start of a session.
+     * The Mac remembers what it already announced, so a reconnect every few
+     * minutes does not repeat a notification.
+     */
+    private fun reportUnread() {
+        val peer = connection?.takeIf { it.isAuthenticated } ?: return
+        try {
+            val since = System.currentTimeMillis() - SmsRules.UNREAD_WINDOW_MS
+            val unread = smsReader.unread(since, SmsRules.MAX_UNREAD)
+            if (unread.isEmpty()) return
+            val threads = smsReader.threads().associateBy { it.id }
+            for ((threadId, messages) in unread) {
+                val thread = threads[threadId] ?: SmsThread(
+                    id = threadId,
+                    addresses = listOfNotNull(messages.last().address),
+                    date = messages.last().date,
+                )
+                peer.sendSms(MessageType.SMS_NEW, SmsPayload(threadId = threadId, thread = thread, messages = messages))
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not report the unread messages", error)
         }
     }
 

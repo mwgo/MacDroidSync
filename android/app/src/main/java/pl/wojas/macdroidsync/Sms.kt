@@ -188,6 +188,10 @@ object SmsRules {
     const val DEFAULT_PAGE = 100
     const val MAX_PAGE = 200
     const val MAX_SNIPPET = 160
+    /** How far back unread messages are announced when a session starts. */
+    const val UNREAD_WINDOW_MS = 7L * 24 * 60 * 60 * 1000
+    const val MAX_UNREAD = 50
+
     /** Longest side of an MMS picture sent to the Mac. */
     const val MAX_IMAGE_PIXEL = 1280
     /** Side of a contact photo sent to the Mac, square. */
