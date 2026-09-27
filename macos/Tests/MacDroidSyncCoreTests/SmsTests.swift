@@ -58,30 +58,24 @@ final class SmsLayoutTests: XCTestCase {
 
     private var now: Date { Date(timeIntervalSince1970: TimeInterval(at(27, 12)) / 1000) }
 
-    func testDaysRunsAndTheLastDelivery() {
+    func testStampsRunsTailsAndTheLastDelivery() {
         let messages = [
             SmsMessage(id: "s1", date: at(26, 19, 42), fromMe: false, text: "Hej"),
             SmsMessage(id: "s2", date: at(26, 19, 50), fromMe: true, text: "Tak", status: "delivered"),
             SmsMessage(id: "s3", date: at(27, 10, 14), fromMe: false, text: "A"),
             SmsMessage(id: "s4", date: at(27, 10, 15), fromMe: false, text: "B"),
-            SmsMessage(id: "s5", date: at(27, 10, 40), fromMe: true, text: "C", status: "delivered"),
+            SmsMessage(id: "s5", date: at(27, 11, 40), fromMe: true, text: "C", status: "delivered"),
         ]
         let rows = SmsLayout.rows(for: messages, now: now, calendar: calendar, locale: locale)
-        XCTAssertEqual(rows.count, 7)
-        XCTAssertEqual(rows[0], .day("Yesterday"))
-        guard case .message(_, let grouped2, let meta2) = rows[2] else { return XCTFail() }
-        XCTAssertFalse(grouped2)
-        XCTAssertEqual(meta2, "19:50", "an earlier delivery is not labelled")
-        XCTAssertEqual(rows[3], .day("Today"))
-        guard case .message(_, let groupedA, let metaA) = rows[4],
-              case .message(_, let groupedB, let metaB) = rows[5],
-              case .message(_, _, let metaC) = rows[6]
-        else { return XCTFail() }
-        XCTAssertFalse(groupedA)
-        XCTAssertNil(metaA, "the time goes under the last of a run")
-        XCTAssertTrue(groupedB)
-        XCTAssertEqual(metaB, "10:15")
-        XCTAssertEqual(metaC, "10:40 · Delivered")
+        XCTAssertEqual(rows.count, 8)
+        XCTAssertEqual(rows[0], .day("Yesterday 19:42"))
+        guard case .message(_, false, true, let earlier) = rows[2] else { return XCTFail("\(rows[2])") }
+        XCTAssertNil(earlier, "an earlier delivery is not labelled")
+        XCTAssertEqual(rows[3], .day("Today 10:14"))
+        guard case .message(_, false, false, nil) = rows[4] else { return XCTFail("\(rows[4])") }
+        guard case .message(_, true, true, nil) = rows[5] else { return XCTFail("\(rows[5])") }
+        XCTAssertEqual(rows[6], .day("Today 11:40"), "an hour of silence shows the time again")
+        guard case .message(_, false, true, "Delivered") = rows[7] else { return XCTFail("\(rows[7])") }
     }
 
     func testAFailureIsAlwaysLabelled() {
@@ -90,9 +84,17 @@ final class SmsLayoutTests: XCTestCase {
             SmsMessage(id: "b", date: at(27, 9, 1), fromMe: true, text: "2", status: "sent"),
         ]
         let rows = SmsLayout.rows(for: messages, now: now, calendar: calendar, locale: locale)
-        guard case .message(_, _, let first) = rows[1], case .message(_, _, let second) = rows[2] else { return XCTFail() }
-        XCTAssertEqual(first, "09:00 · Not sent")
-        XCTAssertEqual(second, "09:01 · Sent")
+        guard case .message(_, _, false, let first) = rows[1], case .message(_, true, true, let second) = rows[2] else {
+            return XCTFail()
+        }
+        XCTAssertEqual(first, "Not sent")
+        XCTAssertEqual(second, "Sent")
+    }
+
+    func testAnOlderStampSaysAt() {
+        let date = Date(timeIntervalSince1970: TimeInterval(at(2, 19)) / 1000)
+        let stamp = SmsLayout.stamp(for: date, now: now, calendar: calendar, locale: locale)
+        XCTAssertTrue(stamp.hasPrefix("2 Sep") && stamp.hasSuffix("at 19:00"), stamp)
     }
 
     func testDayLabels() {

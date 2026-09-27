@@ -8,8 +8,12 @@ struct MessagesHooks {
 /// The phone's conversations: the list on the left, one conversation on the
 /// right. What is shown comes from `SmsStore` at once and is refreshed from the
 /// phone behind it, see `SmsCoordinator`.
-final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSplitViewDelegate,
-                                      NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+///
+/// Laid out after Messages on macOS 26: a glass sidebar, the conversation
+/// running under a floating header and a floating composer.
+final class MessagesWindowController: NSWindowController, NSWindowDelegate,
+                                      NSTableViewDataSource, NSTableViewDelegate,
+                                      NSSearchFieldDelegate, NSTextFieldDelegate {
 
     private let coordinator: SmsCoordinator
     private let hooks: MessagesHooks
@@ -17,16 +21,15 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     private let threadTable = NSTableView()
     private let messageTable = NSTableView()
     private let messageScroll = NSScrollView()
-    private let searchField = NSSearchField()
+    private let searchField = CapsuleSearchField()
     private let footerDot = NSView()
     private let footerLabel = NSTextField(labelWithString: "")
-    private let nameLabel = NSTextField(labelWithString: "")
-    private let detailLabel = NSTextField(labelWithString: "")
+    private let nameButton = NSButton(title: "", target: nil, action: nil)
     private let refreshButton = NSButton()
     private let composer = NSTextField()
-    private let sendButton = NSButton(title: "Send", target: nil, action: nil)
-    private let composerNote = NSTextField(labelWithString: "")
+    private let sendButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
+    private var statusBubble = NSView()
     private let emptyView = NSStackView()
     private let emptyTitle = NSTextField(labelWithString: "")
     private let emptyBody = NSTextField(wrappingLabelWithString: "")
@@ -34,7 +37,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     private let conversationView = ImageDropView()
     private let emojiButton = NSButton()
     private let attachButton = NSButton()
-    private let attachmentRow = NSStackView()
+    private var attachmentBubble = NSView()
     private let attachmentPreview = NSImageView()
     private let attachmentLabel = NSTextField(labelWithString: "")
     /// The picture that goes with the next Send, already made small enough.
@@ -48,18 +51,22 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     /// Contact photos by photo id, and the ids known to have none.
     private var avatars: [String: NSImage] = [:]
     private var noAvatar: Set<String> = []
-    private let headerAvatar = AvatarView(diameter: 30)
+    private let headerAvatar = AvatarView(diameter: 40)
     private var imageQueue: [String] = []
     private var imagesInFlight: Set<String> = []
     private var statusReset: DispatchWorkItem?
     private var scrollToBottomNext = false
     private var lastLayoutWidth: CGFloat = 0
 
+    /// Room the floating header and composer take over the conversation.
+    private static let headerInset: CGFloat = 96
+    private static let composerInset: CGFloat = 64
+
     init(coordinator: SmsCoordinator, hooks: MessagesHooks) {
         self.coordinator = coordinator
         self.hooks = hooks
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 660),
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -68,10 +75,11 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 720, height: 420)
+        window.minSize = NSSize(width: 760, height: 460)
         super.init(window: window)
         window.delegate = self
-        window.contentView = buildBody()
+        window.contentViewController = buildSplit()
+        window.setContentSize(NSSize(width: 1000, height: 680))
         window.setFrameAutosaveName("MessagesWindow")
         window.center()
     }
@@ -135,7 +143,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
             } else {
                 noAvatar.insert(photo)
             }
-            let rows = threads.indices.filter { threads[$0].photo == photo }
+            let rows = threads.indices.filter { threads[$0].photo == photo }.map(tableRow(ofThread:))
             if !rows.isEmpty { threadTable.reloadData(forRowIndexes: IndexSet(rows), columnIndexes: [0]) }
             updateConversation()
         }
@@ -157,50 +165,134 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
 
     // MARK: - Building
 
-    private func buildBody() -> NSView {
-        let split = NSSplitView()
-        split.isVertical = true
-        split.dividerStyle = .thin
-        split.delegate = self
-        split.addArrangedSubview(buildSidebar())
-        split.addArrangedSubview(buildConversation())
-        split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
-        // A first launch splits the window in half; the list wants about a third.
-        let firstTime = UserDefaults.standard.object(forKey: "NSSplitView Subview Frames MessagesSplit") == nil
-        split.autosaveName = "MessagesSplit"
-        if firstTime {
-            DispatchQueue.main.async { split.setPosition(300, ofDividerAt: 0) }
+    private func buildSplit() -> NSSplitViewController {
+        let split = NSSplitViewController()
+        let sidebar = NSSplitViewItem(sidebarWithViewController: Self.holder(buildSidebar()))
+        sidebar.minimumThickness = 260
+        sidebar.maximumThickness = 420
+        sidebar.canCollapse = false
+        sidebar.preferredThicknessFraction = 0.32
+        let content = NSSplitViewItem(viewController: Self.holder(buildConversation()))
+        content.titlebarSeparatorStyle = .none
+        if #available(macOS 26.0, *) {
+            // The conversation runs under the glass sidebar's edge, as in Messages.
+            content.automaticallyAdjustsSafeAreaInsets = true
         }
+        split.addSplitViewItem(sidebar)
+        split.addSplitViewItem(content)
+        split.splitView.autosaveName = "MessagesSplitGlass"
         return split
     }
 
-    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        240
+    private static func holder(_ view: NSView) -> NSViewController {
+        let controller = NSViewController()
+        controller.view = view
+        return controller
     }
 
-    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        380
+    /// Liquid Glass on macOS 26, a translucent material before it.
+    static func glass(_ content: NSView, cornerRadius: CGFloat) -> NSView {
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.contentView = content
+            glass.cornerRadius = cornerRadius
+            return glass
+        }
+        let material = NSVisualEffectView()
+        material.material = .popover
+        material.blendingMode = .withinWindow
+        material.state = .active
+        material.wantsLayer = true
+        material.layer?.cornerRadius = cornerRadius
+        material.layer?.masksToBounds = true
+        content.translatesAutoresizingMaskIntoConstraints = false
+        material.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: material.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: material.trailingAnchor),
+            content.topAnchor.constraint(equalTo: material.topAnchor),
+            content.bottomAnchor.constraint(equalTo: material.bottomAnchor),
+        ])
+        return material
     }
 
-    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool { false }
+    /// A round glass button with a symbol in it; returns the glass to place.
+    private static func roundButton(_ button: NSButton, symbol: String, label: String, size: CGFloat = 36) -> NSView {
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        button.symbolConfiguration = .init(pointSize: 15, weight: .medium)
+        button.contentTintColor = .labelColor
+        button.toolTip = label
+        button.imagePosition = .imageOnly
+        button.isBordered = false
+        button.translatesAutoresizingMaskIntoConstraints = false
+        let holder = NSView()
+        holder.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: holder.leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: holder.trailingAnchor),
+            button.topAnchor.constraint(equalTo: holder.topAnchor),
+            button.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
+            holder.widthAnchor.constraint(equalToConstant: size),
+            holder.heightAnchor.constraint(equalToConstant: size),
+        ])
+        let glass = glass(holder, cornerRadius: size / 2)
+        glass.translatesAutoresizingMaskIntoConstraints = false
+        return glass
+    }
 
+    /// Content fades out under the floating header and composer, like the
+    /// scroll edge of Messages.
+    private static func edgeFade(top: Bool, material: NSVisualEffectView.Material = .contentBackground) -> NSView {
+        let fade = NSVisualEffectView()
+        fade.material = material
+        fade.blendingMode = .withinWindow
+        fade.state = .active
+        fade.maskImage = NSImage(size: NSSize(width: 1, height: 64), flipped: false) { rect in
+            let gradient = NSGradient(
+                colors: [.black.withAlphaComponent(0.9), .black.withAlphaComponent(0.55), .clear],
+                atLocations: [0, 0.5, 1],
+                colorSpace: .deviceRGB
+            )
+            gradient?.draw(in: rect, angle: top ? -90 : 90)
+            return true
+        }
+        fade.translatesAutoresizingMaskIntoConstraints = false
+        return fade
+    }
+
+    /// The list runs the full height of the sidebar, under the title bar and a
+    /// floating glass search capsule. Its room at the top and bottom comes from
+    /// spacer rows rather than content insets: a sidebar cuts off whatever
+    /// scrolls into a scroll view's insets, and the point is to see it through
+    /// the glass.
     private func buildSidebar() -> NSView {
-        let sidebar = NSVisualEffectView()
-        sidebar.material = .sidebar
-        sidebar.blendingMode = .behindWindow
-
         searchField.placeholderString = "Search"
         searchField.delegate = self
         searchField.sendsSearchStringImmediately = true
         searchField.target = self
         searchField.action = #selector(searchChanged)
+        searchField.font = .systemFont(ofSize: 14)
+        searchField.isBezeled = false
+        searchField.isBordered = false
+        searchField.drawsBackground = false
+        searchField.focusRingType = .none
         searchField.translatesAutoresizingMaskIntoConstraints = false
+        let searchHolder = NSView()
+        searchHolder.addSubview(searchField)
+        NSLayoutConstraint.activate([
+            searchField.leadingAnchor.constraint(equalTo: searchHolder.leadingAnchor, constant: 10),
+            searchField.trailingAnchor.constraint(equalTo: searchHolder.trailingAnchor, constant: -10),
+            searchField.centerYAnchor.constraint(equalTo: searchHolder.centerYAnchor),
+            searchHolder.heightAnchor.constraint(equalToConstant: 36),
+        ])
+        let searchGlass = Self.glass(searchHolder, cornerRadius: 18)
+        searchGlass.translatesAutoresizingMaskIntoConstraints = false
 
         let column = NSTableColumn(identifier: .init("thread"))
         threadTable.addTableColumn(column)
         threadTable.headerView = nil
-        threadTable.style = .sourceList
-        threadTable.rowHeight = 64
+        threadTable.style = .inset
+        threadTable.intercellSpacing = NSSize(width: 0, height: 0)
         threadTable.backgroundColor = .clear
         threadTable.dataSource = self
         threadTable.delegate = self
@@ -210,7 +302,10 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         scroll.documentView = threadTable
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets()
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        let fade = Self.edgeFade(top: true, material: .sidebar)
 
         footerDot.wantsLayer = true
         footerDot.layer?.cornerRadius = 4
@@ -222,70 +317,60 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         footer.orientation = .horizontal
         footer.spacing = 8
         footer.alignment = .centerY
-        footer.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 10, right: 12)
-        footer.translatesAutoresizingMaskIntoConstraints = false
-        let rule = NSBox()
-        rule.boxType = .separator
-        rule.translatesAutoresizingMaskIntoConstraints = false
+        footer.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 12)
+        let footerGlass = Self.glass(footer, cornerRadius: 12)
+        footerGlass.translatesAutoresizingMaskIntoConstraints = false
+        let bottomFade = Self.edgeFade(top: false, material: .sidebar)
 
-        [searchField, scroll, rule, footer].forEach(sidebar.addSubview)
+        let sidebar = NSView()
+        [scroll, fade, bottomFade, searchGlass, footerGlass].forEach(sidebar.addSubview)
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: sidebar.safeAreaLayoutGuide.topAnchor, constant: 8),
-            searchField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 12),
-            searchField.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -12),
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            scroll.topAnchor.constraint(equalTo: sidebar.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            rule.topAnchor.constraint(equalTo: scroll.bottomAnchor),
-            rule.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
-            rule.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            footer.topAnchor.constraint(equalTo: rule.bottomAnchor),
-            footer.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
-            footer.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            footer.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
+            fade.topAnchor.constraint(equalTo: sidebar.topAnchor),
+            fade.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            fade.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            fade.bottomAnchor.constraint(equalTo: searchGlass.bottomAnchor, constant: 18),
+            bottomFade.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
+            bottomFade.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            bottomFade.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            bottomFade.heightAnchor.constraint(equalToConstant: 44),
+            searchGlass.topAnchor.constraint(equalTo: sidebar.safeAreaLayoutGuide.topAnchor, constant: 6),
+            searchGlass.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
+            searchGlass.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -14),
+            footerGlass.centerXAnchor.constraint(equalTo: sidebar.centerXAnchor),
+            footerGlass.widthAnchor.constraint(lessThanOrEqualTo: sidebar.widthAnchor, constant: -28),
+            footerGlass.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -10),
             footerDot.widthAnchor.constraint(equalToConstant: 8),
             footerDot.heightAnchor.constraint(equalToConstant: 8),
-            sidebar.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
         ])
         return sidebar
+    }
+
+    /// Spacer rows around the conversations: under the title bar and the search
+    /// capsule, and over the connection line.
+    private static let listTopSpace: CGFloat = 82
+    private static let listBottomSpace: CGFloat = 48
+
+    private func tableRow(ofThread index: Int) -> Int { index + 1 }
+
+    private func threadIndex(ofRow row: Int) -> Int? {
+        let index = row - 1
+        return threads.indices.contains(index) ? index : nil
     }
 
     private func buildConversation() -> NSView {
         let content = NSView()
 
-        nameLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        nameLabel.lineBreakMode = .byTruncatingTail
-        detailLabel.font = .systemFont(ofSize: 11)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.lineBreakMode = .byTruncatingTail
-        let titles = NSStackView(views: [nameLabel, detailLabel])
-        titles.orientation = .vertical
-        titles.alignment = .leading
-        titles.spacing = 1
-
-        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh from phone")
-        refreshButton.bezelStyle = .texturedRounded
-        refreshButton.isBordered = false
-        refreshButton.toolTip = "Refresh from phone"
-        refreshButton.target = self
-        refreshButton.action = #selector(refresh)
-
-        let header = NSStackView(views: [headerAvatar, titles, NSView(), refreshButton])
-        header.spacing = 10
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 14)
-        header.translatesAutoresizingMaskIntoConstraints = false
-        let headerRule = NSBox()
-        headerRule.boxType = .separator
-        headerRule.translatesAutoresizingMaskIntoConstraints = false
-
+        // The conversation fills the pane; header and composer float over it.
         let column = NSTableColumn(identifier: .init("message"))
         messageTable.addTableColumn(column)
         messageTable.headerView = nil
         messageTable.selectionHighlightStyle = .none
         messageTable.intercellSpacing = .zero
-        messageTable.backgroundColor = .textBackgroundColor
+        messageTable.backgroundColor = .clear
         messageTable.style = .plain
         messageTable.dataSource = self
         messageTable.delegate = self
@@ -294,32 +379,81 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         messageScroll.hasVerticalScroller = true
         messageScroll.drawsBackground = true
         messageScroll.backgroundColor = .textBackgroundColor
+        messageScroll.automaticallyAdjustsContentInsets = false
+        messageScroll.contentInsets = NSEdgeInsets(top: Self.headerInset, left: 0, bottom: Self.composerInset, right: 0)
+        messageScroll.scrollerInsets = messageScroll.contentInsets
         messageScroll.translatesAutoresizingMaskIntoConstraints = false
 
+        // Header: the photo, and the name in a glass capsule under it.
+        nameButton.isBordered = false
+        nameButton.font = .systemFont(ofSize: 13, weight: .semibold)
+        nameButton.contentTintColor = .labelColor
+        nameButton.target = self
+        nameButton.action = #selector(copyNumber)
+        nameButton.translatesAutoresizingMaskIntoConstraints = false
+        let nameHolder = NSView()
+        nameHolder.addSubview(nameButton)
+        NSLayoutConstraint.activate([
+            nameButton.leadingAnchor.constraint(equalTo: nameHolder.leadingAnchor, constant: 14),
+            nameButton.trailingAnchor.constraint(equalTo: nameHolder.trailingAnchor, constant: -14),
+            nameButton.centerYAnchor.constraint(equalTo: nameHolder.centerYAnchor),
+            nameHolder.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        let nameGlass = Self.glass(nameHolder, cornerRadius: 14)
+        let header = NSStackView(views: [headerAvatar, nameGlass])
+        header.orientation = .vertical
+        header.alignment = .centerX
+        header.spacing = -4
+        header.translatesAutoresizingMaskIntoConstraints = false
+        let refreshGlass = Self.roundButton(refreshButton, symbol: "arrow.clockwise", label: "Refresh from phone")
+        refreshButton.target = self
+        refreshButton.action = #selector(refresh)
+
+        // Composer: a round +, the capsule field, a round smiley.
+        let attachGlass = Self.roundButton(attachButton, symbol: "plus", label: "Attach a picture")
+        attachButton.target = self
+        attachButton.action = #selector(chooseAttachment)
+        let emojiGlass = Self.roundButton(emojiButton, symbol: "face.smiling", label: "Emoji & Symbols")
+        emojiButton.target = self
+        emojiButton.action = #selector(showEmoji)
+
         composer.placeholderString = "Text message"
-        composer.font = .systemFont(ofSize: 13)
-        composer.bezelStyle = .roundedBezel
+        composer.font = .systemFont(ofSize: 14)
+        composer.isBordered = false
+        composer.drawsBackground = false
+        composer.focusRingType = .none
+        composer.delegate = self
         composer.target = self
         composer.action = #selector(send)
         composer.setAccessibilityLabel("Message")
-        sendButton.bezelStyle = .rounded
-        sendButton.keyEquivalent = ""
+        composer.translatesAutoresizingMaskIntoConstraints = false
+        sendButton.image = NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: "Send")
+        sendButton.symbolConfiguration = .init(pointSize: 22, weight: .regular)
+        sendButton.contentTintColor = .systemBlue
+        sendButton.isBordered = false
+        sendButton.imagePosition = .imageOnly
+        sendButton.toolTip = "Send"
         sendButton.target = self
         sendButton.action = #selector(send)
-        emojiButton.image = NSImage(systemSymbolName: "face.smiling", accessibilityDescription: "Emoji")
-        emojiButton.isBordered = false
-        emojiButton.toolTip = "Emoji & Symbols"
-        emojiButton.target = self
-        emojiButton.action = #selector(showEmoji)
-        attachButton.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: "Attach a picture")
-        attachButton.isBordered = false
-        attachButton.toolTip = "Attach a picture"
-        attachButton.target = self
-        attachButton.action = #selector(chooseAttachment)
+        sendButton.isHidden = true
+        sendButton.translatesAutoresizingMaskIntoConstraints = false
+        let field = NSView()
+        [composer, sendButton].forEach(field.addSubview)
+        NSLayoutConstraint.activate([
+            composer.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 16),
+            composer.centerYAnchor.constraint(equalTo: field.centerYAnchor),
+            composer.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -40),
+            sendButton.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -6),
+            sendButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
+            field.heightAnchor.constraint(equalToConstant: 36),
+        ])
+        let fieldGlass = Self.glass(field, cornerRadius: 18)
+        fieldGlass.translatesAutoresizingMaskIntoConstraints = false
 
+        // The picture waiting to go, in its own glass chip above the field.
         attachmentPreview.imageScaling = .scaleProportionallyUpOrDown
         attachmentPreview.wantsLayer = true
-        attachmentPreview.layer?.cornerRadius = 6
+        attachmentPreview.layer?.cornerRadius = 8
         attachmentPreview.layer?.masksToBounds = true
         attachmentPreview.translatesAutoresizingMaskIntoConstraints = false
         attachmentLabel.font = .systemFont(ofSize: 11)
@@ -331,37 +465,29 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         )
         removeAttachment.isBordered = false
         removeAttachment.contentTintColor = .secondaryLabelColor
-        [attachmentPreview, attachmentLabel, removeAttachment].forEach(attachmentRow.addArrangedSubview)
-        attachmentRow.orientation = .horizontal
-        attachmentRow.spacing = 8
-        attachmentRow.isHidden = true
-        NSLayoutConstraint.activate([
-            attachmentPreview.widthAnchor.constraint(equalToConstant: 48),
-            attachmentPreview.heightAnchor.constraint(equalToConstant: 48),
-        ])
+        let chip = NSStackView(views: [attachmentPreview, attachmentLabel, removeAttachment])
+        chip.orientation = .horizontal
+        chip.spacing = 8
+        chip.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 10)
+        attachmentBubble = Self.glass(chip, cornerRadius: 14)
+        attachmentBubble.isHidden = true
+        attachmentBubble.translatesAutoresizingMaskIntoConstraints = false
 
-        conversationView.onDrop = { [weak self] image, name in self?.attach(image, name: name) ?? false }
-
-        let composerRow = NSStackView(views: [emojiButton, attachButton, composer, sendButton])
-        composerRow.orientation = .horizontal
-        composerRow.spacing = 8
-        composerNote.font = .systemFont(ofSize: 11)
-        composerNote.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        let bottom = NSStackView(views: [attachmentRow, composerRow, composerNote, statusLabel])
-        bottom.orientation = .vertical
-        bottom.alignment = .leading
-        bottom.spacing = 4
-        bottom.edgeInsets = NSEdgeInsets(top: 10, left: 16, bottom: 12, right: 16)
-        bottom.translatesAutoresizingMaskIntoConstraints = false
-        let bottomRule = NSBox()
-        bottomRule.boxType = .separator
-        bottomRule.translatesAutoresizingMaskIntoConstraints = false
+        let statusHolder = NSStackView(views: [statusLabel])
+        statusHolder.edgeInsets = NSEdgeInsets(top: 5, left: 12, bottom: 5, right: 12)
+        statusBubble = Self.glass(statusHolder, cornerRadius: 12)
+        statusBubble.isHidden = true
+        statusBubble.translatesAutoresizingMaskIntoConstraints = false
 
+        conversationView.onDrop = { [weak self] image, name in self?.attach(image, name: name) ?? false }
         conversationView.translatesAutoresizingMaskIntoConstraints = false
-        [header, headerRule, messageScroll, bottomRule, bottom].forEach(conversationView.addSubview)
+        let topFade = Self.edgeFade(top: true)
+        let bottomFade = Self.edgeFade(top: false)
+        [messageScroll, topFade, bottomFade, header, refreshGlass, statusBubble, attachmentBubble,
+         attachGlass, fieldGlass, emojiGlass].forEach(conversationView.addSubview)
 
         emptyTitle.font = .systemFont(ofSize: 17, weight: .semibold)
         emptyTitle.alignment = .center
@@ -382,37 +508,72 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         emptyView.translatesAutoresizingMaskIntoConstraints = false
 
         [conversationView, emptyView].forEach(content.addSubview)
+        let top = conversationView.safeAreaLayoutGuide.topAnchor
         NSLayoutConstraint.activate([
             conversationView.topAnchor.constraint(equalTo: content.topAnchor),
             conversationView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             conversationView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             conversationView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
-            header.topAnchor.constraint(equalTo: conversationView.safeAreaLayoutGuide.topAnchor),
-            header.leadingAnchor.constraint(equalTo: conversationView.leadingAnchor),
-            header.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: 48),
-            headerRule.topAnchor.constraint(equalTo: header.bottomAnchor),
-            headerRule.leadingAnchor.constraint(equalTo: conversationView.leadingAnchor),
-            headerRule.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor),
-            messageScroll.topAnchor.constraint(equalTo: headerRule.bottomAnchor),
+            messageScroll.topAnchor.constraint(equalTo: conversationView.topAnchor),
             messageScroll.leadingAnchor.constraint(equalTo: conversationView.leadingAnchor),
             messageScroll.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor),
-            bottomRule.topAnchor.constraint(equalTo: messageScroll.bottomAnchor),
-            bottomRule.leadingAnchor.constraint(equalTo: conversationView.leadingAnchor),
-            bottomRule.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor),
-            bottom.topAnchor.constraint(equalTo: bottomRule.bottomAnchor),
-            bottom.leadingAnchor.constraint(equalTo: conversationView.leadingAnchor),
-            bottom.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor),
-            bottom.bottomAnchor.constraint(equalTo: conversationView.bottomAnchor),
-            composerRow.trailingAnchor.constraint(equalTo: bottom.trailingAnchor, constant: -16),
+            messageScroll.bottomAnchor.constraint(equalTo: conversationView.bottomAnchor),
+
+            topFade.topAnchor.constraint(equalTo: conversationView.topAnchor),
+            topFade.leadingAnchor.constraint(equalTo: conversationView.leadingAnchor),
+            topFade.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor),
+            topFade.heightAnchor.constraint(equalToConstant: Self.headerInset),
+            bottomFade.bottomAnchor.constraint(equalTo: conversationView.bottomAnchor),
+            bottomFade.leadingAnchor.constraint(equalTo: conversationView.leadingAnchor),
+            bottomFade.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor),
+            bottomFade.heightAnchor.constraint(equalToConstant: Self.composerInset),
+
+            header.topAnchor.constraint(equalTo: conversationView.topAnchor, constant: 10),
+            header.centerXAnchor.constraint(equalTo: conversationView.safeAreaLayoutGuide.centerXAnchor),
+            header.widthAnchor.constraint(lessThanOrEqualTo: conversationView.widthAnchor, constant: -140),
+            refreshGlass.topAnchor.constraint(equalTo: top, constant: 10),
+            refreshGlass.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor, constant: -14),
+
+            attachGlass.leadingAnchor.constraint(equalTo: conversationView.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            attachGlass.centerYAnchor.constraint(equalTo: fieldGlass.centerYAnchor),
+            fieldGlass.leadingAnchor.constraint(equalTo: attachGlass.trailingAnchor, constant: 10),
+            fieldGlass.trailingAnchor.constraint(equalTo: emojiGlass.leadingAnchor, constant: -10),
+            fieldGlass.bottomAnchor.constraint(equalTo: conversationView.bottomAnchor, constant: -14),
+            emojiGlass.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor, constant: -16),
+            emojiGlass.centerYAnchor.constraint(equalTo: fieldGlass.centerYAnchor),
+            attachmentBubble.leadingAnchor.constraint(equalTo: fieldGlass.leadingAnchor),
+            attachmentBubble.bottomAnchor.constraint(equalTo: fieldGlass.topAnchor, constant: -8),
+            statusBubble.centerXAnchor.constraint(equalTo: fieldGlass.centerXAnchor),
+            statusBubble.bottomAnchor.constraint(equalTo: fieldGlass.topAnchor, constant: -8),
+            statusBubble.widthAnchor.constraint(lessThanOrEqualTo: fieldGlass.widthAnchor),
+            attachmentPreview.widthAnchor.constraint(equalToConstant: 44),
+            attachmentPreview.heightAnchor.constraint(equalToConstant: 44),
 
             emptyView.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             emptyView.centerYAnchor.constraint(equalTo: content.centerYAnchor),
             emptyView.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 24),
-            content.widthAnchor.constraint(greaterThanOrEqualToConstant: 440),
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant: 460),
         ])
         return content
+    }
+
+    /// The name capsule copies the number, which Messages shows on click.
+    @objc private func copyNumber() {
+        guard let selectedId, let address = coordinator.store.thread(selectedId)?.addresses.first else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(address, forType: .string)
+        showStatus("Copied \(address)")
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard (notification.object as? NSTextField) === composer else { return }
+        updateSendButton()
+    }
+
+    private func updateSendButton() {
+        let hasText = !composer.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        sendButton.isHidden = !(composer.isEnabled && (hasText || attachment != nil))
     }
 
     // MARK: - Conversations
@@ -423,7 +584,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         threads = query.isEmpty ? all : all.filter { matches($0, query) }
         threadTable.reloadData()
         if let selectedId, let index = threads.firstIndex(where: { $0.id == selectedId }) {
-            threadTable.selectRowIndexes([index], byExtendingSelection: false)
+            threadTable.selectRowIndexes([tableRow(ofThread: index)], byExtendingSelection: false)
         }
         updateConversation()
     }
@@ -450,7 +611,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         clearAttachment()
         updateConversation()
         if let index = threads.firstIndex(where: { $0.id == threadId }) {
-            threadTable.reloadData(forRowIndexes: [index], columnIndexes: [0])
+            threadTable.reloadData(forRowIndexes: [tableRow(ofThread: index)], columnIndexes: [0])
         }
     }
 
@@ -472,8 +633,14 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
             switch row {
             case .day(let label):
                 fresh.append(.day(label))
-            case .message(let message, let grouped, let meta):
-                fresh.append(.message(MessageBubble(message: message, grouped: grouped, meta: meta, showsSender: group && !message.fromMe && !grouped)))
+            case .message(let message, let grouped, let endsRun, let meta):
+                fresh.append(.message(MessageBubble(
+                    message: message,
+                    grouped: grouped,
+                    endsRun: endsRun,
+                    meta: meta,
+                    showsSender: group && !message.fromMe && !grouped
+                )))
             }
         }
         if !fresh.isEmpty { fresh.append(.spacer) }
@@ -487,7 +654,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
             scrollToBottomNext = false
             scrollToBottom()
         } else {
-            let y = max(0, messageTable.bounds.height - distanceFromBottom - messageScroll.contentView.bounds.height)
+            let y = max(-Self.headerInset, messageTable.bounds.height - distanceFromBottom - messageScroll.contentView.bounds.height)
             messageScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
             messageScroll.reflectScrolledClipView(messageScroll.contentView)
         }
@@ -499,14 +666,14 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.messageTable.layoutSubtreeIfNeeded()
-            let y = max(0, self.messageTable.bounds.height - self.messageScroll.contentView.bounds.height)
+            let y = max(-Self.headerInset, self.messageTable.bounds.height - self.messageScroll.contentView.bounds.height + Self.composerInset)
             self.messageScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
             self.messageScroll.reflectScrolledClipView(self.messageScroll.contentView)
         }
     }
 
     private var isScrolledToBottom: Bool {
-        messageScroll.contentView.bounds.maxY >= messageTable.bounds.height - 8
+        messageScroll.contentView.bounds.maxY >= messageTable.bounds.height + Self.composerInset - 8
     }
 
     private func relayoutMessagesIfNeeded() {
@@ -533,37 +700,33 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     private func updateConversation() {
         let thread = selectedId.flatMap { coordinator.store.thread($0) }
         let connected = hooks.isConnected()
-        nameLabel.stringValue = thread?.title ?? ""
-        if let thread { headerAvatar.show(thread, photo: avatar(for: thread)) }
         if let thread {
+            nameButton.title = thread.title
+            headerAvatar.show(thread, photo: avatar(for: thread))
             if thread.addresses.count > 1 {
-                detailLabel.stringValue = "\(thread.addresses.count) people"
-            } else if thread.name != nil, thread.canReply {
-                detailLabel.stringValue = thread.addresses.first ?? ""
+                nameButton.toolTip = thread.addresses.joined(separator: ", ")
+            } else if thread.canReply {
+                nameButton.toolTip = "\(thread.addresses.first ?? "") · click to copy"
             } else {
-                detailLabel.stringValue = thread.canReply ? "Not in contacts" : "Sender ID · replies not possible"
+                nameButton.toolTip = "Sender ID · replies not possible"
             }
-        } else {
-            detailLabel.stringValue = ""
         }
         let canWrite = thread?.canReply == true && connected
         composer.isEnabled = canWrite
-        sendButton.isEnabled = canWrite
         emojiButton.isEnabled = canWrite
         attachButton.isEnabled = canWrite
         conversationView.acceptsDrops = canWrite
-        if thread == nil {
-            composerNote.stringValue = ""
-        } else if !connected {
-            composerNote.stringValue = "The phone is not connected; showing stored messages."
+        // What the field cannot do is said where the typing would go.
+        if thread != nil && !connected {
+            composer.placeholderString = "Phone not connected"
         } else if thread?.canReply == false {
-            composerNote.stringValue = thread!.addresses.count > 1
-                ? "Replies to group conversations are not supported yet."
-                : "This sender does not accept replies."
+            composer.placeholderString = thread!.addresses.count > 1
+                ? "Group replies are not supported yet"
+                : "This sender does not accept replies"
         } else {
-            composerNote.stringValue = ""
+            composer.placeholderString = "Text message"
         }
-        composerNote.isHidden = composerNote.stringValue.isEmpty
+        updateSendButton()
         refreshButton.isEnabled = connected
         conversationView.isHidden = thread == nil
         updateEmptyState()
@@ -609,10 +772,12 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     private func showStatus(_ text: String) {
         statusReset?.cancel()
         statusLabel.stringValue = text
-        statusLabel.isHidden = false
+        statusBubble.isHidden = false
+        attachmentBubble.alphaValue = 0
         let reset = DispatchWorkItem { [weak self] in
             self?.statusLabel.stringValue = ""
-            self?.statusLabel.isHidden = true
+            self?.statusBubble.isHidden = true
+            self?.attachmentBubble.alphaValue = 1
         }
         statusReset = reset
         DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: reset)
@@ -636,6 +801,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         if coordinator.send(text, image: attachment, to: thread) {
             composer.stringValue = ""
             clearAttachment()
+            updateSendButton()
             scrollToBottomNext = true
         } else {
             showStatus("Not sent: the phone is not connected.")
@@ -669,7 +835,8 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         attachmentPreview.image = image
         let size = ByteCountFormatter.string(fromByteCount: Int64(prepared.jpeg.count), countStyle: .file)
         attachmentLabel.stringValue = [name, "\(prepared.width)×\(prepared.height), \(size)"].compactMap { $0 }.joined(separator: " · ")
-        attachmentRow.isHidden = false
+        attachmentBubble.isHidden = false
+        updateSendButton()
         window?.makeFirstResponder(composer)
         return true
     }
@@ -677,7 +844,8 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     @objc private func clearAttachment() {
         attachment = nil
         attachmentPreview.image = nil
-        attachmentRow.isHidden = true
+        attachmentBubble.isHidden = true
+        updateSendButton()
     }
 
     @objc private func loadEarlier() {
@@ -748,15 +916,18 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     // MARK: - Tables
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === threadTable ? threads.count : rows.count
+        tableView === threadTable ? threads.count + 2 : rows.count
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard tableView === messageTable else { return 64 }
+        if tableView === threadTable {
+            if row == 0 { return Self.listTopSpace }
+            return threadIndex(ofRow: row) == nil ? Self.listBottomSpace : 76
+        }
         switch rows[row] {
         case .loadEarlier: return 40
         case .spacer: return 12
-        case .day: return 34
+        case .day: return 36
         case .message(let bubble):
             return MessageRowView.height(for: bubble, width: messageTable.bounds.width, images: images)
         }
@@ -764,8 +935,9 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if tableView === threadTable {
+            guard let index = threadIndex(ofRow: row) else { return NSView() }
             let cell = ThreadCellView()
-            cell.configure(threads[row], unread: coordinator.isUnread(threads[row]), photo: avatar(for: threads[row]))
+            cell.configure(threads[index], unread: coordinator.isUnread(threads[index]), photo: avatar(for: threads[index]))
             return cell
         }
         switch rows[row] {
@@ -817,13 +989,71 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard (notification.object as? NSTableView) === threadTable else { return }
-        let row = threadTable.selectedRow
-        guard row >= 0, row < threads.count, threads[row].id != selectedId else { return }
-        open(threads[row].id)
+        guard let index = threadIndex(ofRow: threadTable.selectedRow), threads[index].id != selectedId else { return }
+        open(threads[index].id)
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        tableView === threadTable
+        tableView === threadTable && threadIndex(ofRow: row) != nil
+    }
+}
+
+// MARK: - Search
+
+/// A search field drawn without its own bezel, for the glass capsule it sits
+/// in. Without the bezel the standard cell no longer keeps the text clear of
+/// the magnifier, so the three parts are placed here.
+final class CapsuleSearchField: NSSearchField {
+    override class var cellClass: AnyClass? {
+        get { CapsuleSearchFieldCell.self }
+        set {}
+    }
+}
+
+final class CapsuleSearchFieldCell: NSSearchFieldCell {
+    private static let icon: CGFloat = 16
+    private static let gap: CGFloat = 6
+
+    override func searchButtonRect(forBounds rect: NSRect) -> NSRect {
+        NSRect(x: rect.minX, y: rect.midY - Self.icon / 2, width: Self.icon, height: Self.icon)
+    }
+
+    override func cancelButtonRect(forBounds rect: NSRect) -> NSRect {
+        NSRect(x: rect.maxX - Self.icon, y: rect.midY - Self.icon / 2, width: Self.icon, height: Self.icon)
+    }
+
+    override func searchTextRect(forBounds rect: NSRect) -> NSRect {
+        let lead = Self.icon + Self.gap
+        let height = cellSize(forBounds: rect).height
+        return NSRect(
+            x: rect.minX + lead,
+            y: rect.midY - height / 2,
+            width: max(0, rect.width - lead - Self.icon - Self.gap),
+            height: height
+        )
+    }
+
+    // The editor that takes over while typing gets the same room as the text.
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: searchTextRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+
+    override func select(
+        withFrame rect: NSRect,
+        in controlView: NSView,
+        editor textObj: NSText,
+        delegate: Any?,
+        start selStart: Int,
+        length selLength: Int
+    ) {
+        super.select(
+            withFrame: searchTextRect(forBounds: rect),
+            in: controlView,
+            editor: textObj,
+            delegate: delegate,
+            start: selStart,
+            length: selLength
+        )
     }
 }
 
@@ -904,6 +1134,7 @@ final class ImageDropView: NSView {
 struct MessageBubble {
     let message: SmsMessage
     let grouped: Bool
+    let endsRun: Bool
     let meta: String?
     let showsSender: Bool
 }
@@ -918,7 +1149,8 @@ enum MessageRow {
 /// One conversation in the list: avatar, name, time, two lines of the latest
 /// message and a dot when something is unread.
 final class ThreadCellView: NSTableCellView {
-    private let avatar = AvatarView(diameter: 38)
+    private let avatar = AvatarView(diameter: 44)
+    private let separator = NSBox()
     private let name = NSTextField(labelWithString: "")
     private let time = NSTextField(labelWithString: "")
     private let snippet = NSTextField(wrappingLabelWithString: "")
@@ -926,42 +1158,48 @@ final class ThreadCellView: NSTableCellView {
 
     init() {
         super.init(frame: .zero)
-        name.font = .systemFont(ofSize: 13, weight: .semibold)
+        name.font = .systemFont(ofSize: 14, weight: .semibold)
         name.lineBreakMode = .byTruncatingTail
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        time.font = .systemFont(ofSize: 11)
+        time.font = .systemFont(ofSize: 12)
         time.textColor = .secondaryLabelColor
         time.setContentCompressionResistancePriority(.required, for: .horizontal)
-        snippet.font = .systemFont(ofSize: 12)
+        snippet.font = .systemFont(ofSize: 13)
         snippet.textColor = .secondaryLabelColor
         snippet.maximumNumberOfLines = 2
         snippet.lineBreakMode = .byTruncatingTail
         snippet.cell?.truncatesLastVisibleLine = true
         snippet.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4.5
-        dot.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        dot.layer?.cornerRadius = 5
+        dot.layer?.backgroundColor = NSColor.systemBlue.cgColor
+        separator.boxType = .separator
 
-        for view in [avatar, name, time, snippet, dot] {
+        for view in [avatar, name, time, snippet, dot, separator] {
             view.translatesAutoresizingMaskIntoConstraints = false
         }
-        [avatar, name, time, snippet, dot].forEach(addSubview)
+        [avatar, name, time, snippet, dot, separator].forEach(addSubview)
         textField = name
+        // As in Messages: the unread dot left of the photo, a hairline under
+        // the text, none under the selected row.
         NSLayoutConstraint.activate([
-            avatar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            avatar.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            dot.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: 10),
+            dot.heightAnchor.constraint(equalToConstant: 10),
+            avatar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            avatar.centerYAnchor.constraint(equalTo: centerYAnchor),
             name.leadingAnchor.constraint(equalTo: avatar.trailingAnchor, constant: 10),
-            name.topAnchor.constraint(equalTo: topAnchor, constant: 9),
+            name.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             time.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor, constant: 6),
-            time.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            time.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             time.firstBaselineAnchor.constraint(equalTo: name.firstBaselineAnchor),
             snippet.leadingAnchor.constraint(equalTo: name.leadingAnchor),
             snippet.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 2),
-            snippet.trailingAnchor.constraint(equalTo: dot.leadingAnchor, constant: -6),
-            dot.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            dot.topAnchor.constraint(equalTo: snippet.topAnchor, constant: 4),
-            dot.widthAnchor.constraint(equalToConstant: 9),
-            dot.heightAnchor.constraint(equalToConstant: 9),
+            snippet.trailingAnchor.constraint(equalTo: time.trailingAnchor),
+            separator.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: time.trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
@@ -970,7 +1208,7 @@ final class ThreadCellView: NSTableCellView {
 
     func configure(_ thread: SmsThread, unread: Bool, photo: NSImage?) {
         name.stringValue = thread.title
-        name.font = .systemFont(ofSize: 13, weight: unread ? .bold : .semibold)
+        name.font = .systemFont(ofSize: 14, weight: unread ? .bold : .semibold)
         time.stringValue = SmsLayout.listTime(for: Date(timeIntervalSince1970: TimeInterval(thread.date) / 1000))
         // The phone has no snippet for a picture sent without words.
         let text = thread.snippet ?? "Attachment"
@@ -985,7 +1223,8 @@ final class ThreadCellView: NSTableCellView {
             let selected = backgroundStyle == .emphasized
             time.textColor = selected ? .alternateSelectedControlTextColor : .secondaryLabelColor
             snippet.textColor = selected ? .alternateSelectedControlTextColor : .secondaryLabelColor
-            dot.layer?.backgroundColor = (selected ? NSColor.white : NSColor.controlAccentColor).cgColor
+            dot.layer?.backgroundColor = (selected ? NSColor.white : NSColor.systemBlue).cgColor
+            separator.isHidden = selected
         }
     }
 
@@ -1100,16 +1339,18 @@ enum SmsAvatar {
     }
 }
 
-/// One message: an optional sender line, pictures, the text bubble and the
-/// time underneath. Laid out by hand, so the height the table asks for and the
-/// layout drawn come from the same numbers.
+/// One message: an optional sender line, pictures, the bubble with its tail on
+/// the last of a run, and a state such as "Delivered" underneath. Laid out by
+/// hand, so the height the table asks for and the layout drawn come from the
+/// same numbers.
 final class MessageRowView: NSView {
-    static let maxBubble: CGFloat = 440
-    static let imageBox = NSSize(width: 240, height: 240)
-    static let textFont = NSFont.systemFont(ofSize: 13)
-    static let padH: CGFloat = 12
-    static let padV: CGFloat = 7
-    static let side: CGFloat = 20
+    static let maxBubble: CGFloat = 460
+    static let imageBox = NSSize(width: 260, height: 260)
+    static let textFont = NSFont.systemFont(ofSize: 14)
+    static let padH: CGFloat = 13
+    static let padV: CGFloat = 8
+    /// From the pane's edge to the bubble, leaving room for the tail.
+    static let side: CGFloat = 22
 
     let bubble: MessageBubble
     var senderName: String?
@@ -1118,7 +1359,7 @@ final class MessageRowView: NSView {
     var onImageClick: ((NSClickGestureRecognizer) -> Void)?
 
     private var imageViews: [NSView] = []
-    private var bubbleView: NSView?
+    private var bubbleView: BubbleView?
     private var textView: NSTextField?
     private var metaView: NSTextField?
     private var senderView: NSTextField?
@@ -1133,10 +1374,11 @@ final class MessageRowView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    private static var incoming: NSColor {
+    /// Messages' grey, a shade lighter in the dark.
+    static var incoming: NSColor {
         NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(white: 0.24, alpha: 1)
+                ? NSColor(calibratedRed: 0.23, green: 0.23, blue: 0.24, alpha: 1)
                 : NSColor(calibratedRed: 0.914, green: 0.914, blue: 0.922, alpha: 1)
         }
     }
@@ -1156,7 +1398,7 @@ final class MessageRowView: NSView {
     }
 
     private static func textSize(_ text: String, width: CGFloat) -> NSSize {
-        let maxText = min(maxBubble, (width - 2 * side) * 0.7) - 2 * padH
+        let maxText = min(maxBubble, (width - 2 * side) * 0.68) - 2 * padH
         let rect = (text as NSString).boundingRect(
             with: NSSize(width: max(60, maxText), height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
@@ -1166,16 +1408,16 @@ final class MessageRowView: NSView {
     }
 
     static func height(for bubble: MessageBubble, width: CGFloat, images: [String: NSImage] = [:]) -> CGFloat {
-        var y: CGFloat = bubble.grouped ? 2 : 8
+        var y: CGFloat = bubble.grouped ? 2 : 6
         if bubble.showsSender && bubble.message.address != nil { y += 16 }
         for part in bubble.message.images ?? [] {
-            y += imageSize(part, loaded: images[part.partId]).height + 4
+            y += imageSize(part, loaded: images[part.partId]).height + 3
         }
         if let text = bubble.message.text, !text.isEmpty {
             y += textSize(text, width: width).height + 2 * padV
         }
-        if bubble.meta != nil { y += 17 }
-        return y + 2
+        if bubble.meta != nil { y += 18 }
+        return y + (bubble.endsRun ? 4 : 0)
     }
 
     func rebuild() {
@@ -1196,16 +1438,14 @@ final class MessageRowView: NSView {
                 imageView.image = image
                 imageView.imageScaling = .scaleProportionallyUpOrDown
                 imageView.wantsLayer = true
-                imageView.layer?.cornerRadius = 14
+                imageView.layer?.cornerRadius = 18
                 imageView.layer?.masksToBounds = true
                 imageView.setAccessibilityLabel("Photo")
                 imageView.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(clicked(_:))))
                 view = imageView
             } else {
-                let box = NSView()
-                box.wantsLayer = true
-                box.layer?.cornerRadius = 14
-                box.layer?.backgroundColor = Self.incoming.cgColor
+                let box = BubbleView()
+                box.color = Self.incoming
                 let note = NSTextField(labelWithString: imageNotes[part.partId].map { "Photo unavailable: \($0)" } ?? "Photo (MMS)")
                 note.font = .systemFont(ofSize: 11)
                 note.textColor = .secondaryLabelColor
@@ -1225,9 +1465,9 @@ final class MessageRowView: NSView {
             imageViews.append(view)
         }
         if let text = message.text, !text.isEmpty {
-            let bubbleView = NSView()
-            bubbleView.wantsLayer = true
-            bubbleView.layer?.cornerRadius = 16
+            let bubbleView = BubbleView()
+            bubbleView.color = message.fromMe ? .systemBlue : Self.incoming
+            bubbleView.tail = bubble.endsRun ? (message.fromMe ? .right : .left) : nil
             addSubview(bubbleView)
             self.bubbleView = bubbleView
             let label = NSTextField(wrappingLabelWithString: text)
@@ -1240,8 +1480,8 @@ final class MessageRowView: NSView {
         }
         if let meta = bubble.meta {
             let label = NSTextField(labelWithString: meta)
-            label.font = .systemFont(ofSize: 11)
-            label.textColor = meta.contains("Not sent") ? .systemRed : .secondaryLabelColor
+            label.font = .systemFont(ofSize: 11, weight: .medium)
+            label.textColor = meta == "Not sent" ? .systemRed : .secondaryLabelColor
             addSubview(label)
             metaView = label
         }
@@ -1257,37 +1497,79 @@ final class MessageRowView: NSView {
             let x = right ? width - Self.side - size.width : Self.side
             return NSRect(x: x, y: y, width: size.width, height: size.height)
         }
-        var y: CGFloat = bubble.grouped ? 2 : 8
+        var y: CGFloat = bubble.grouped ? 2 : 6
         if let senderView {
             senderView.sizeToFit()
-            senderView.frame = place(NSSize(width: senderView.frame.width, height: 14), at: y).offsetBy(dx: right ? -6 : 6, dy: 0)
+            senderView.frame = place(NSSize(width: senderView.frame.width, height: 14), at: y).offsetBy(dx: right ? -8 : 8, dy: 0)
             y += 16
         }
         for (part, view) in zip(message.images ?? [], imageViews) {
             let size = Self.imageSize(part, loaded: images[part.partId])
             view.frame = place(size, at: y)
-            y += size.height + 4
+            y += size.height + 3
         }
         if let textView, let bubbleView, let text = message.text {
             let size = Self.textSize(text, width: width)
             let frame = place(NSSize(width: size.width + 2 * Self.padH, height: size.height + 2 * Self.padV), at: y)
-            bubbleView.frame = frame
-            bubbleView.layer?.backgroundColor = (right ? NSColor.controlAccentColor : Self.incoming).cgColor
+            // The tail hangs outside the bubble, so the view is wider than it.
+            bubbleView.frame = frame.insetBy(dx: -BubbleView.tailWidth, dy: 0)
             textView.frame = frame.insetBy(dx: Self.padH - 2, dy: Self.padV)
             y = frame.maxY
         }
         if let metaView {
             metaView.sizeToFit()
-            metaView.frame = place(NSSize(width: metaView.frame.width, height: 14), at: y + 3).offsetBy(dx: right ? -6 : 6, dy: 0)
+            metaView.frame = place(NSSize(width: metaView.frame.width, height: 14), at: y + 3).offsetBy(dx: right ? -4 : 4, dy: 0)
         }
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsLayout = true
     }
 
     @objc private func clicked(_ recognizer: NSClickGestureRecognizer) {
         onImageClick?(recognizer)
+    }
+}
+
+/// A message bubble, with Messages' tail at the bottom corner when it ends a run.
+final class BubbleView: NSView {
+    enum Tail { case left, right }
+
+    static let tailWidth: CGFloat = 6
+    static let radius: CGFloat = 18
+
+    var color: NSColor = .systemBlue { didSet { needsDisplay = true } }
+    var tail: Tail? { didSet { needsDisplay = true } }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let body = bounds.insetBy(dx: Self.tailWidth, dy: 0)
+        let radius = min(Self.radius, body.height / 2)
+        color.setFill()
+        NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius).fill()
+        guard let tail else { return }
+        let path = NSBezierPath()
+        let bottom = body.maxY
+        switch tail {
+        case .right:
+            let edge = body.maxX
+            path.move(to: NSPoint(x: edge - radius, y: bottom))
+            path.line(to: NSPoint(x: edge + Self.tailWidth, y: bottom))
+            path.curve(
+                to: NSPoint(x: edge, y: bottom - radius),
+                controlPoint1: NSPoint(x: edge + 1, y: bottom - 2),
+                controlPoint2: NSPoint(x: edge, y: bottom - radius / 2)
+            )
+            path.line(to: NSPoint(x: edge - radius, y: bottom - radius))
+        case .left:
+            let edge = body.minX
+            path.move(to: NSPoint(x: edge + radius, y: bottom))
+            path.line(to: NSPoint(x: edge - Self.tailWidth, y: bottom))
+            path.curve(
+                to: NSPoint(x: edge, y: bottom - radius),
+                controlPoint1: NSPoint(x: edge - 1, y: bottom - 2),
+                controlPoint2: NSPoint(x: edge, y: bottom - radius / 2)
+            )
+            path.line(to: NSPoint(x: edge + radius, y: bottom - radius))
+        }
+        path.close()
+        path.fill()
     }
 }

@@ -220,14 +220,20 @@ public enum SmsRules {
 
 /// One row of the conversation view.
 public enum SmsRow: Equatable {
-    /// "Today", "Yesterday", a weekday within the last week, else a date.
+    /// When the conversation picks up again: "Today 18:41", "Yesterday 09:05",
+    /// "Friday 14:02", "2 Dec 2024 at 19:00". Shown at a new day and after an
+    /// hour of silence, as Messages does.
     case day(String)
-    /// `showsMeta`: the last message of a run from the same side, which carries
-    /// the time (and the delivery state of the last one sent).
-    case message(SmsMessage, groupedWithPrevious: Bool, meta: String?)
+    /// `endsRun`: the last message of a run from one side, the one with the
+    /// tail. `meta` is a state worth saying: "Delivered" under the last one
+    /// sent, and "Not sent" or "Sending…" wherever they are.
+    case message(SmsMessage, groupedWithPrevious: Bool, endsRun: Bool, meta: String?)
 }
 
 public enum SmsLayout {
+
+    /// Silence after which the time is shown again.
+    public static let gap: Int64 = 60 * 60 * 1000
 
     public static func rows(
         for messages: [SmsMessage],
@@ -235,34 +241,26 @@ public enum SmsLayout {
         calendar: Calendar = .current,
         locale: Locale = .current
     ) -> [SmsRow] {
-        let time = DateFormatter()
-        time.locale = locale
-        time.calendar = calendar
-        time.timeZone = calendar.timeZone
-        time.dateStyle = .none
-        time.timeStyle = .short
-
         let lastSent = messages.lastIndex(where: { $0.fromMe })
         var rows: [SmsRow] = []
         var previous: SmsMessage?
         for (index, message) in messages.enumerated() {
-            let date = message.dateValue
-            let newDay = previous.map { !calendar.isDate($0.dateValue, inSameDayAs: date) } ?? true
-            if newDay {
-                rows.append(.day(dayLabel(for: date, now: now, calendar: calendar, locale: locale)))
+            let breaks = previous.map { breaksBetween($0, message, calendar: calendar) } ?? true
+            if breaks {
+                rows.append(.day(stamp(for: message.dateValue, now: now, calendar: calendar, locale: locale)))
             }
-            let grouped = !newDay && previous?.fromMe == message.fromMe
+            let grouped = !breaks && previous?.fromMe == message.fromMe
             let next = index + 1 < messages.count ? messages[index + 1] : nil
-            let endsRun = next.map { $0.fromMe != message.fromMe || !calendar.isDate($0.dateValue, inSameDayAs: date) } ?? true
-            let state = message.fromMe ? stateLabel(message.status, isLastSent: index == lastSent) : nil
-            var meta: String?
-            if endsRun || state == "Not sent" || state == "Sending…" {
-                meta = [time.string(from: date), state].compactMap { $0 }.joined(separator: " · ")
-            }
-            rows.append(.message(message, groupedWithPrevious: grouped, meta: meta))
+            let endsRun = next.map { $0.fromMe != message.fromMe || breaksBetween(message, $0, calendar: calendar) } ?? true
+            let meta = message.fromMe ? stateLabel(message.status, isLastSent: index == lastSent) : nil
+            rows.append(.message(message, groupedWithPrevious: grouped, endsRun: endsRun, meta: meta))
             previous = message
         }
         return rows
+    }
+
+    private static func breaksBetween(_ a: SmsMessage, _ b: SmsMessage, calendar: Calendar) -> Bool {
+        !calendar.isDate(a.dateValue, inSameDayAs: b.dateValue) || b.date - a.date >= gap
     }
 
     /// Failures and messages still on their way are always labelled; a delivery
@@ -277,16 +275,21 @@ public enum SmsLayout {
         }
     }
 
+    public static func stamp(for date: Date, now: Date, calendar: Calendar, locale: Locale) -> String {
+        let time = formatter(calendar, locale)
+        time.dateStyle = .none
+        time.timeStyle = .short
+        let clock = time.string(from: date)
+        let day = dayLabel(for: date, now: now, calendar: calendar, locale: locale)
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0
+        return days < 7 ? "\(day) \(clock)" : "\(day) at \(clock)"
+    }
+
     public static func dayLabel(for date: Date, now: Date, calendar: Calendar, locale: Locale) -> String {
         if calendar.isDate(date, inSameDayAs: now) { return "Today" }
-        let startOfToday = calendar.startOfDay(for: now)
-        let startOfDay = calendar.startOfDay(for: date)
-        let days = calendar.dateComponents([.day], from: startOfDay, to: startOfToday).day ?? 0
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0
         if days == 1 { return "Yesterday" }
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
+        let formatter = formatter(calendar, locale)
         if days > 1 && days < 7 {
             formatter.setLocalizedDateFormatFromTemplate("EEEE")
         } else {
@@ -294,6 +297,14 @@ public enum SmsLayout {
             formatter.timeStyle = .none
         }
         return formatter.string(from: date)
+    }
+
+    private static func formatter(_ calendar: Calendar, _ locale: Locale) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        return formatter
     }
 
     /// The time next to a conversation in the list.
