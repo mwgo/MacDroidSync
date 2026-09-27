@@ -425,6 +425,15 @@ class SyncService : Service() {
                         peer.sendSms(type, reply, image = jpeg)
                     }
                 }
+                type == MessageType.SMS_AVATAR -> {
+                    val jpeg = request.address?.let { smsReader.avatar(it) }
+                    val answer = reply.copy(address = request.address, photo = request.photo)
+                    if (jpeg == null) {
+                        peer.sendSms(type, answer, ok = false, reason = "this contact has no photo")
+                    } else {
+                        peer.sendSms(type, answer, image = jpeg)
+                    }
+                }
                 type == MessageType.SMS_SEND -> sendSmsForMac(peer, request)
             }
         } catch (error: Exception) {

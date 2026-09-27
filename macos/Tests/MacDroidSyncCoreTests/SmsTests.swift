@@ -11,7 +11,7 @@ final class SmsPayloadTests: XCTestCase {
                 "messages":[{"id":"m3","date":1000,"fromMe":false,"text":"hi","mms":true,
                              "images":[{"partId":"12","mime":"image/jpeg","width":640,"height":480}],
                              "address":"+48600100200","extra":"ignored"}],
-                "threads":[{"id":7,"addresses":["+48600100200"],"date":1000}]}}
+                "threads":[{"id":7,"addresses":["+48600100200"],"date":1000,"photo":"55"}]}}
         """
         let message = try Message.decode(Data(json.utf8))
         let sms = try XCTUnwrap(message.sms)
@@ -20,6 +20,7 @@ final class SmsPayloadTests: XCTestCase {
         XCTAssertEqual(sms.messages?.first?.images?.first, SmsImage(partId: "12", mime: "image/jpeg", width: 640, height: 480))
         XCTAssertEqual(sms.threads?.first?.unread, 0)
         XCTAssertEqual(sms.threads?.first?.title, "+48600100200")
+        XCTAssertEqual(sms.threads?.first?.photo, "55")
     }
 
     func testAPayloadSurvivesTheWire() throws {
@@ -194,6 +195,14 @@ final class SmsStoreTests: XCTestCase {
         XCTAssertNotNil(store.image(partId: "2"))
     }
 
+    func testContactPhotosAreKeptByTheirId() {
+        let store = makeStore()
+        store.storeAvatar(Data([7]), photo: "55")
+        XCTAssertEqual(makeStore().avatar(photo: "55"), Data([7]))
+        XCTAssertNil(store.avatar(photo: "56"), "a new photo id is a new photo")
+        XCTAssertNil(store.image(partId: "55"), "photos and MMS pictures do not collide")
+    }
+
     func testAPartIdNeverLeavesTheFolder() {
         let store = makeStore()
         store.storeImage(Data([1]), partId: "../../evil")
@@ -329,6 +338,30 @@ final class SmsCoordinatorTests: XCTestCase {
         coordinator.send("Hi", to: thread)
         coordinator.disconnected()
         XCTAssertEqual(coordinator.messages(in: 3).map(\.status), ["failed"])
+    }
+
+    func testAContactPhotoIsAskedForOnceAndStored() {
+        let coordinator = makeCoordinator()
+        let withPhoto = SmsThread(id: 3, addresses: ["+48600100200"], name: "Anna", date: 100, photo: "55")
+        XCTAssertTrue(coordinator.requestAvatar(for: withPhoto))
+        XCTAssertTrue(coordinator.requestAvatar(for: withPhoto))
+        XCTAssertEqual(sent.filter { $0.0 == MessageType.smsAvatar }.count, 1, "one question while one is open")
+        let request = sent.last!.1
+        XCTAssertEqual(request.address, "+48600100200")
+        XCTAssertEqual(request.photo, "55")
+        var got: Data?
+        coordinator.onEvent = { event in
+            if case .avatar("55", let data) = event { got = data }
+        }
+        coordinator.handle(SmsReply(type: MessageType.smsAvatar, payload: request, image: Data([9])))
+        XCTAssertEqual(got, Data([9]))
+        XCTAssertEqual(coordinator.store.avatar(photo: "55"), Data([9]))
+    }
+
+    func testNoPhotoIsAskedForWithoutOne() {
+        let coordinator = makeCoordinator()
+        XCTAssertFalse(coordinator.requestAvatar(for: thread))
+        XCTAssertTrue(sent.isEmpty)
     }
 
     func testAPictureAlreadyStoredIsNotAskedFor() {

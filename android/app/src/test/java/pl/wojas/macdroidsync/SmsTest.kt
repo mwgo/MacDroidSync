@@ -26,7 +26,8 @@ class SmsTest {
                     address = "+48600100200",
                 ),
             ),
-            threads = listOf(SmsThread(id = 7, addresses = listOf("+48600100200"), name = "Anna", date = 1_000, unread = 2)),
+            threads = listOf(SmsThread(id = 7, addresses = listOf("+48600100200"), name = "Anna", date = 1_000, unread = 2, photo = "55")),
+            photo = "55",
         )
         val parsed = Message.parse(Message(type = MessageType.SMS_THREAD, sms = payload).toBytes())
         assertEquals(payload, parsed.sms)

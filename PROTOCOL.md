@@ -74,7 +74,7 @@ The plaintext of every sealed frame is a JSON object. Absent fields are omitted.
 Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
 `request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`, `file-offer`, `file-chunk`,
 `file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`,
-`photo-config`, `photo-preview`, `sms-threads`, `sms-thread`, `sms-image`,
+`photo-config`, `photo-preview`, `sms-threads`, `sms-thread`, `sms-image`, `sms-avatar`,
 `sms-send`, `sms-status`, `sms-new`, `sms-changed`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
@@ -537,6 +537,8 @@ without waiting.
    |<- sms-thread {requestId, messages, more} ---|
    |-- sms-image {requestId, partId} ----------->|  one MMS picture
    |<- sms-image {requestId, partId} + data -----|  a JPEG, or ok:false
+   |-- sms-avatar {requestId, address, photo} -->|  one contact photo
+   |<- sms-avatar {requestId, photo} + data -----|  a JPEG, or ok:false
    |-- sms-send {requestId, address, text} ----->|
    |<- sms-status {requestId, state:"sent"} -----|  then "delivered", or
    |                                             |  state:"failed", ok:false
@@ -565,9 +567,14 @@ on a phone that is an older build and does not know the type at all.
 | `address`, `text` | `sms-send` | where to, and what |
 | `state` | `sms-status` | `sent`, `delivered` or `failed` |
 | `partId` | `sms-image` | the MMS part to draw |
+| `address`, `photo` | `sms-avatar` | whose contact photo, and the photo id from the thread, echoed back |
 
-A thread is `{id, addresses, name?, snippet?, date, unread, lastFromMe?, count?}`.
-`name` is present only while the phone may read its contacts. A message is
+A thread is `{id, addresses, name?, snippet?, date, unread, lastFromMe?, count?, photo?}`.
+`name` is present only while the phone may read its contacts. `photo` is the id of
+the contact's photo, for a conversation with one person whose contact has one. The
+id changes with the photo, so the Mac keeps pictures by it and asks with
+`sms-avatar` only for an id it has not stored; the answer is a square JPEG of at
+most 192 pixels. A message is
 `{id, date, fromMe, text?, mms?, images?, status?, address?}`:
 
 * `id` starts with `s` for an SMS and `m` for an MMS, because the phone numbers

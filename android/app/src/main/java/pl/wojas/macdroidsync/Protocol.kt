@@ -72,6 +72,9 @@ object MessageType {
     const val SMS_IMAGE = "sms-image"
     const val SMS_SEND = "sms-send"
 
+    /** A contact photo, by sms.address; answered with the JPEG in data. */
+    const val SMS_AVATAR = "sms-avatar"
+
     /** Phone to Mac: how a message sent for the Mac is getting on. */
     const val SMS_STATUS = "sms-status"
 

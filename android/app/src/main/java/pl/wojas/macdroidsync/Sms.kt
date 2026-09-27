@@ -21,6 +21,8 @@ data class SmsThread(
     val unread: Int = 0,
     val lastFromMe: Boolean? = null,
     val count: Int? = null,
+    /** The contact photo's id; the picture itself is asked for with sms-avatar. */
+    val photo: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -31,6 +33,7 @@ data class SmsThread(
         put("unread", unread)
         lastFromMe?.let { put("lastFromMe", it) }
         count?.let { put("count", it) }
+        photo?.let { put("photo", it) }
     }
 
     companion object {
@@ -43,6 +46,7 @@ data class SmsThread(
             unread = json.optInt("unread"),
             lastFromMe = if (json.has("lastFromMe")) json.optBoolean("lastFromMe") else null,
             count = if (json.has("count")) json.optInt("count") else null,
+            photo = json.stringOrNull("photo"),
         )
     }
 }
@@ -134,6 +138,8 @@ data class SmsPayload(
     val text: String? = null,
     val state: String? = null,
     val partId: String? = null,
+    /** On sms-avatar: the photo id the Mac is asking about, echoed back. */
+    val photo: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         requestId?.let { put("requestId", it) }
@@ -149,6 +155,7 @@ data class SmsPayload(
         text?.let { put("text", it) }
         state?.let { put("state", it) }
         partId?.let { put("partId", it) }
+        photo?.let { put("photo", it) }
     }
 
     companion object {
@@ -170,6 +177,7 @@ data class SmsPayload(
             text = json.stringOrNull("text"),
             state = json.stringOrNull("state"),
             partId = json.stringOrNull("partId"),
+            photo = json.stringOrNull("photo"),
         )
     }
 }
@@ -182,6 +190,8 @@ object SmsRules {
     const val MAX_SNIPPET = 160
     /** Longest side of an MMS picture sent to the Mac. */
     const val MAX_IMAGE_PIXEL = 1280
+    /** Side of a contact photo sent to the Mac, square. */
+    const val AVATAR_PIXEL = 192
 
     /**
      * Newest [limit] of both tables, oldest first, and whether older ones were

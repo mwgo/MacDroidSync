@@ -85,6 +85,8 @@ public enum MessageType {
     public static let smsThread = "sms-thread"
     public static let smsImage = "sms-image"
     public static let smsSend = "sms-send"
+    /// A contact photo, by `sms.address`; answered with a JPEG in `data`.
+    public static let smsAvatar = "sms-avatar"
     /// Phone to Mac: how a message sent for the Mac is getting on.
     public static let smsStatus = "sms-status"
     /// Phone to Mac: messages that have just arrived.

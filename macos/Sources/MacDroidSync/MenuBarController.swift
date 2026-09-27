@@ -77,6 +77,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// operator asks for it from the menu or from a notification.
     private var photoSyncWindow: PhotoSyncWindowController?
     private var messagesWindow: MessagesWindowController?
+    /// Banners waiting a moment for the sender's photo, by photo id.
+    private var bannersAwaitingPhoto: [String: (SmsThread, [SmsMessage])] = [:]
     private lazy var sms = SmsCoordinator(store: SmsStore()) { [weak self] type, payload in
         self?.server.requestSms(type: type, payload: payload) ?? false
     }
@@ -1026,13 +1028,35 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         sms.onEvent = { [weak self] event in
             self?.messagesWindow?.handle(event)
             if case .threads = event { self?.refreshMenuTitles() }
+            if case .avatar(let photo, let data) = event { self?.postBanner(photo: photo, data: data) }
         }
         sms.onIncoming = { [weak self] thread, messages in
             guard let self, Settings.shared.messageNotificationsEnabled else { return }
             if self.messagesWindow?.isShowing(thread.id) == true { return }
-            self.notifier.messageReceived(thread: thread, messages: messages)
+            guard let photo = thread.photo else {
+                self.notifier.messageReceived(thread: thread, messages: messages)
+                return
+            }
+            if let data = self.sms.store.avatar(photo: photo) {
+                self.notifier.messageReceived(thread: thread, messages: messages, photo: NSImage(data: data))
+                return
+            }
+            // A photo not seen before: ask for it, but never hold the banner long.
+            self.bannersAwaitingPhoto[photo] = (thread, messages)
+            if !self.sms.requestAvatar(for: thread) {
+                self.postBanner(photo: photo, data: nil)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.postBanner(photo: photo, data: nil)
+            }
         }
         notifier.onOpenMessages = { [weak self] threadId in self?.openMessages(threadId: threadId) }
+    }
+
+    private func postBanner(photo: String, data: Data?) {
+        guard let (thread, messages) = bannersAwaitingPhoto.removeValue(forKey: photo) else { return }
+        notifier.messageReceived(thread: thread, messages: messages, photo: data.flatMap(NSImage.init(data:)))
     }
 
     // MARK: - Settings

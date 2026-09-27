@@ -386,7 +386,7 @@ public final class PeerSession {
             guard let key = message.photo?.keys?.first else { return }
             let bytes = (message.ok ?? true) ? message.data.flatMap { Data(base64Encoded: $0) } : nil
             onPhotoPreview?(key, bytes, message.reason)
-        case MessageType.smsThreads, MessageType.smsThread, MessageType.smsImage,
+        case MessageType.smsThreads, MessageType.smsThread, MessageType.smsImage, MessageType.smsAvatar,
              MessageType.smsStatus, MessageType.smsNew, MessageType.smsChanged:
             let ok = message.ok ?? true
             onSms?(SmsReply(

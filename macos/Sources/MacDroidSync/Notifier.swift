@@ -106,7 +106,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// One banner per conversation: a second message from the same person
     /// replaces the first rather than stacking up.
-    func messageReceived(thread: SmsThread, messages: [SmsMessage]) {
+    func messageReceived(thread: SmsThread, messages: [SmsMessage], photo: NSImage? = nil) {
         guard let last = messages.last else { return }
         let content = UNMutableNotificationContent()
         content.title = thread.title
@@ -122,7 +122,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.threadIdentifier = "sms-\(thread.id)"
         content.userInfo = [Self.threadKey: NSNumber(value: thread.id)]
         content.sound = .default
-        if let avatar = avatarAttachment(for: thread) {
+        if let avatar = avatarAttachment(for: thread, photo: photo) {
             content.attachments = [avatar]
         }
         post(content, identifier: "sms-\(thread.id)")
@@ -130,8 +130,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// The notification center moves the file into its own store, so a fresh
     /// temporary copy is written for every banner.
-    private func avatarAttachment(for thread: SmsThread) -> UNNotificationAttachment? {
-        guard let png = SmsAvatar.notificationPNG(for: thread) else { return nil }
+    private func avatarAttachment(for thread: SmsThread, photo: NSImage?) -> UNNotificationAttachment? {
+        guard let png = SmsAvatar.notificationPNG(for: thread, photo: photo) else { return nil }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("sms-avatar-\(UUID().uuidString).png")
         do {

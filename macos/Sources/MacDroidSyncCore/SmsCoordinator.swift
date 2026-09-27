@@ -13,12 +13,15 @@ public final class SmsCoordinator {
         /// A request could not be answered: the phone's reason, or a timeout.
         case failed(String)
         case image(partId: String, data: Data?, reason: String?)
+        /// A contact photo, by its id; nil data when the contact has none.
+        case avatar(photo: String, data: Data?)
     }
 
     private enum Request {
         case threads
         case thread(Int64, before: Int64?)
         case image(String)
+        case avatar(String)
         case send(localId: String)
     }
 
@@ -79,6 +82,23 @@ public final class SmsCoordinator {
             return true
         }
         return ask(MessageType.smsImage, SmsPayload(partId: partId), .image(partId))
+    }
+
+    /// The contact photo of a one-person conversation, from disk or the phone.
+    /// False when there is none to show or no phone to ask.
+    @discardableResult
+    public func requestAvatar(for thread: SmsThread) -> Bool {
+        guard let photo = thread.photo, let address = thread.addresses.first, thread.addresses.count == 1 else {
+            return false
+        }
+        if let data = store.avatar(photo: photo) {
+            onEvent?(.avatar(photo: photo, data: data))
+            return true
+        }
+        if pending.values.contains(where: { if case .avatar(photo) = $0 { return true } else { return false } }) {
+            return true
+        }
+        return ask(MessageType.smsAvatar, SmsPayload(address: address, photo: photo), .avatar(photo))
     }
 
     /// Sends `text` into a conversation. The message shows at once as
@@ -187,6 +207,13 @@ public final class SmsCoordinator {
             } else {
                 onEvent?(.image(partId: partId, data: nil, reason: reply.reason ?? "the phone has no such picture"))
             }
+        case .avatar(let photo):
+            if reply.ok, let data = reply.image {
+                store.storeAvatar(data, photo: photo)
+                onEvent?(.avatar(photo: photo, data: data))
+            } else {
+                onEvent?(.avatar(photo: photo, data: nil))
+            }
         case .send(let localId):
             let state = reply.ok ? (reply.payload.state ?? "sent") : "failed"
             markOutgoing(localId, status: state)
@@ -222,6 +249,8 @@ public final class SmsCoordinator {
         guard let request = pending.removeValue(forKey: id) else { return }
         if case .image(let partId) = request {
             onEvent?(.image(partId: partId, data: nil, reason: "the phone did not answer"))
+        } else if case .avatar(let photo) = request {
+            onEvent?(.avatar(photo: photo, data: nil))
         } else {
             onEvent?(.failed("the phone did not answer"))
         }

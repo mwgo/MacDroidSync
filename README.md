@@ -264,6 +264,9 @@ to reply in.
 * **A new message raises a notification** on the Mac, one per conversation; clicking it opens that
   conversation. None is shown for the conversation you are looking at, and none for what arrived while
   the Mac was away. Switched off in *Settings › General*.
+* **Contact photos** from the phone stand in for the initials, in the list, above the conversation and
+  on the notification. They are fetched once and kept with the pictures; a changed photo is fetched
+  again.
 * **Unread marks** come from the phone and go once you open the conversation on the Mac. The phone's own
   count is not changed: only the default messaging app may do that.
 

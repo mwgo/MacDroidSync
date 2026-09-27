@@ -108,6 +108,22 @@ public final class SmsStore {
 
     public func storeImage(_ data: Data, partId: String) {
         guard let url = imageURL(partId) else { return }
+        storePicture(data, at: url)
+    }
+
+    /// Contact photos, by the photo id the phone gives: a new photo is a new id,
+    /// so a stored one never goes stale. They share the pictures' folder and limit.
+    public func avatar(photo: String) -> Data? {
+        guard let url = pictureURL("avatar-", photo) else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    public func storeAvatar(_ data: Data, photo: String) {
+        guard let url = pictureURL("avatar-", photo) else { return }
+        storePicture(data, at: url)
+    }
+
+    private func storePicture(_ data: Data, at url: URL) {
         ensure(imageDirectory)
         do {
             try data.write(to: url, options: .atomic)
@@ -146,10 +162,14 @@ public final class SmsStore {
         directory.appendingPathComponent("thread-\(threadId).json")
     }
 
-    /// Part ids come from the phone, so only digits make it into a file name.
     private func imageURL(_ partId: String) -> URL? {
-        guard !partId.isEmpty, partId.allSatisfy(\.isASCII), partId.allSatisfy(\.isNumber) else { return nil }
-        return imageDirectory.appendingPathComponent("\(partId).jpg")
+        pictureURL("", partId)
+    }
+
+    /// Ids come from the phone, so only digits make it into a file name.
+    private func pictureURL(_ prefix: String, _ id: String) -> URL? {
+        guard !id.isEmpty, id.allSatisfy(\.isASCII), id.allSatisfy(\.isNumber) else { return nil }
+        return imageDirectory.appendingPathComponent("\(prefix)\(id).jpg")
     }
 
     private func write<T: Encodable>(_ value: T, to url: URL) {

@@ -14,6 +14,9 @@ public struct SmsThread: Codable, Equatable {
     public var unread: Int
     public var lastFromMe: Bool?
     public var count: Int?
+    /// The contact photo's id on the phone; the picture comes with `sms-avatar`.
+    /// A new id means a new photo.
+    public var photo: String?
 
     public init(
         id: Int64,
@@ -23,7 +26,8 @@ public struct SmsThread: Codable, Equatable {
         date: Int64,
         unread: Int = 0,
         lastFromMe: Bool? = nil,
-        count: Int? = nil
+        count: Int? = nil,
+        photo: String? = nil
     ) {
         self.id = id
         self.addresses = addresses
@@ -33,6 +37,7 @@ public struct SmsThread: Codable, Equatable {
         self.unread = unread
         self.lastFromMe = lastFromMe
         self.count = count
+        self.photo = photo
     }
 
     public init(from decoder: Decoder) throws {
@@ -45,6 +50,7 @@ public struct SmsThread: Codable, Equatable {
         unread = try c.decodeIfPresent(Int.self, forKey: .unread) ?? 0
         lastFromMe = try c.decodeIfPresent(Bool.self, forKey: .lastFromMe)
         count = try c.decodeIfPresent(Int.self, forKey: .count)
+        photo = try c.decodeIfPresent(String.self, forKey: .photo)
     }
 
     /// What the list and the notification call this conversation.
@@ -127,6 +133,8 @@ public struct SmsPayload: Codable, Equatable {
     public var text: String?
     public var state: String?
     public var partId: String?
+    /// On `sms-avatar`: the photo id asked about, echoed back.
+    public var photo: String?
 
     public init(
         requestId: String? = nil,
@@ -141,7 +149,8 @@ public struct SmsPayload: Codable, Equatable {
         address: String? = nil,
         text: String? = nil,
         state: String? = nil,
-        partId: String? = nil
+        partId: String? = nil,
+        photo: String? = nil
     ) {
         self.requestId = requestId
         self.threadId = threadId
@@ -156,6 +165,7 @@ public struct SmsPayload: Codable, Equatable {
         self.text = text
         self.state = state
         self.partId = partId
+        self.photo = photo
     }
 }
 

@@ -55,8 +55,8 @@ class PeerConnection(
         fun onPhotoConfig(config: PhotoConfig)
 
         /**
-         * A request about messages: sms-threads, sms-thread, sms-image or
-         * sms-send, see PROTOCOL.md section 9. Every one is answered, with
+         * A request about messages: sms-threads, sms-thread, sms-image,
+         * sms-avatar or sms-send, see PROTOCOL.md section 9. Every one is answered, with
          * [sendSms], so the Mac is never left waiting.
          */
         fun onSmsRequest(type: String, request: SmsPayload)
@@ -405,6 +405,7 @@ class PeerConnection(
             MessageType.SMS_THREADS,
             MessageType.SMS_THREAD,
             MessageType.SMS_IMAGE,
+            MessageType.SMS_AVATAR,
             MessageType.SMS_SEND -> listener.onSmsRequest(message.type, message.sms ?: SmsPayload())
             MessageType.FILE_OFFER -> handleFileOffer(message, listener)
             MessageType.FILE_CHUNK -> handleFileChunk(message, listener)

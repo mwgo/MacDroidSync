@@ -38,6 +38,10 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     private var selectedId: Int64?
     private var images: [String: NSImage] = [:]
     private var imageFailures: [String: String] = [:]
+    /// Contact photos by photo id, and the ids known to have none.
+    private var avatars: [String: NSImage] = [:]
+    private var noAvatar: Set<String> = []
+    private let headerAvatar = AvatarView(diameter: 30)
     private var imageQueue: [String] = []
     private var imagesInFlight: Set<String> = []
     private var statusReset: DispatchWorkItem?
@@ -118,6 +122,15 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
             }
             reloadRows(showing: partId)
             pumpImages()
+        case .avatar(let photo, let data):
+            if let data, let image = NSImage(data: data) {
+                avatars[photo] = image
+            } else {
+                noAvatar.insert(photo)
+            }
+            let rows = threads.indices.filter { threads[$0].photo == photo }
+            if !rows.isEmpty { threadTable.reloadData(forRowIndexes: IndexSet(rows), columnIndexes: [0]) }
+            updateConversation()
         }
     }
 
@@ -127,6 +140,8 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         imageFailures.removeAll()
         imageQueue.removeAll()
         imagesInFlight.removeAll()
+        avatars.removeAll()
+        noAvatar.removeAll()
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -248,7 +263,8 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         refreshButton.target = self
         refreshButton.action = #selector(refresh)
 
-        let header = NSStackView(views: [titles, NSView(), refreshButton])
+        let header = NSStackView(views: [headerAvatar, titles, NSView(), refreshButton])
+        header.spacing = 10
         header.orientation = .horizontal
         header.alignment = .centerY
         header.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 14)
@@ -474,6 +490,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         let thread = selectedId.flatMap { coordinator.store.thread($0) }
         let connected = hooks.isConnected()
         nameLabel.stringValue = thread?.title ?? ""
+        if let thread { headerAvatar.show(thread, photo: avatar(for: thread)) }
         if let thread {
             if thread.addresses.count > 1 {
                 detailLabel.stringValue = "\(thread.addresses.count) people"
@@ -601,6 +618,21 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
 
     // MARK: - Pictures
 
+    /// The photo when it is here; otherwise asks for it once and returns nil,
+    /// and the row is redrawn when it arrives.
+    private func avatar(for thread: SmsThread) -> NSImage? {
+        guard let photo = thread.photo else { return nil }
+        if let image = avatars[photo] { return image }
+        guard !noAvatar.contains(photo) else { return nil }
+        if let data = coordinator.store.avatar(photo: photo), let image = NSImage(data: data) {
+            avatars[photo] = image
+            return image
+        }
+        // Without a phone there is nobody to ask until the window opens again.
+        if !coordinator.requestAvatar(for: thread) { noAvatar.insert(photo) }
+        return nil
+    }
+
     private func wantImage(_ partId: String) {
         guard images[partId] == nil, imageFailures[partId] == nil,
               !imagesInFlight.contains(partId), !imageQueue.contains(partId) else { return }
@@ -647,7 +679,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if tableView === threadTable {
             let cell = ThreadCellView()
-            cell.configure(threads[row], unread: coordinator.isUnread(threads[row]))
+            cell.configure(threads[row], unread: coordinator.isUnread(threads[row]), photo: avatar(for: threads[row]))
             return cell
         }
         switch rows[row] {
@@ -728,9 +760,7 @@ enum MessageRow {
 /// One conversation in the list: avatar, name, time, two lines of the latest
 /// message and a dot when something is unread.
 final class ThreadCellView: NSTableCellView {
-    private let avatar = NSView()
-    private let initials = NSTextField(labelWithString: "")
-    private let person = NSImageView()
+    private let avatar = AvatarView(diameter: 38)
     private let name = NSTextField(labelWithString: "")
     private let time = NSTextField(labelWithString: "")
     private let snippet = NSTextField(wrappingLabelWithString: "")
@@ -738,13 +768,6 @@ final class ThreadCellView: NSTableCellView {
 
     init() {
         super.init(frame: .zero)
-        avatar.wantsLayer = true
-        avatar.layer?.cornerRadius = 19
-        initials.font = .systemFont(ofSize: 14, weight: .semibold)
-        initials.textColor = .white
-        initials.alignment = .center
-        person.image = NSImage(systemSymbolName: "person.fill", accessibilityDescription: nil)
-        person.contentTintColor = .white
         name.font = .systemFont(ofSize: 13, weight: .semibold)
         name.lineBreakMode = .byTruncatingTail
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -761,22 +784,14 @@ final class ThreadCellView: NSTableCellView {
         dot.layer?.cornerRadius = 4.5
         dot.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
 
-        for view in [avatar, initials, person, name, time, snippet, dot] {
+        for view in [avatar, name, time, snippet, dot] {
             view.translatesAutoresizingMaskIntoConstraints = false
         }
-        avatar.addSubview(initials)
-        avatar.addSubview(person)
         [avatar, name, time, snippet, dot].forEach(addSubview)
         textField = name
         NSLayoutConstraint.activate([
             avatar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             avatar.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-            avatar.widthAnchor.constraint(equalToConstant: 38),
-            avatar.heightAnchor.constraint(equalToConstant: 38),
-            initials.centerXAnchor.constraint(equalTo: avatar.centerXAnchor),
-            initials.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
-            person.centerXAnchor.constraint(equalTo: avatar.centerXAnchor),
-            person.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
             name.leadingAnchor.constraint(equalTo: avatar.trailingAnchor, constant: 10),
             name.topAnchor.constraint(equalTo: topAnchor, constant: 9),
             time.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor, constant: 6),
@@ -795,7 +810,7 @@ final class ThreadCellView: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func configure(_ thread: SmsThread, unread: Bool) {
+    func configure(_ thread: SmsThread, unread: Bool, photo: NSImage?) {
         name.stringValue = thread.title
         name.font = .systemFont(ofSize: 13, weight: unread ? .bold : .semibold)
         time.stringValue = SmsLayout.listTime(for: Date(timeIntervalSince1970: TimeInterval(thread.date) / 1000))
@@ -803,11 +818,7 @@ final class ThreadCellView: NSTableCellView {
         let text = thread.snippet ?? "Attachment"
         snippet.stringValue = thread.lastFromMe == true ? "You: \(text)" : text
         dot.isHidden = !unread
-        let letters = SmsRules.initials(of: thread)
-        initials.stringValue = letters ?? ""
-        initials.isHidden = letters == nil
-        person.isHidden = letters != nil
-        avatar.layer?.backgroundColor = SmsAvatar.color(for: thread).cgColor
+        avatar.show(thread, photo: photo)
         setAccessibilityLabel("\(thread.title), \(time.stringValue), \(snippet.stringValue)\(unread ? ", unread" : "")")
     }
 
@@ -820,6 +831,59 @@ final class ThreadCellView: NSTableCellView {
         }
     }
 
+}
+
+/// A round picture: the contact's photo when there is one, else initials on a
+/// colour, else a person on grey.
+final class AvatarView: NSView {
+    private let diameter: CGFloat
+    private let initials = NSTextField(labelWithString: "")
+    private let person = NSImageView()
+    private let photo = NSImageView()
+
+    init(diameter: CGFloat) {
+        self.diameter = diameter
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = diameter / 2
+        layer?.masksToBounds = true
+        initials.font = .systemFont(ofSize: diameter * 0.37, weight: .semibold)
+        initials.textColor = .white
+        initials.alignment = .center
+        person.image = NSImage(systemSymbolName: "person.fill", accessibilityDescription: nil)
+        person.symbolConfiguration = .init(pointSize: diameter * 0.42, weight: .regular)
+        person.contentTintColor = .white
+        photo.imageScaling = .scaleProportionallyUpOrDown
+        for view in [initials, person, photo] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: diameter),
+            heightAnchor.constraint(equalToConstant: diameter),
+            initials.centerXAnchor.constraint(equalTo: centerXAnchor),
+            initials.centerYAnchor.constraint(equalTo: centerYAnchor),
+            person.centerXAnchor.constraint(equalTo: centerXAnchor),
+            person.centerYAnchor.constraint(equalTo: centerYAnchor),
+            photo.leadingAnchor.constraint(equalTo: leadingAnchor),
+            photo.trailingAnchor.constraint(equalTo: trailingAnchor),
+            photo.topAnchor.constraint(equalTo: topAnchor),
+            photo.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func show(_ thread: SmsThread, photo image: NSImage?) {
+        let letters = SmsRules.initials(of: thread)
+        photo.image = image
+        photo.isHidden = image == nil
+        initials.stringValue = letters ?? ""
+        initials.isHidden = image != nil || letters == nil
+        person.isHidden = image != nil || letters != nil
+        layer?.backgroundColor = SmsAvatar.color(for: thread).cgColor
+    }
 }
 
 /// The round picture of a conversation, shared by the list and the notification.
@@ -835,12 +899,17 @@ enum SmsAvatar {
     /// The avatar with a small message bubble in its corner, as a PNG, for a
     /// notification to carry. macOS draws the app's own icon on the left of a
     /// banner whatever the app does; this is the picture on its right.
-    static func notificationPNG(for thread: SmsThread, size: CGFloat = 128) -> Data? {
+    static func notificationPNG(for thread: SmsThread, photo: NSImage? = nil, size: CGFloat = 128) -> Data? {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let circle = rect.insetBy(dx: size * 0.04, dy: size * 0.04)
             color(for: thread).setFill()
             NSBezierPath(ovalIn: circle).fill()
-            if let letters = SmsRules.initials(of: thread) {
+            if let photo {
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(ovalIn: circle).addClip()
+                photo.draw(in: circle, from: .zero, operation: .sourceOver, fraction: 1)
+                NSGraphicsContext.restoreGraphicsState()
+            } else if let letters = SmsRules.initials(of: thread) {
                 let font = NSFont.systemFont(ofSize: size * (letters.count > 1 ? 0.36 : 0.44), weight: .semibold)
                 let text = NSAttributedString(string: letters, attributes: [.font: font, .foregroundColor: NSColor.white])
                 let bounds = text.size()

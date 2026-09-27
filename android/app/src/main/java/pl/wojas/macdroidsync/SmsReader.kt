@@ -23,10 +23,10 @@ class SmsReader(private val context: Context) {
     private val resolver: ContentResolver = context.contentResolver
 
     /**
-     * Names looked up this session, keyed by the address as the database spells
-     * it; an empty string records "no contact". Requests arrive on several threads.
+     * Contacts looked up this session, keyed by the address as the database
+     * spells it; [NO_CONTACT] records "none". Requests arrive on several threads.
      */
-    private val names = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val contacts = java.util.concurrent.ConcurrentHashMap<String, Contact>()
 
     /** The newest conversations first, at most [SmsRules.MAX_THREADS]. */
     fun threads(): List<SmsThread> {
@@ -38,6 +38,7 @@ class SmsReader(private val context: Context) {
         return rows.map { row ->
             row.copy(
                 name = displayName(row.addresses),
+                photo = photoOf(row.addresses),
                 unread = unread[row.id] ?: 0,
             )
         }
@@ -348,31 +349,76 @@ class SmsReader(private val context: Context) {
 
     // region Contacts
 
+    /** What the phone's contacts say about one address. */
+    private data class Contact(val name: String?, val photoId: Long?)
+
     private fun displayName(addresses: List<String>): String? {
         if (!Permissions.hasContacts(context) || addresses.isEmpty()) return null
-        val found = addresses.map { name(it) }
+        val found = addresses.map { contact(it)?.name }
         if (found.all { it == null }) return null
         return found.zip(addresses) { name, address -> name ?: address }.joinToString(", ")
     }
 
-    /** The name the phone's contacts give [address], or null. */
-    fun name(address: String): String? {
+    /**
+     * The id of the contact's photo, for a conversation with one person. It
+     * changes when the photo does, which is how the Mac knows to ask again.
+     */
+    private fun photoOf(addresses: List<String>): String? =
+        addresses.singleOrNull()?.let { contact(it)?.photoId }?.toString()
+
+    private fun contact(address: String): Contact? {
         if (!Permissions.hasContacts(context)) return null
-        return names.getOrPut(address) {
+        return contacts.getOrPut(address) {
             runCatching {
                 resolver.query(
                     Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(address)),
-                    arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME),
+                    arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME, ContactsContract.PhoneLookup.PHOTO_ID),
                     null,
                     null,
                     null,
-                )?.use { cursor -> if (cursor.moveToFirst()) cursor.getStringOrNull(0) else null }
-            }.getOrNull().orEmpty()
-        }.ifEmpty { null }
+                )?.use { cursor ->
+                    if (!cursor.moveToFirst()) return@use null
+                    val photo = if (cursor.isNull(1)) null else cursor.getLong(1).takeIf { it > 0 }
+                    Contact(cursor.getStringOrNull(0), photo)
+                }
+            }.getOrNull() ?: NO_CONTACT
+        }.takeIf { it !== NO_CONTACT }
+    }
+
+    /**
+     * The contact photo of [address] as a JPEG, no side longer than [maxPixel],
+     * or null when the contact has none.
+     */
+    fun avatar(address: String, maxPixel: Int = SmsRules.AVATAR_PIXEL): ByteArray? {
+        if (!Permissions.hasContacts(context)) return null
+        return try {
+            val contactUri = resolver.query(
+                Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(address)),
+                arrayOf(ContactsContract.PhoneLookup._ID, ContactsContract.PhoneLookup.LOOKUP_KEY),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) ContactsContract.Contacts.getLookupUri(cursor.getLong(0), cursor.getString(1)) else null
+            } ?: return null
+            val bitmap = ContactsContract.Contacts.openContactPhotoInputStream(resolver, contactUri, true)
+                ?.use { BitmapFactory.decodeStream(it) }
+                ?: return null
+            val side = minOf(bitmap.width, bitmap.height)
+            val square = Bitmap.createBitmap(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side)
+            val scaled = if (side > maxPixel) Bitmap.createScaledBitmap(square, maxPixel, maxPixel, true) else square
+            val out = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 85, out)
+            listOf(scaled, square, bitmap).distinct().forEach { it.recycle() }
+            out.toByteArray()
+        } catch (error: Exception) {
+            Log.w(TAG, "The contact photo could not be drawn", error)
+            null
+        }
     }
 
     /** A contact edited on the phone shows up the next time the Mac asks. */
-    fun forgetNames() = names.clear()
+    fun forgetNames() = contacts.clear()
 
     // endregion
 
@@ -381,5 +427,6 @@ class SmsReader(private val context: Context) {
 
     private companion object {
         private const val TAG = Prefs.TAG
+        private val NO_CONTACT = Contact(null, null)
     }
 }
