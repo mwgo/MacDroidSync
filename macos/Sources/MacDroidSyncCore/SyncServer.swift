@@ -411,11 +411,11 @@ public final class SyncServer {
 
     /// Sends one request about messages. False when there is no phone to ask.
     @discardableResult
-    public func requestSms(type: String, payload: SmsPayload) -> Bool {
+    public func requestSms(type: String, payload: SmsPayload, image: Data? = nil) -> Bool {
         queue.sync {
             guard let session, session.isAuthenticated else { return false }
             do {
-                try session.sendSmsRequest(type: type, payload: payload)
+                try session.sendSmsRequest(type: type, payload: payload, image: image)
                 return true
             } catch {
                 Log.error("Could not send \(type) to the phone: \(error.localizedDescription)")

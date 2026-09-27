@@ -60,6 +60,17 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MacDroidSync">
 
+        <!-- Hands the MMS being sent to the system's messaging service, see SmsSender. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.mms"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/mms_paths" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

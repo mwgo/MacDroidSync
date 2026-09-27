@@ -169,6 +169,19 @@ public struct SmsPayload: Codable, Equatable {
     }
 }
 
+/// A picture on its way out, already a JPEG small enough to travel.
+public struct SmsOutgoingImage {
+    public var jpeg: Data
+    public var width: Int
+    public var height: Int
+
+    public init(jpeg: Data, width: Int, height: Int) {
+        self.jpeg = jpeg
+        self.width = width
+        self.height = height
+    }
+}
+
 /// One message about messages from the phone, as the session hands it on.
 public struct SmsReply {
     public var type: String

@@ -446,9 +446,16 @@ public final class PeerSession {
 
     /// One request about messages: `sms-threads`, `sms-thread`, `sms-image` or
     /// `sms-send`. The answer comes back through `onSms`.
-    public func sendSmsRequest(type: String, payload: SmsPayload) throws {
+    /// `image` is the JPEG of an MMS being sent, carried in `data`.
+    public func sendSmsRequest(type: String, payload: SmsPayload, image: Data? = nil) throws {
         guard isAuthenticated else { return }
-        try send(Message(seq: codec.nextSequence(), type: type, sms: payload))
+        try send(Message(
+            seq: codec.nextSequence(),
+            type: type,
+            mime: image == nil ? nil : "image/jpeg",
+            data: image?.base64EncodedString(),
+            sms: payload
+        ))
     }
 
     // MARK: - Outgoing files

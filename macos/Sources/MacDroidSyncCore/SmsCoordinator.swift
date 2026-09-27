@@ -26,7 +26,7 @@ public final class SmsCoordinator {
     }
 
     public let store: SmsStore
-    private let transport: (String, SmsPayload) -> Bool
+    private let transport: (String, SmsPayload, Data?) -> Bool
     private let timeout: TimeInterval
 
     public var onEvent: ((Event) -> Void)?
@@ -45,8 +45,10 @@ public final class SmsCoordinator {
     /// Messages typed here and not yet seen in a page from the phone, per
     /// conversation. Kept in memory only: the phone's own record replaces them.
     private var outgoing: [Int64: [SmsMessage]] = [:]
+    /// Pictures of those messages, by their local part id.
+    private var outgoingImages: [String: Data] = [:]
 
-    public init(store: SmsStore, timeout: TimeInterval = 10, transport: @escaping (String, SmsPayload) -> Bool) {
+    public init(store: SmsStore, timeout: TimeInterval = 10, transport: @escaping (String, SmsPayload, Data?) -> Bool) {
         self.store = store
         self.timeout = timeout
         self.transport = transport
@@ -75,9 +77,14 @@ public final class SmsCoordinator {
         )
     }
 
+    /// A picture already on this Mac: one being sent, or one stored.
+    public func imageAtHand(partId: String) -> Data? {
+        outgoingImages[partId] ?? store.image(partId: partId)
+    }
+
     @discardableResult
     public func requestImage(partId: String) -> Bool {
-        if let data = store.image(partId: partId) {
+        if let data = outgoingImages[partId] ?? store.image(partId: partId) {
             onEvent?(.image(partId: partId, data: data, reason: nil))
             return true
         }
@@ -101,20 +108,29 @@ public final class SmsCoordinator {
         return ask(MessageType.smsAvatar, SmsPayload(address: address, photo: photo), .avatar(photo))
     }
 
-    /// Sends `text` into a conversation. The message shows at once as
-    /// "Sending…"; false when there is no phone to send it.
+    /// Sends `text` into a conversation, as an MMS when `image` (a JPEG) is
+    /// given. The message shows at once as "Sending…"; false when there is no
+    /// phone to send it.
     @discardableResult
-    public func send(_ text: String, to thread: SmsThread, now: Date = Date()) -> Bool {
+    public func send(_ text: String, image: SmsOutgoingImage? = nil, to thread: SmsThread, now: Date = Date()) -> Bool {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty, thread.canReply, let address = thread.addresses.first else { return false }
+        guard !body.isEmpty || image != nil, thread.canReply, let address = thread.addresses.first else { return false }
         let localId = "local-\(UUID().uuidString)"
-        let payload = SmsPayload(threadId: thread.id, address: address, text: body)
-        guard ask(MessageType.smsSend, payload, .send(localId: localId), expires: false) else { return false }
+        let payload = SmsPayload(threadId: thread.id, address: address, text: body.isEmpty ? nil : body)
+        guard ask(MessageType.smsSend, payload, .send(localId: localId), expires: false, image: image?.jpeg) else { return false }
+        var parts: [SmsImage]?
+        if let image {
+            let partId = "\(localId)-image"
+            outgoingImages[partId] = image.jpeg
+            parts = [SmsImage(partId: partId, mime: "image/jpeg", width: image.width, height: image.height)]
+        }
         let message = SmsMessage(
             id: localId,
             date: Int64(now.timeIntervalSince1970 * 1000),
             fromMe: true,
-            text: body,
+            text: body.isEmpty ? nil : body,
+            mms: image == nil ? nil : true,
+            images: parts,
             status: "pending"
         )
         outgoing[thread.id, default: []].append(message)
@@ -228,12 +244,12 @@ public final class SmsCoordinator {
 
     // MARK: - Bookkeeping
 
-    private func ask(_ type: String, _ payload: SmsPayload, _ request: Request, expires: Bool = true) -> Bool {
+    private func ask(_ type: String, _ payload: SmsPayload, _ request: Request, expires: Bool = true, image: Data? = nil) -> Bool {
         let id = UUID().uuidString
         var payload = payload
         payload.requestId = id
         pending[id] = request
-        guard transport(type, payload) else {
+        guard transport(type, payload, image) else {
             pending[id] = nil
             return false
         }
@@ -266,15 +282,19 @@ public final class SmsCoordinator {
     }
 
     /// A message typed here is dropped once the phone's page holds it: same text,
-    /// sent by this side, no earlier than a minute before it was typed.
+    /// the same kind (a picture makes it an MMS), sent by this side, no earlier
+    /// than a minute before it was typed.
     private func settleOutgoing(_ threadId: Int64, against page: [SmsMessage]) {
         guard var list = outgoing[threadId] else { return }
         var available = page.filter(\.fromMe)
         list.removeAll { local in
             guard local.status != "failed",
-                  let index = available.firstIndex(where: { $0.text == local.text && $0.date >= local.date - 60_000 })
+                  let index = available.firstIndex(where: {
+                      $0.text == local.text && ($0.mms == true) == (local.mms == true) && $0.date >= local.date - 60_000
+                  })
             else { return false }
             available.remove(at: index)
+            local.images?.forEach { outgoingImages[$0.partId] = nil }
             return true
         }
         outgoing[threadId] = list.isEmpty ? nil : list

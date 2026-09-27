@@ -59,7 +59,7 @@ class PeerConnection(
          * sms-avatar or sms-send, see PROTOCOL.md section 9. Every one is answered, with
          * [sendSms], so the Mac is never left waiting.
          */
-        fun onSmsRequest(type: String, request: SmsPayload)
+        fun onSmsRequest(type: String, request: SmsPayload, image: ByteArray?)
     }
 
     /** Where files coming from the Mac are written; without it they are refused. */
@@ -406,7 +406,11 @@ class PeerConnection(
             MessageType.SMS_THREAD,
             MessageType.SMS_IMAGE,
             MessageType.SMS_AVATAR,
-            MessageType.SMS_SEND -> listener.onSmsRequest(message.type, message.sms ?: SmsPayload())
+            MessageType.SMS_SEND -> listener.onSmsRequest(
+                message.type,
+                message.sms ?: SmsPayload(),
+                message.data?.let { runCatching { Base64.decode(it, Base64.DEFAULT) }.getOrNull() },
+            )
             MessageType.FILE_OFFER -> handleFileOffer(message, listener)
             MessageType.FILE_CHUNK -> handleFileChunk(message, listener)
             MessageType.FILE_END -> handleFileEnd(message, listener)

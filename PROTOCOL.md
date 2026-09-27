@@ -539,7 +539,7 @@ without waiting.
    |<- sms-image {requestId, partId} + data -----|  a JPEG, or ok:false
    |-- sms-avatar {requestId, address, photo} -->|  one contact photo
    |<- sms-avatar {requestId, photo} + data -----|  a JPEG, or ok:false
-   |-- sms-send {requestId, address, text} ----->|
+   |-- sms-send {requestId, address, text} ----->|  + data: a JPEG makes it an MMS
    |<- sms-status {requestId, state:"sent"} -----|  then "delivered", or
    |                                             |  state:"failed", ok:false
    |<- sms-new {thread, messages} ---------------|  just arrived: a banner
@@ -602,6 +602,15 @@ Both are sent a second after the database settles, so one incoming MMS, which
 touches several tables, is reported once.
 
 ### Sending
+
+`sms-send` with a JPEG in `data` (and `mime`) is sent as an MMS, the text, if any,
+going with it; without one it is an SMS. The Mac sends pictures of at most 1600
+pixels and 1.5 MB; the phone shrinks them again to what its carrier accepts
+(`MMS_CONFIG_MAX_MESSAGE_SIZE`, 300 KB when the carrier does not say), since only
+the phone knows that limit. It builds the M-Send.req itself - multipart/related
+with a SMIL part, the picture and the text - and hands it to
+`SmsManager.sendMultimediaMessage`. An MMS reports `sent` or `failed`, never
+`delivered`.
 
 The phone sends with the system's SMS manager and reports `sent` once every part
 left, `delivered` once every part was confirmed, and `failed` with a reason. Not

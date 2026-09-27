@@ -37,6 +37,7 @@ class SmsReader(private val context: Context) {
             ?: conversationsFromTables()
         return rows.map { row ->
             row.copy(
+                snippet = row.snippet ?: latestText(row.id),
                 name = displayName(row.addresses),
                 photo = photoOf(row.addresses),
                 unread = unread[row.id] ?: 0,
@@ -55,6 +56,14 @@ class SmsReader(private val context: Context) {
             .getOrDefault(emptyList())
         return SmsRules.page(sms, mms, limit)
     }
+
+    /**
+     * The provider gives no snippet when the newest message is an MMS, so its
+     * text is read here; a picture alone stays without one.
+     */
+    private fun latestText(threadId: Long): String? = runCatching {
+        SmsRules.snippet(messages(threadId, after = null, before = null, limit = 1).first.lastOrNull()?.text)
+    }.getOrNull()
 
     /** The highest row ids of received messages, where [newSince] starts counting. */
     fun inboxMarks(): Pair<Long, Long> =

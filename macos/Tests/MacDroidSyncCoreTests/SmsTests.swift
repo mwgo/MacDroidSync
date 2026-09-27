@@ -223,6 +223,7 @@ final class SmsCoordinatorTests: XCTestCase {
 
     private var folder: URL!
     private var sent: [(String, SmsPayload)] = []
+    private var sentImages: [Data?] = []
     private var connected = true
 
     override func setUp() {
@@ -237,7 +238,8 @@ final class SmsCoordinatorTests: XCTestCase {
 
     private func makeCoordinator() -> SmsCoordinator {
         let store = SmsStore(directory: folder.appendingPathComponent("M"), imageDirectory: folder.appendingPathComponent("I"))
-        return SmsCoordinator(store: store, timeout: 60) { [unowned self] type, payload in
+        return SmsCoordinator(store: store, timeout: 60) { [unowned self] type, payload, image in
+            self.sentImages.append(image)
             guard self.connected else { return false }
             self.sent.append((type, payload))
             return true
@@ -311,6 +313,26 @@ final class SmsCoordinatorTests: XCTestCase {
             payload: SmsPayload(requestId: reload.1.requestId, threadId: 3, messages: [recorded], more: false)
         ))
         XCTAssertEqual(coordinator.messages(in: 3), [recorded])
+    }
+
+    func testAPictureGoesOutAsAnMmsAndShowsAtOnce() {
+        let coordinator = makeCoordinator()
+        let jpeg = Data([0xFF, 0xD8, 1])
+        XCTAssertTrue(coordinator.send("", image: SmsOutgoingImage(jpeg: jpeg, width: 40, height: 30), to: thread, now: Date(timeIntervalSince1970: 1)))
+        XCTAssertEqual(sentImages.last, jpeg)
+        XCTAssertNil(sent.last?.1.text)
+        let local = coordinator.messages(in: 3)
+        XCTAssertEqual(local.first?.mms, true)
+        let partId = try! XCTUnwrap(local.first?.images?.first?.partId)
+        XCTAssertEqual(coordinator.imageAtHand(partId: partId), jpeg)
+
+        let reload = sent.last!
+        coordinator.handle(SmsReply(type: MessageType.smsStatus, payload: SmsPayload(requestId: reload.1.requestId, threadId: 3, state: "sent")))
+        let page = sent.last!
+        let recorded = SmsMessage(id: "m9", date: 1_500, fromMe: true, mms: true, images: [SmsImage(partId: "44")], status: "sent")
+        coordinator.handle(SmsReply(type: MessageType.smsThread, payload: SmsPayload(requestId: page.1.requestId, threadId: 3, messages: [recorded], more: false)))
+        XCTAssertEqual(coordinator.messages(in: 3), [recorded])
+        XCTAssertNil(coordinator.imageAtHand(partId: partId), "the local copy goes with its placeholder")
     }
 
     func testAFailedSendStaysVisible() {

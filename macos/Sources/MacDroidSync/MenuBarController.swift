@@ -79,8 +79,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private var messagesWindow: MessagesWindowController?
     /// Banners waiting a moment for the sender's photo, by photo id.
     private var bannersAwaitingPhoto: [String: (SmsThread, [SmsMessage])] = [:]
-    private lazy var sms = SmsCoordinator(store: SmsStore()) { [weak self] type, payload in
-        self?.server.requestSms(type: type, payload: payload) ?? false
+    private lazy var sms = SmsCoordinator(store: SmsStore()) { [weak self] type, payload, image in
+        self?.server.requestSms(type: type, payload: payload, image: image) ?? false
     }
     /// Keys the operator has already been told about, so a list that stands for
     /// a week does not raise a banner on every cycle.

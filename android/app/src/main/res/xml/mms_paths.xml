@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The outgoing MMS PDU, read by the phone's messaging service while it sends. -->
+<paths>
+    <cache-path name="mms" path="mms/" />
+</paths>

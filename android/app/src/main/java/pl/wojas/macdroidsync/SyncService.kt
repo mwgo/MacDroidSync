@@ -347,8 +347,8 @@ class SyncService : Service() {
             }
         }
 
-        override fun onSmsRequest(type: String, request: SmsPayload) {
-            scope.launch { answerSms(type, request) }
+        override fun onSmsRequest(type: String, request: SmsPayload, image: ByteArray?) {
+            scope.launch { answerSms(type, request, image) }
         }
 
         override fun onPhotoPull(keys: List<String>?, manifestId: String?) {
@@ -392,7 +392,7 @@ class SyncService : Service() {
      * Answers one request of the Mac. Every request gets an answer, a refusal
      * included, so the Mac never waits for its timeout on a phone that is there.
      */
-    private suspend fun answerSms(type: String, request: SmsPayload) {
+    private suspend fun answerSms(type: String, request: SmsPayload, image: ByteArray? = null) {
         val peer = connection?.takeIf { it.isAuthenticated } ?: return
         val reply = SmsPayload(requestId = request.requestId, threadId = request.threadId, partId = request.partId)
         val refusal = Permissions.smsRefusal(this)
@@ -434,7 +434,7 @@ class SyncService : Service() {
                         peer.sendSms(type, answer, image = jpeg)
                     }
                 }
-                type == MessageType.SMS_SEND -> sendSmsForMac(peer, request)
+                type == MessageType.SMS_SEND -> sendSmsForMac(peer, request, image)
             }
         } catch (error: Exception) {
             Log.w(TAG, "Could not answer $type", error)
@@ -444,27 +444,34 @@ class SyncService : Service() {
         }
     }
 
-    private fun sendSmsForMac(peer: PeerConnection, request: SmsPayload) {
+    /** A picture makes it an MMS; words alone go as an SMS. */
+    private fun sendSmsForMac(peer: PeerConnection, request: SmsPayload, image: ByteArray?) {
         val status = SmsPayload(requestId = request.requestId, threadId = request.threadId)
         val address = request.address?.trim().orEmpty()
         val text = request.text.orEmpty()
         val refusal = when {
             !Permissions.hasSmsSend(this) -> "MacDroidSync has no permission to send messages on the phone"
             address.isEmpty() || !SmsRules.canReply(address) -> "this conversation cannot take a reply"
-            text.isBlank() -> "the message is empty"
+            text.isBlank() && image == null -> "the message is empty"
             else -> null
         }
         if (refusal != null) {
             peer.sendSms(MessageType.SMS_STATUS, status.copy(state = "failed"), ok = false, reason = refusal)
             return
         }
-        smsSender.send(address, text) { state, reason ->
+        val report: (String, String?) -> Unit = { state, reason ->
             scope.launch {
                 val current = connection?.takeIf { it.isAuthenticated } ?: return@launch
                 runCatching {
                     current.sendSms(MessageType.SMS_STATUS, status.copy(state = state), ok = state != "failed", reason = reason)
                 }
             }
+        }
+        if (image != null) {
+            // Decoding and shrinking a photo is not work for the socket's thread.
+            scope.launch { smsSender.sendMms(address, text.ifBlank { null }, image, report) }
+        } else {
+            smsSender.send(address, text, report)
         }
     }
 

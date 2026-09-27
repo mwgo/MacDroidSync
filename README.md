@@ -258,6 +258,9 @@ to reply in.
   for the list and the conversation on screen, and replaces what it stored with what the phone says - a
   message deleted on the phone disappears on the Mac too. Older messages come a hundred at a time with
   *Load earlier messages*. Pictures are fetched when they are on screen.
+* **Pictures and emoji.** The paperclip, or a picture dropped on the conversation, sends a picture as an
+  MMS, with the text if there is any; the phone shrinks it to what the carrier takes. The smiley opens
+  the Emoji & Symbols palette.
 * **Replies go out from the phone** as ordinary SMS. The message shows as *Sending…* straight away, then
   *Sent* or *Delivered*, or *Not sent* in red with the phone's reason. Sender names such as `BANK` and
   group conversations take no reply.

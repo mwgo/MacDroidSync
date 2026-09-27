@@ -31,7 +31,14 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     private let emptyTitle = NSTextField(labelWithString: "")
     private let emptyBody = NSTextField(wrappingLabelWithString: "")
     private let emptyButton = NSButton(title: "Try Again", target: nil, action: nil)
-    private let conversationView = NSView()
+    private let conversationView = ImageDropView()
+    private let emojiButton = NSButton()
+    private let attachButton = NSButton()
+    private let attachmentRow = NSStackView()
+    private let attachmentPreview = NSImageView()
+    private let attachmentLabel = NSTextField(labelWithString: "")
+    /// The picture that goes with the next Send, already made small enough.
+    private var attachment: SmsOutgoingImage?
 
     private var threads: [SmsThread] = []
     private var rows: [MessageRow] = []
@@ -299,7 +306,43 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         sendButton.keyEquivalent = ""
         sendButton.target = self
         sendButton.action = #selector(send)
-        let composerRow = NSStackView(views: [composer, sendButton])
+        emojiButton.image = NSImage(systemSymbolName: "face.smiling", accessibilityDescription: "Emoji")
+        emojiButton.isBordered = false
+        emojiButton.toolTip = "Emoji & Symbols"
+        emojiButton.target = self
+        emojiButton.action = #selector(showEmoji)
+        attachButton.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: "Attach a picture")
+        attachButton.isBordered = false
+        attachButton.toolTip = "Attach a picture"
+        attachButton.target = self
+        attachButton.action = #selector(chooseAttachment)
+
+        attachmentPreview.imageScaling = .scaleProportionallyUpOrDown
+        attachmentPreview.wantsLayer = true
+        attachmentPreview.layer?.cornerRadius = 6
+        attachmentPreview.layer?.masksToBounds = true
+        attachmentPreview.translatesAutoresizingMaskIntoConstraints = false
+        attachmentLabel.font = .systemFont(ofSize: 11)
+        attachmentLabel.textColor = .secondaryLabelColor
+        let removeAttachment = NSButton(
+            image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Remove the picture") ?? NSImage(),
+            target: self,
+            action: #selector(clearAttachment)
+        )
+        removeAttachment.isBordered = false
+        removeAttachment.contentTintColor = .secondaryLabelColor
+        [attachmentPreview, attachmentLabel, removeAttachment].forEach(attachmentRow.addArrangedSubview)
+        attachmentRow.orientation = .horizontal
+        attachmentRow.spacing = 8
+        attachmentRow.isHidden = true
+        NSLayoutConstraint.activate([
+            attachmentPreview.widthAnchor.constraint(equalToConstant: 48),
+            attachmentPreview.heightAnchor.constraint(equalToConstant: 48),
+        ])
+
+        conversationView.onDrop = { [weak self] image, name in self?.attach(image, name: name) ?? false }
+
+        let composerRow = NSStackView(views: [emojiButton, attachButton, composer, sendButton])
         composerRow.orientation = .horizontal
         composerRow.spacing = 8
         composerNote.font = .systemFont(ofSize: 11)
@@ -307,7 +350,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        let bottom = NSStackView(views: [composerRow, composerNote, statusLabel])
+        let bottom = NSStackView(views: [attachmentRow, composerRow, composerNote, statusLabel])
         bottom.orientation = .vertical
         bottom.alignment = .leading
         bottom.spacing = 4
@@ -404,6 +447,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         reloadMessages(keepPosition: false)
         coordinator.load(threadId: threadId)
         composer.stringValue = ""
+        clearAttachment()
         updateConversation()
         if let index = threads.firstIndex(where: { $0.id == threadId }) {
             threadTable.reloadData(forRowIndexes: [index], columnIndexes: [0])
@@ -505,6 +549,9 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         let canWrite = thread?.canReply == true && connected
         composer.isEnabled = canWrite
         sendButton.isEnabled = canWrite
+        emojiButton.isEnabled = canWrite
+        attachButton.isEnabled = canWrite
+        conversationView.acceptsDrops = canWrite
         if thread == nil {
             composerNote.stringValue = ""
         } else if !connected {
@@ -585,13 +632,52 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     @objc private func send() {
         guard let selectedId, let thread = coordinator.store.thread(selectedId) else { return }
         let text = composer.stringValue
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if coordinator.send(text, to: thread) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachment != nil else { return }
+        if coordinator.send(text, image: attachment, to: thread) {
             composer.stringValue = ""
+            clearAttachment()
             scrollToBottomNext = true
         } else {
             showStatus("Not sent: the phone is not connected.")
         }
+    }
+
+    @objc private func showEmoji() {
+        window?.makeFirstResponder(composer)
+        NSApp.orderFrontCharacterPalette(nil)
+    }
+
+    @objc private func chooseAttachment() {
+        guard let window else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a picture to send"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
+            self?.attach(image, name: url.lastPathComponent)
+        }
+    }
+
+    @discardableResult
+    private func attach(_ image: NSImage, name: String?) -> Bool {
+        guard let prepared = MessageImagePreparer.prepare(image) else {
+            showStatus("That picture could not be read.")
+            return false
+        }
+        attachment = prepared
+        attachmentPreview.image = image
+        let size = ByteCountFormatter.string(fromByteCount: Int64(prepared.jpeg.count), countStyle: .file)
+        attachmentLabel.stringValue = [name, "\(prepared.width)×\(prepared.height), \(size)"].compactMap { $0 }.joined(separator: " · ")
+        attachmentRow.isHidden = false
+        window?.makeFirstResponder(composer)
+        return true
+    }
+
+    @objc private func clearAttachment() {
+        attachment = nil
+        attachmentPreview.image = nil
+        attachmentRow.isHidden = true
     }
 
     @objc private func loadEarlier() {
@@ -636,7 +722,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     private func wantImage(_ partId: String) {
         guard images[partId] == nil, imageFailures[partId] == nil,
               !imagesInFlight.contains(partId), !imageQueue.contains(partId) else { return }
-        if let data = coordinator.store.image(partId: partId), let image = NSImage(data: data) {
+        if let data = coordinator.imageAtHand(partId: partId), let image = NSImage(data: data) {
             images[partId] = image
             return
         }
@@ -738,6 +824,78 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
         tableView === threadTable
+    }
+}
+
+// MARK: - Pictures going out
+
+/// Makes a picture small enough to travel to the phone. The phone shrinks it
+/// again to its carrier's limit, which only it knows.
+enum MessageImagePreparer {
+    static let maxSide: CGFloat = 1600
+    static let maxBytes = 1_500_000
+
+    static func prepare(_ image: NSImage) -> SmsOutgoingImage? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        var side = maxSide
+        while side >= 320 {
+            let scale = min(1, side / CGFloat(max(cg.width, cg.height)))
+            let width = max(1, Int(CGFloat(cg.width) * scale))
+            let height = max(1, Int(CGFloat(cg.height) * scale))
+            guard let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+            ) else { return nil }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            // JPEG has no transparency; a PNG with holes gets a white ground.
+            NSColor.white.setFill()
+            NSRect(x: 0, y: 0, width: width, height: height).fill()
+            NSGraphicsContext.current?.cgContext.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+            NSGraphicsContext.restoreGraphicsState()
+            for quality in [0.8, 0.65] {
+                if let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]),
+                   jpeg.count <= maxBytes {
+                    return SmsOutgoingImage(jpeg: jpeg, width: width, height: height)
+                }
+            }
+            side *= 0.75
+        }
+        return nil
+    }
+}
+
+/// The conversation pane, which takes a picture dropped on it.
+final class ImageDropView: NSView {
+    var onDrop: ((NSImage, String?) -> Bool)?
+    var acceptsDrops = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL, .png, .tiff])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        acceptsDrops && image(from: sender) != nil ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard acceptsDrops, let (image, name) = image(from: sender) else { return false }
+        return onDrop?(image, name) ?? false
+    }
+
+    private func image(from sender: NSDraggingInfo) -> (NSImage, String?)? {
+        let board = sender.draggingPasteboard
+        if let url = (board.readObjects(forClasses: [NSURL.self], options: [.urlReadingContentsConformToTypes: ["public.image"]]) as? [URL])?.first,
+           let image = NSImage(contentsOf: url) {
+            return (image, url.lastPathComponent)
+        }
+        if let image = NSImage(pasteboard: board) { return (image, nil) }
+        return nil
     }
 }
 
