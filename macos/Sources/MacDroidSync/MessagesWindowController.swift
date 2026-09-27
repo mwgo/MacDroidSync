@@ -80,6 +80,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         coordinator.refreshThreads()
         if let selectedId { open(selectedId) }
         updateChrome()
+        window?.makeFirstResponder(threadTable)
     }
 
     /// Whether a new message in `threadId` is already in front of the user.
@@ -142,8 +143,12 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         split.addArrangedSubview(buildSidebar())
         split.addArrangedSubview(buildConversation())
         split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+        // A first launch splits the window in half; the list wants about a third.
+        let firstTime = UserDefaults.standard.object(forKey: "NSSplitView Subview Frames MessagesSplit") == nil
         split.autosaveName = "MessagesSplit"
-        DispatchQueue.main.async { if split.subviews[0].frame.width < 10 { split.setPosition(300, ofDividerAt: 0) } }
+        if firstTime {
+            DispatchQueue.main.async { split.setPosition(300, ofDividerAt: 0) }
+        }
         return split
     }
 
@@ -152,7 +157,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        420
+        380
     }
 
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool { false }
@@ -411,6 +416,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
                 fresh.append(.message(MessageBubble(message: message, grouped: grouped, meta: meta, showsSender: group && !message.fromMe && !grouped)))
             }
         }
+        if !fresh.isEmpty { fresh.append(.spacer) }
         let wasAtBottom = isScrolledToBottom
         let distanceFromBottom = messageTable.bounds.height - messageScroll.contentView.bounds.maxY
         rows = fresh
@@ -419,13 +425,24 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         messageTable.layoutSubtreeIfNeeded()
         if scrollToBottomNext || wasAtBottom || !keepPosition {
             scrollToBottomNext = false
-            messageTable.scrollRowToVisible(rows.count - 1)
+            scrollToBottom()
         } else {
             let y = max(0, messageTable.bounds.height - distanceFromBottom - messageScroll.contentView.bounds.height)
             messageScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
             messageScroll.reflectScrolledClipView(messageScroll.contentView)
         }
         updateConversation()
+    }
+
+    /// After the table has taken its new height, which it does on the next pass.
+    private func scrollToBottom() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.messageTable.layoutSubtreeIfNeeded()
+            let y = max(0, self.messageTable.bounds.height - self.messageScroll.contentView.bounds.height)
+            self.messageScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+            self.messageScroll.reflectScrolledClipView(self.messageScroll.contentView)
+        }
     }
 
     private var isScrolledToBottom: Bool {
@@ -450,7 +467,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         let wasAtBottom = isScrolledToBottom
         messageTable.noteHeightOfRows(withIndexesChanged: IndexSet(indexes))
         messageTable.reloadData(forRowIndexes: IndexSet(indexes), columnIndexes: [0])
-        if wasAtBottom { messageTable.scrollRowToVisible(rows.count - 1) }
+        if wasAtBottom { scrollToBottom() }
     }
 
     private func updateConversation() {
@@ -460,7 +477,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         if let thread {
             if thread.addresses.count > 1 {
                 detailLabel.stringValue = "\(thread.addresses.count) people"
-            } else if thread.name != nil {
+            } else if thread.name != nil, thread.canReply {
                 detailLabel.stringValue = thread.addresses.first ?? ""
             } else {
                 detailLabel.stringValue = thread.canReply ? "Not in contacts" : "Sender ID · replies not possible"
@@ -620,6 +637,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
         guard tableView === messageTable else { return 64 }
         switch rows[row] {
         case .loadEarlier: return 40
+        case .spacer: return 12
         case .day: return 34
         case .message(let bubble):
             return MessageRowView.height(for: bubble, width: messageTable.bounds.width, images: images)
@@ -633,6 +651,8 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate, NSSp
             return cell
         }
         switch rows[row] {
+        case .spacer:
+            return NSView()
         case .loadEarlier:
             let button = NSButton(title: "Load earlier messages", target: self, action: #selector(loadEarlier))
             button.bezelStyle = .rounded
@@ -700,6 +720,7 @@ struct MessageBubble {
 
 enum MessageRow {
     case loadEarlier
+    case spacer
     case day(String)
     case message(MessageBubble)
 }
@@ -778,14 +799,15 @@ final class ThreadCellView: NSTableCellView {
         name.stringValue = thread.title
         name.font = .systemFont(ofSize: 13, weight: unread ? .bold : .semibold)
         time.stringValue = SmsLayout.listTime(for: Date(timeIntervalSince1970: TimeInterval(thread.date) / 1000))
-        let text = thread.snippet ?? ""
+        // The phone has no snippet for a picture sent without words.
+        let text = thread.snippet ?? "Attachment"
         snippet.stringValue = thread.lastFromMe == true ? "You: \(text)" : text
         dot.isHidden = !unread
         let letters = SmsRules.initials(of: thread)
         initials.stringValue = letters ?? ""
         initials.isHidden = letters == nil
         person.isHidden = letters != nil
-        avatar.layer?.backgroundColor = Self.color(for: thread).cgColor
+        avatar.layer?.backgroundColor = SmsAvatar.color(for: thread).cgColor
         setAccessibilityLabel("\(thread.title), \(time.stringValue), \(snippet.stringValue)\(unread ? ", unread" : "")")
     }
 
@@ -798,12 +820,56 @@ final class ThreadCellView: NSTableCellView {
         }
     }
 
+}
+
+/// The round picture of a conversation, shared by the list and the notification.
+enum SmsAvatar {
     /// A stable colour per conversation; grey for a bare number.
-    private static func color(for thread: SmsThread) -> NSColor {
+    static func color(for thread: SmsThread) -> NSColor {
         guard thread.name != nil else { return .systemGray }
         let palette: [NSColor] = [.systemOrange, .systemTeal, .systemPurple, .systemPink, .systemBlue, .systemGreen, .systemBrown, .systemIndigo]
         let index = Int(UInt64(bitPattern: thread.id) % UInt64(palette.count))
         return palette[index].blended(withFraction: 0.25, of: .black) ?? palette[index]
+    }
+
+    /// The avatar with a small message bubble in its corner, as a PNG, for a
+    /// notification to carry. macOS draws the app's own icon on the left of a
+    /// banner whatever the app does; this is the picture on its right.
+    static func notificationPNG(for thread: SmsThread, size: CGFloat = 128) -> Data? {
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            let circle = rect.insetBy(dx: size * 0.04, dy: size * 0.04)
+            color(for: thread).setFill()
+            NSBezierPath(ovalIn: circle).fill()
+            if let letters = SmsRules.initials(of: thread) {
+                let font = NSFont.systemFont(ofSize: size * (letters.count > 1 ? 0.36 : 0.44), weight: .semibold)
+                let text = NSAttributedString(string: letters, attributes: [.font: font, .foregroundColor: NSColor.white])
+                let bounds = text.size()
+                text.draw(at: NSPoint(x: circle.midX - bounds.width / 2, y: circle.midY - bounds.height / 2))
+            } else if let person = symbol("person.fill", pointSize: size * 0.42, color: .white) {
+                person.draw(in: centred(person.size, in: circle))
+            }
+            let badge = NSRect(x: rect.maxX - size * 0.40, y: rect.minY, width: size * 0.40, height: size * 0.40)
+            NSColor.white.setFill()
+            NSBezierPath(ovalIn: badge).fill()
+            NSColor.systemGreen.setFill()
+            NSBezierPath(ovalIn: badge.insetBy(dx: size * 0.025, dy: size * 0.025)).fill()
+            if let bubble = symbol("message.fill", pointSize: size * 0.18, color: .white) {
+                bubble.draw(in: centred(bubble.size, in: badge))
+            }
+            return true
+        }
+        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    private static func symbol(_ name: String, pointSize: CGFloat, color: NSColor) -> NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
+            .applying(.init(paletteColors: [color]))
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
+    }
+
+    private static func centred(_ size: NSSize, in rect: NSRect) -> NSRect {
+        NSRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height)
     }
 }
 

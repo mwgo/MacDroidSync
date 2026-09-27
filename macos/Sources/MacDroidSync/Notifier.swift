@@ -122,7 +122,25 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.threadIdentifier = "sms-\(thread.id)"
         content.userInfo = [Self.threadKey: NSNumber(value: thread.id)]
         content.sound = .default
+        if let avatar = avatarAttachment(for: thread) {
+            content.attachments = [avatar]
+        }
         post(content, identifier: "sms-\(thread.id)")
+    }
+
+    /// The notification center moves the file into its own store, so a fresh
+    /// temporary copy is written for every banner.
+    private func avatarAttachment(for thread: SmsThread) -> UNNotificationAttachment? {
+        guard let png = SmsAvatar.notificationPNG(for: thread) else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sms-avatar-\(UUID().uuidString).png")
+        do {
+            try png.write(to: url)
+            return try UNNotificationAttachment(identifier: "avatar", url: url)
+        } catch {
+            Log.info("Could not attach the avatar: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     func fileFailed(name: String, reason: String) {
