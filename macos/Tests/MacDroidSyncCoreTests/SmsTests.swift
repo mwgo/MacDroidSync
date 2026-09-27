@@ -1,0 +1,345 @@
+import XCTest
+@testable import MacDroidSyncCore
+
+final class SmsPayloadTests: XCTestCase {
+
+    /// The JSON the phone writes, key for key, see SmsTest.kt.
+    func testThePhonesJsonDecodes() throws {
+        let json = """
+        {"v":1,"seq":3,"type":"sms-thread","ts":1,
+         "sms":{"requestId":"r1","threadId":7,"more":true,
+                "messages":[{"id":"m3","date":1000,"fromMe":false,"text":"hi","mms":true,
+                             "images":[{"partId":"12","mime":"image/jpeg","width":640,"height":480}],
+                             "address":"+48600100200","extra":"ignored"}],
+                "threads":[{"id":7,"addresses":["+48600100200"],"date":1000}]}}
+        """
+        let message = try Message.decode(Data(json.utf8))
+        let sms = try XCTUnwrap(message.sms)
+        XCTAssertEqual(sms.requestId, "r1")
+        XCTAssertEqual(sms.threadId, 7)
+        XCTAssertEqual(sms.messages?.first?.images?.first, SmsImage(partId: "12", mime: "image/jpeg", width: 640, height: 480))
+        XCTAssertEqual(sms.threads?.first?.unread, 0)
+        XCTAssertEqual(sms.threads?.first?.title, "+48600100200")
+    }
+
+    func testAPayloadSurvivesTheWire() throws {
+        let payload = SmsPayload(requestId: "x", threadId: 2, before: 99, limit: 100, address: "+481", text: "a", state: "sent")
+        let decoded = try Message.decode(try Message(type: MessageType.smsSend, sms: payload).encoded())
+        XCTAssertEqual(decoded.sms, payload)
+    }
+
+    func testRepliesNeedANumberAndOnePerson() {
+        XCTAssertTrue(SmsThread(id: 1, addresses: ["+48 600 100 200"], date: 0).canReply)
+        XCTAssertFalse(SmsThread(id: 1, addresses: ["BANK"], date: 0).canReply)
+        XCTAssertFalse(SmsThread(id: 1, addresses: ["+48600100200", "+48600100201"], date: 0).canReply)
+    }
+
+    func testInitials() {
+        XCTAssertEqual(SmsRules.initials(of: SmsThread(id: 1, addresses: [], name: "Anna Kowalska", date: 0)), "AK")
+        XCTAssertEqual(SmsRules.initials(of: SmsThread(id: 1, addresses: [], name: "Mama", date: 0)), "M")
+        XCTAssertNil(SmsRules.initials(of: SmsThread(id: 1, addresses: ["+48"], date: 0)))
+    }
+}
+
+final class SmsLayoutTests: XCTestCase {
+
+    private var calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Warsaw")!
+        return calendar
+    }()
+    private let locale = Locale(identifier: "en_GB")
+
+    private func at(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Int64 {
+        let date = calendar.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute))!
+        return Int64(date.timeIntervalSince1970 * 1000)
+    }
+
+    private var now: Date { Date(timeIntervalSince1970: TimeInterval(at(27, 12)) / 1000) }
+
+    func testDaysRunsAndTheLastDelivery() {
+        let messages = [
+            SmsMessage(id: "s1", date: at(26, 19, 42), fromMe: false, text: "Hej"),
+            SmsMessage(id: "s2", date: at(26, 19, 50), fromMe: true, text: "Tak", status: "delivered"),
+            SmsMessage(id: "s3", date: at(27, 10, 14), fromMe: false, text: "A"),
+            SmsMessage(id: "s4", date: at(27, 10, 15), fromMe: false, text: "B"),
+            SmsMessage(id: "s5", date: at(27, 10, 40), fromMe: true, text: "C", status: "delivered"),
+        ]
+        let rows = SmsLayout.rows(for: messages, now: now, calendar: calendar, locale: locale)
+        XCTAssertEqual(rows.count, 7)
+        XCTAssertEqual(rows[0], .day("Yesterday"))
+        guard case .message(_, let grouped2, let meta2) = rows[2] else { return XCTFail() }
+        XCTAssertFalse(grouped2)
+        XCTAssertEqual(meta2, "19:50", "an earlier delivery is not labelled")
+        XCTAssertEqual(rows[3], .day("Today"))
+        guard case .message(_, let groupedA, let metaA) = rows[4],
+              case .message(_, let groupedB, let metaB) = rows[5],
+              case .message(_, _, let metaC) = rows[6]
+        else { return XCTFail() }
+        XCTAssertFalse(groupedA)
+        XCTAssertNil(metaA, "the time goes under the last of a run")
+        XCTAssertTrue(groupedB)
+        XCTAssertEqual(metaB, "10:15")
+        XCTAssertEqual(metaC, "10:40 · Delivered")
+    }
+
+    func testAFailureIsAlwaysLabelled() {
+        let messages = [
+            SmsMessage(id: "a", date: at(27, 9), fromMe: true, text: "1", status: "failed"),
+            SmsMessage(id: "b", date: at(27, 9, 1), fromMe: true, text: "2", status: "sent"),
+        ]
+        let rows = SmsLayout.rows(for: messages, now: now, calendar: calendar, locale: locale)
+        guard case .message(_, _, let first) = rows[1], case .message(_, _, let second) = rows[2] else { return XCTFail() }
+        XCTAssertEqual(first, "09:00 · Not sent")
+        XCTAssertEqual(second, "09:01 · Sent")
+    }
+
+    func testDayLabels() {
+        let day = { (d: Int) in Date(timeIntervalSince1970: TimeInterval(self.at(d, 8)) / 1000) }
+        XCTAssertEqual(SmsLayout.dayLabel(for: day(25), now: now, calendar: calendar, locale: locale), "Friday")
+        let older = SmsLayout.dayLabel(for: day(15), now: now, calendar: calendar, locale: locale)
+        XCTAssertTrue(older.hasPrefix("15 Sep") && older.hasSuffix("2026"), older)
+    }
+}
+
+final class SmsStoreTests: XCTestCase {
+
+    private var folder: URL!
+
+    override func setUp() {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    private func makeStore(imageLimit: Int = 1_000_000) -> SmsStore {
+        SmsStore(
+            directory: folder.appendingPathComponent("Messages"),
+            imageDirectory: folder.appendingPathComponent("Images"),
+            imageLimit: imageLimit
+        )
+    }
+
+    private func message(_ id: String, _ date: Int64) -> SmsMessage {
+        SmsMessage(id: id, date: date, fromMe: false, text: id)
+    }
+
+    func testWhatIsStoredSurvivesARestart() {
+        let store = makeStore()
+        store.replaceThreads([SmsThread(id: 1, addresses: ["+481"], date: 5)])
+        store.applyPage(threadId: 1, messages: [message("s1", 1), message("s2", 2)], more: false, before: nil)
+        let again = makeStore()
+        XCTAssertEqual(again.threads.map(\.id), [1])
+        XCTAssertEqual(again.messages(in: 1).map(\.id), ["s1", "s2"])
+        XCTAssertFalse(again.hasOlder(in: 1))
+    }
+
+    func testTheFilesArePrivate() throws {
+        let store = makeStore()
+        store.replaceThreads([SmsThread(id: 1, addresses: ["+481"], date: 5)])
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: folder.appendingPathComponent("Messages/threads.json").path
+        )
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func testANewestPageReplacesItsStretch() {
+        let store = makeStore()
+        store.applyPage(threadId: 1, messages: [message("s1", 1), message("s2", 2), message("s3", 3)], more: true, before: nil)
+        // s3 was deleted on the phone, s4 arrived.
+        store.applyPage(threadId: 1, messages: [message("s2", 2), message("s4", 4)], more: true, before: nil)
+        XCTAssertEqual(store.messages(in: 1).map(\.id), ["s1", "s2", "s4"])
+    }
+
+    func testACompletePageIsTheWholeConversation() {
+        let store = makeStore()
+        store.applyPage(threadId: 1, messages: [message("s1", 1), message("s2", 2)], more: true, before: nil)
+        store.applyPage(threadId: 1, messages: [message("s2", 2)], more: false, before: nil)
+        XCTAssertEqual(store.messages(in: 1).map(\.id), ["s2"])
+    }
+
+    func testAnOlderPageGoesInFront() {
+        let store = makeStore()
+        store.applyPage(threadId: 1, messages: [message("s3", 3)], more: true, before: nil)
+        store.applyPage(threadId: 1, messages: [message("s1", 1), message("s2", 2)], more: false, before: 3)
+        XCTAssertEqual(store.messages(in: 1).map(\.id), ["s1", "s2", "s3"])
+        XCTAssertFalse(store.hasOlder(in: 1))
+    }
+
+    func testAConversationGoneFromThePhoneGoesHereToo() {
+        let store = makeStore()
+        store.replaceThreads([SmsThread(id: 1, addresses: [], date: 1), SmsThread(id: 2, addresses: [], date: 2)])
+        store.applyPage(threadId: 1, messages: [message("s1", 1)], more: false, before: nil)
+        store.replaceThreads([SmsThread(id: 2, addresses: [], date: 2)])
+        XCTAssertEqual(makeStore().messages(in: 1), [])
+    }
+
+    func testIncomingMessagesMoveTheirConversationUp() {
+        let store = makeStore()
+        store.replaceThreads([SmsThread(id: 1, addresses: [], date: 10), SmsThread(id: 2, addresses: [], date: 5)])
+        store.appendIncoming(thread: SmsThread(id: 2, addresses: [], date: 20, unread: 1), messages: [message("s9", 20)])
+        XCTAssertEqual(store.threads.map(\.id), [2, 1])
+        XCTAssertEqual(store.messages(in: 2).map(\.id), ["s9"])
+    }
+
+    func testPicturesAreKeptAndTrimmed() {
+        let store = makeStore(imageLimit: 250)
+        store.storeImage(Data(count: 200), partId: "1")
+        XCTAssertEqual(store.image(partId: "1")?.count, 200)
+        Thread.sleep(forTimeInterval: 0.05)
+        store.storeImage(Data(count: 200), partId: "2")
+        XCTAssertNil(store.image(partId: "1"), "the oldest picture goes first")
+        XCTAssertNotNil(store.image(partId: "2"))
+    }
+
+    func testAPartIdNeverLeavesTheFolder() {
+        let store = makeStore()
+        store.storeImage(Data([1]), partId: "../../evil")
+        XCTAssertNil(store.image(partId: "../../evil"))
+    }
+
+    func testRemoveAllForgetsEverything() {
+        let store = makeStore()
+        store.replaceThreads([SmsThread(id: 1, addresses: [], date: 1)])
+        store.storeImage(Data([1]), partId: "3")
+        store.removeAll()
+        XCTAssertTrue(makeStore().threads.isEmpty)
+        XCTAssertNil(makeStore().image(partId: "3"))
+    }
+}
+
+final class SmsCoordinatorTests: XCTestCase {
+
+    private var folder: URL!
+    private var sent: [(String, SmsPayload)] = []
+    private var connected = true
+
+    override func setUp() {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        sent = []
+        connected = true
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    private func makeCoordinator() -> SmsCoordinator {
+        let store = SmsStore(directory: folder.appendingPathComponent("M"), imageDirectory: folder.appendingPathComponent("I"))
+        return SmsCoordinator(store: store, timeout: 60) { [unowned self] type, payload in
+            guard self.connected else { return false }
+            self.sent.append((type, payload))
+            return true
+        }
+    }
+
+    private let thread = SmsThread(id: 3, addresses: ["+48600100200"], name: "Anna", date: 100, unread: 1)
+
+    func testAnAnswerIsMatchedToItsRequest() {
+        let coordinator = makeCoordinator()
+        coordinator.refreshThreads()
+        let id = sent.last?.1.requestId
+        coordinator.handle(SmsReply(type: MessageType.smsThreads, payload: SmsPayload(requestId: "someone else", threads: [thread])))
+        XCTAssertTrue(coordinator.store.threads.isEmpty, "an answer to no request is dropped")
+        coordinator.handle(SmsReply(type: MessageType.smsThreads, payload: SmsPayload(requestId: id, threads: [thread])))
+        XCTAssertEqual(coordinator.store.threads, [thread])
+        XCTAssertNotNil(coordinator.lastSync)
+    }
+
+    func testARefusalIsKept() {
+        let coordinator = makeCoordinator()
+        coordinator.refreshThreads()
+        coordinator.handle(SmsReply(
+            type: MessageType.smsThreads,
+            payload: SmsPayload(requestId: sent.last?.1.requestId),
+            ok: false,
+            reason: "no permission"
+        ))
+        XCTAssertEqual(coordinator.refusal, "no permission")
+    }
+
+    func testNewMessagesAreStoredAndAnnounced() {
+        let coordinator = makeCoordinator()
+        var announced: [SmsMessage] = []
+        coordinator.onIncoming = { _, messages in announced = messages }
+        let message = SmsMessage(id: "s1", date: 100, fromMe: false, text: "Hej")
+        coordinator.handle(SmsReply(type: MessageType.smsNew, payload: SmsPayload(messages: [message], thread: thread)))
+        XCTAssertEqual(announced, [message])
+        XCTAssertEqual(coordinator.store.messages(in: 3), [message])
+        XCTAssertEqual(coordinator.unreadCount, 1)
+        coordinator.markSeen(3)
+        XCTAssertEqual(coordinator.unreadCount, 0)
+    }
+
+    func testAChangeRefreshesTheList() {
+        let coordinator = makeCoordinator()
+        coordinator.handle(SmsReply(type: MessageType.smsChanged, payload: SmsPayload()))
+        XCTAssertEqual(sent.last?.0, MessageType.smsThreads)
+    }
+
+    func testASentMessageShowsAtOnceAndMakesWayForThePhonesCopy() {
+        let coordinator = makeCoordinator()
+        coordinator.store.replaceThreads([thread])
+        XCTAssertTrue(coordinator.send("  Hi  ", to: thread, now: Date(timeIntervalSince1970: 1)))
+        let request = sent.last!
+        XCTAssertEqual(request.0, MessageType.smsSend)
+        XCTAssertEqual(request.1.text, "Hi")
+        XCTAssertEqual(coordinator.messages(in: 3).map(\.status), ["pending"])
+
+        coordinator.handle(SmsReply(
+            type: MessageType.smsStatus,
+            payload: SmsPayload(requestId: request.1.requestId, threadId: 3, state: "sent")
+        ))
+        XCTAssertEqual(coordinator.messages(in: 3).map(\.status), ["sent"])
+        let reload = sent.last!
+        XCTAssertEqual(reload.0, MessageType.smsThread)
+
+        let recorded = SmsMessage(id: "s50", date: 1_200, fromMe: true, text: "Hi", status: "sent")
+        coordinator.handle(SmsReply(
+            type: MessageType.smsThread,
+            payload: SmsPayload(requestId: reload.1.requestId, threadId: 3, messages: [recorded], more: false)
+        ))
+        XCTAssertEqual(coordinator.messages(in: 3), [recorded])
+    }
+
+    func testAFailedSendStaysVisible() {
+        let coordinator = makeCoordinator()
+        coordinator.send("Hi", to: thread)
+        coordinator.handle(SmsReply(
+            type: MessageType.smsStatus,
+            payload: SmsPayload(requestId: sent.last?.1.requestId, state: "failed"),
+            ok: false,
+            reason: "no service"
+        ))
+        XCTAssertEqual(coordinator.messages(in: 3).map(\.status), ["failed"])
+    }
+
+    func testNothingIsSentWithoutAPhoneOrToASenderName() {
+        let coordinator = makeCoordinator()
+        XCTAssertFalse(coordinator.send("Hi", to: SmsThread(id: 1, addresses: ["BANK"], date: 0)))
+        connected = false
+        XCTAssertFalse(coordinator.send("Hi", to: thread))
+        XCTAssertTrue(coordinator.messages(in: 3).isEmpty)
+    }
+
+    func testADisconnectFailsWhatWasStillSending() {
+        let coordinator = makeCoordinator()
+        coordinator.send("Hi", to: thread)
+        coordinator.disconnected()
+        XCTAssertEqual(coordinator.messages(in: 3).map(\.status), ["failed"])
+    }
+
+    func testAPictureAlreadyStoredIsNotAskedFor() {
+        let coordinator = makeCoordinator()
+        coordinator.store.storeImage(Data([1, 2]), partId: "8")
+        var got: Data?
+        coordinator.onEvent = { event in
+            if case .image(_, let data, _) = event { got = data }
+        }
+        coordinator.requestImage(partId: "8")
+        XCTAssertEqual(got, Data([1, 2]))
+        XCTAssertTrue(sent.isEmpty)
+    }
+}

@@ -373,6 +373,86 @@ final class SyncServerTests: XCTestCase {
         peer.close()
     }
 
+    /// Messages: a request goes out with its id, and the answer comes back with it.
+    func testAConversationListIsAskedForAndComesBack() throws {
+        let peer = try connectedPeer()
+        let thread = SmsThread(id: 4, addresses: ["+48600100200"], name: "Anna", snippet: "Hej", date: 1_000, unread: 1)
+        peer.onMessage = { message in
+            guard message.type == MessageType.smsThreads else { return }
+            peer.send(
+                type: MessageType.smsThreads,
+                sms: SmsPayload(requestId: message.sms?.requestId, threads: [thread])
+            )
+        }
+        let answered = expectation(description: "list delivered")
+        server.onSms = { reply in
+            XCTAssertEqual(reply.type, MessageType.smsThreads)
+            XCTAssertEqual(reply.payload.requestId, "r-1")
+            XCTAssertEqual(reply.payload.threads, [thread])
+            XCTAssertTrue(reply.ok)
+            answered.fulfill()
+        }
+        XCTAssertTrue(server.requestSms(type: MessageType.smsThreads, payload: SmsPayload(requestId: "r-1")))
+        wait(for: [answered], timeout: 5)
+        peer.close()
+    }
+
+    func testAMessagePictureArrivesAsBytes() throws {
+        let peer = try connectedPeer()
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 9])
+        peer.onMessage = { message in
+            guard message.type == MessageType.smsImage else { return }
+            XCTAssertEqual(message.sms?.partId, "77")
+            peer.send(
+                type: MessageType.smsImage,
+                mime: "image/jpeg",
+                data: jpeg.base64EncodedString(),
+                sms: SmsPayload(requestId: message.sms?.requestId, partId: "77")
+            )
+        }
+        let answered = expectation(description: "picture delivered")
+        server.onSms = { reply in
+            XCTAssertEqual(reply.image, jpeg)
+            answered.fulfill()
+        }
+        XCTAssertTrue(server.requestSms(type: MessageType.smsImage, payload: SmsPayload(requestId: "r", partId: "77")))
+        wait(for: [answered], timeout: 5)
+        peer.close()
+    }
+
+    func testASendIsReportedBack() throws {
+        let peer = try connectedPeer()
+        peer.onMessage = { message in
+            guard message.type == MessageType.smsSend else { return }
+            XCTAssertEqual(message.sms?.address, "+48600100200")
+            XCTAssertEqual(message.sms?.text, "Hi")
+            peer.send(
+                type: MessageType.smsStatus,
+                ok: false,
+                reason: "the phone has no service",
+                sms: SmsPayload(requestId: message.sms?.requestId, state: "failed")
+            )
+        }
+        let answered = expectation(description: "status delivered")
+        server.onSms = { reply in
+            XCTAssertEqual(reply.type, MessageType.smsStatus)
+            XCTAssertFalse(reply.ok)
+            XCTAssertEqual(reply.payload.state, "failed")
+            XCTAssertEqual(reply.reason, "the phone has no service")
+            answered.fulfill()
+        }
+        XCTAssertTrue(server.requestSms(
+            type: MessageType.smsSend,
+            payload: SmsPayload(requestId: "s", address: "+48600100200", text: "Hi")
+        ))
+        wait(for: [answered], timeout: 5)
+        peer.close()
+    }
+
+    func testNoMessagesAreAskedForWithoutAPhone() {
+        XCTAssertFalse(server.requestSms(type: MessageType.smsThreads, payload: SmsPayload()))
+    }
+
     func testNoPreviewIsAskedForWithoutAPhone() {
         XCTAssertFalse(server.requestPhotoPreview(key: "DCIM/Camera/a.jpg"))
     }
@@ -481,7 +561,8 @@ private final class TestPeer {
         ok: Bool? = nil,
         path: String? = nil,
         reason: String? = nil,
-        photo: PhotoPayload? = nil
+        photo: PhotoPayload? = nil,
+        sms: SmsPayload? = nil
     ) {
         let message = Message(
             seq: codec.nextSequence(),
@@ -500,7 +581,8 @@ private final class TestPeer {
             data: data,
             ok: ok,
             path: path,
-            photo: photo
+            photo: photo,
+            sms: sms
         )
         guard let body = try? codec.seal(try message.encoded()) else { return }
         connection.send(content: Framing.frame(kind: .encrypted, body: body), completion: .idempotent)

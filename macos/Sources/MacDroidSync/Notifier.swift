@@ -22,6 +22,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// The banner asked for the photo sync window.
     var onOpenPhotoSync: (() -> Void)?
+    /// A message banner was clicked: open that conversation.
+    var onOpenMessages: ((Int64) -> Void)?
+
+    private static let messageCategory = "sms-received"
+    private static let showMessage = "show-message"
+    private static let threadKey = "thread"
 
     /// Outside an app bundle the notification center traps instead of failing,
     /// so it is never touched in that case (for example when run from the CLI).
@@ -45,7 +51,18 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             title: "Review…",
             options: [.foreground]
         )
+        let showMessage = UNNotificationAction(
+            identifier: Self.showMessage,
+            title: "Show",
+            options: [.foreground]
+        )
         center.setNotificationCategories([
+            UNNotificationCategory(
+                identifier: Self.messageCategory,
+                actions: [showMessage],
+                intentIdentifiers: [],
+                options: []
+            ),
             UNNotificationCategory(
                 identifier: Self.category,
                 actions: [reveal],
@@ -85,6 +102,27 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = "Now running version \(version)."
         content.sound = nil
         post(content)
+    }
+
+    /// One banner per conversation: a second message from the same person
+    /// replaces the first rather than stacking up.
+    func messageReceived(thread: SmsThread, messages: [SmsMessage]) {
+        guard let last = messages.last else { return }
+        let content = UNMutableNotificationContent()
+        content.title = thread.title
+        if let text = last.text, !text.isEmpty {
+            content.body = text
+        } else {
+            content.body = last.images?.isEmpty == false ? "Photo" : "Message"
+        }
+        if messages.count > 1 {
+            content.subtitle = "\(messages.count) new messages"
+        }
+        content.categoryIdentifier = Self.messageCategory
+        content.threadIdentifier = "sms-\(thread.id)"
+        content.userInfo = [Self.threadKey: NSNumber(value: thread.id)]
+        content.sound = .default
+        post(content, identifier: "sms-\(thread.id)")
     }
 
     func fileFailed(name: String, reason: String) {
@@ -138,6 +176,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         defer { completionHandler() }
+        if response.notification.request.content.categoryIdentifier == Self.messageCategory {
+            guard response.actionIdentifier == Self.showMessage
+                || response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+                let thread = response.notification.request.content.userInfo[Self.threadKey] as? NSNumber
+            else { return }
+            DispatchQueue.main.async { [weak self] in self?.onOpenMessages?(thread.int64Value) }
+            return
+        }
         if response.notification.request.content.categoryIdentifier == Self.decisionCategory {
             guard response.actionIdentifier == Self.reviewPhotos
                 || response.actionIdentifier == UNNotificationDefaultActionIdentifier

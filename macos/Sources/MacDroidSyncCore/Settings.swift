@@ -36,6 +36,7 @@ public final class Settings: SyncConfiguration {
         static let autoUpdateEnabled = "autoUpdateEnabled"
         static let lastUpdateCheckAt = "lastUpdateCheckAt"
         static let pendingUpdateNotice = "pendingUpdateNotice"
+        static let messageNotificationsEnabled = "messageNotificationsEnabled"
     }
 
     private let defaults = UserDefaults.standard
@@ -183,6 +184,12 @@ public final class Settings: SyncConfiguration {
     }
 
     /// Off until switched on in the settings.
+    /// A banner for each text message arriving on the phone. On unless switched off.
+    public var messageNotificationsEnabled: Bool {
+        get { defaults.object(forKey: Keys.messageNotificationsEnabled) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Keys.messageNotificationsEnabled) }
+    }
+
     public var autoUpdateEnabled: Bool {
         get { defaults.bool(forKey: Keys.autoUpdateEnabled) }
         set { defaults.set(newValue, forKey: Keys.autoUpdateEnabled) }

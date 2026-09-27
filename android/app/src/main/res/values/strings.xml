@@ -77,6 +77,10 @@
     <string name="autolock_needs_sync">Turn the clipboard sync on: the beacon only broadcasts while it is running.</string>
     <string name="autolock_needs_permission">Grant Nearby devices in Settings, otherwise the phone cannot broadcast. Tap here to open it.</string>
     <string name="section_photos">Photos</string>
+    <string name="section_messages">Messages</string>
+    <string name="permission_sms">Messages and contacts</string>
+    <string name="permission_sms_explanation">Lets the Mac show the conversations on this phone and send replies typed there. Messages are read on request and sent only when you press Send on the Mac. Contacts are optional; without them the Mac shows numbers.</string>
+    <string name="permission_sms_partial">Messages only, no contact names</string>
     <string name="photos_explanation">The Mac decides what to look for and how often to ask; this phone answers and sends what is asked for. Photos travel as they are, so the location and the rest of the EXIF survive the trip. The only thing set up here is the permission to read the camera folder, because that is the one thing a Mac cannot grant.</string>
     <string name="photos_managed_by_mac">Photo sync is set up on the Mac.</string>
     <string name="photos_needs_permission">Grant Photos and videos in Settings, otherwise the camera folder cannot be read. Tap here to open it.</string>

@@ -53,6 +53,13 @@ class PeerConnection(
          * pull of a session.
          */
         fun onPhotoConfig(config: PhotoConfig)
+
+        /**
+         * A request about messages: sms-threads, sms-thread, sms-image or
+         * sms-send, see PROTOCOL.md section 9. Every one is answered, with
+         * [sendSms], so the Mac is never left waiting.
+         */
+        fun onSmsRequest(type: String, request: SmsPayload)
     }
 
     /** Where files coming from the Mac are written; without it they are refused. */
@@ -92,7 +99,7 @@ class PeerConnection(
      * walked away", and would lock the screen of someone sitting right there.
      */
     fun sendPresence(enabled: Boolean) {
-        send(Message(type = MessageType.PRESENCE, seq = codec.nextSequence(), beacon = enabled))
+        send(Message(type = MessageType.PRESENCE, beacon = enabled))
     }
 
     /**
@@ -100,15 +107,15 @@ class PeerConnection(
      * the button works whether or not the automatic locking is switched on.
      */
     fun sendLockRequest() {
-        send(Message(type = MessageType.LOCK, seq = codec.nextSequence()))
+        send(Message(type = MessageType.LOCK))
     }
 
     fun sendClipboard(text: String) {
-        send(Message(type = MessageType.CLIPBOARD, seq = codec.nextSequence(), text = text))
+        send(Message(type = MessageType.CLIPBOARD, text = text))
     }
 
     fun requestClipboard() {
-        send(Message(type = MessageType.REQUEST_CLIPBOARD, seq = codec.nextSequence()))
+        send(Message(type = MessageType.REQUEST_CLIPBOARD))
     }
 
     /**
@@ -125,7 +132,6 @@ class PeerConnection(
         send(
             Message(
                 type = MessageType.FILE_OFFER,
-                seq = codec.nextSequence(),
                 fileId = fileId,
                 name = item.name,
                 size = size,
@@ -143,7 +149,6 @@ class PeerConnection(
                 send(
                     Message(
                         type = MessageType.FILE_CHUNK,
-                        seq = codec.nextSequence(),
                         fileId = fileId,
                         data = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP),
                     )
@@ -157,7 +162,6 @@ class PeerConnection(
         send(
             Message(
                 type = MessageType.FILE_END,
-                seq = codec.nextSequence(),
                 fileId = fileId,
                 sha256 = checksum,
             )
@@ -174,7 +178,6 @@ class PeerConnection(
         send(
             Message(
                 type = MessageType.PHOTO_PREVIEW,
-                seq = codec.nextSequence(),
                 mime = if (jpeg != null) "image/jpeg" else null,
                 data = jpeg?.let { Base64.encodeToString(it, Base64.NO_WRAP) },
                 ok = if (jpeg != null) null else false,
@@ -184,12 +187,28 @@ class PeerConnection(
         )
     }
 
+    /**
+     * Anything about messages. [type] is the request's own type for an answer,
+     * or sms-status, sms-new, sms-changed. [image] is a JPEG for sms-image.
+     */
+    fun sendSms(type: String, payload: SmsPayload, ok: Boolean = true, reason: String? = null, image: ByteArray? = null) {
+        send(
+            Message(
+                type = type,
+                ok = if (ok) null else false,
+                reason = if (ok) null else reason,
+                mime = if (image != null) "image/jpeg" else null,
+                data = image?.let { Base64.encodeToString(it, Base64.NO_WRAP) },
+                sms = payload,
+            )
+        )
+    }
+
     /** One page of the phone's picture of its camera folder. */
     fun sendPhotoManifest(payload: PhotoPayload, ok: Boolean = true, reason: String? = null) {
         send(
             Message(
                 type = MessageType.PHOTO_MANIFEST,
-                seq = codec.nextSequence(),
                 ok = if (ok) null else false,
                 reason = reason,
                 photo = payload,
@@ -223,7 +242,6 @@ class PeerConnection(
         send(
             Message(
                 type = MessageType.FILE_OFFER,
-                seq = codec.nextSequence(),
                 fileId = fileId,
                 name = name,
                 size = size,
@@ -244,7 +262,6 @@ class PeerConnection(
                 send(
                     Message(
                         type = MessageType.FILE_CHUNK,
-                        seq = codec.nextSequence(),
                         fileId = fileId,
                         data = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP),
                     )
@@ -258,7 +275,6 @@ class PeerConnection(
         send(
             Message(
                 type = MessageType.FILE_END,
-                seq = codec.nextSequence(),
                 fileId = fileId,
                 sha256 = digest.digest().joinToString("") { "%02x".format(it) },
             )
@@ -270,7 +286,7 @@ class PeerConnection(
     fun sendHeartbeatIfIdle() {
         if (!isAuthenticated) return
         if (System.currentTimeMillis() - lastSendAt < Wire.HEARTBEAT_INTERVAL_MS) return
-        send(Message(type = MessageType.HEARTBEAT, seq = codec.nextSequence()))
+        send(Message(type = MessageType.HEARTBEAT))
     }
 
     fun close() {
@@ -299,14 +315,22 @@ class PeerConnection(
         return payload[0] to payload.copyOfRange(1, payload.size)
     }
 
+    /**
+     * The sequence number is assigned here, under the same lock as the write.
+     * Several threads send at once (the read loop, the heartbeat, transfers, the
+     * answers to the Mac's requests), and a number taken earlier could reach the
+     * wire after a higher one, which the Mac rejects as a replay.
+     */
     private fun send(message: Message) {
-        val frame = Framing.frame(Wire.KIND_ENCRYPTED, codec.seal(message))
+        val seq: Long
         synchronized(sendLock) {
+            seq = codec.nextSequence()
+            val frame = Framing.frame(Wire.KIND_ENCRYPTED, codec.seal(message.copy(seq = seq)))
             output.write(frame)
             output.flush()
         }
         lastSendAt = System.currentTimeMillis()
-        Log.d(TAG, "-> ${message.type} seq=${message.seq}")
+        Log.d(TAG, "-> ${message.type} seq=$seq")
     }
 
     // endregion
@@ -325,7 +349,6 @@ class PeerConnection(
             send(
                 Message(
                     type = MessageType.HELLO,
-                    seq = codec.nextSequence(),
                     challenge = challenge,
                     device = deviceName,
                     deviceId = deviceId,
@@ -345,13 +368,13 @@ class PeerConnection(
                 listener.onAuthenticated(macName)
             }
             MessageType.CLIPBOARD -> {
-                send(Message(type = MessageType.CLIPBOARD_ACK, seq = codec.nextSequence()))
+                send(Message(type = MessageType.CLIPBOARD_ACK))
                 message.text?.takeIf { it.isNotEmpty() }?.let(listener::onClipboard)
             }
             MessageType.CLIPBOARD_ACK -> Unit
             MessageType.REQUEST_CLIPBOARD -> listener.onClipboardRequested()
             MessageType.PING -> {
-                send(Message(type = MessageType.PONG, seq = codec.nextSequence(), token = message.token))
+                send(Message(type = MessageType.PONG, token = message.token))
                 listener.onPing(macName)
             }
             MessageType.PONG -> Unit
@@ -379,6 +402,10 @@ class PeerConnection(
             MessageType.PHOTO_CONFIG -> message.photo?.let {
                 listener.onPhotoConfig(PhotoConfig.of(it))
             }
+            MessageType.SMS_THREADS,
+            MessageType.SMS_THREAD,
+            MessageType.SMS_IMAGE,
+            MessageType.SMS_SEND -> listener.onSmsRequest(message.type, message.sms ?: SmsPayload())
             MessageType.FILE_OFFER -> handleFileOffer(message, listener)
             MessageType.FILE_CHUNK -> handleFileChunk(message, listener)
             MessageType.FILE_END -> handleFileEnd(message, listener)
@@ -442,7 +469,6 @@ class PeerConnection(
             send(
                 Message(
                     type = MessageType.FILE_ACK,
-                    seq = codec.nextSequence(),
                     fileId = offer.id.ifEmpty { null },
                     name = offer.name,
                     ok = true,
@@ -461,7 +487,6 @@ class PeerConnection(
         send(
             Message(
                 type = MessageType.FILE_ACK,
-                seq = codec.nextSequence(),
                 reason = reason,
                 fileId = offer.id.ifEmpty { null },
                 name = offer.name,

@@ -65,6 +65,21 @@ object MessageType {
      * deciding about, so a picture of it has to come from here.
      */
     const val PHOTO_PREVIEW = "photo-preview"
+
+    /** Messages, see PROTOCOL.md section 9. Requests from the Mac, answered with the same type. */
+    const val SMS_THREADS = "sms-threads"
+    const val SMS_THREAD = "sms-thread"
+    const val SMS_IMAGE = "sms-image"
+    const val SMS_SEND = "sms-send"
+
+    /** Phone to Mac: how a message sent for the Mac is getting on. */
+    const val SMS_STATUS = "sms-status"
+
+    /** Phone to Mac: messages that have just arrived, for a notification. */
+    const val SMS_NEW = "sms-new"
+
+    /** Phone to Mac: something else changed, the Mac's copy is out of date. */
+    const val SMS_CHANGED = "sms-changed"
 }
 
 /** One protocol message; absent fields are left out of the JSON payload. */
@@ -100,6 +115,8 @@ data class Message(
      * edits here and three more in Protocol.swift.
      */
     val photo: PhotoPayload? = null,
+    /** Messages, see PROTOCOL.md section 9. */
+    val sms: SmsPayload? = null,
 ) {
     fun toBytes(): ByteArray {
         val json = JSONObject()
@@ -123,6 +140,7 @@ data class Message(
         path?.let { json.put("path", it) }
         beacon?.let { json.put("beacon", it) }
         photo?.let { json.put("photo", it.toJson()) }
+        sms?.let { json.put("sms", it.toJson()) }
         return json.toString().toByteArray(Charsets.UTF_8)
     }
 
@@ -150,6 +168,7 @@ data class Message(
                 path = json.optStringOrNull("path"),
                 beacon = if (json.has("beacon")) json.optBoolean("beacon") else null,
                 photo = json.optJSONObject("photo")?.let { PhotoPayload.fromJson(it) },
+                sms = json.optJSONObject("sms")?.let { SmsPayload.fromJson(it) },
             )
         }
 

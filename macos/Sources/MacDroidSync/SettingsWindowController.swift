@@ -42,6 +42,9 @@ struct SettingsHooks {
     var autoUpdateChanged: () -> Void = {}
     var checkForUpdates: () -> Void = {}
     var updateStatus: () -> String = { "" }
+
+    /// Deletes this Mac's copy of the phone's messages.
+    var clearMessages: () -> Void = {}
 }
 
 /// The settings window: everything that is configured once and then left alone.
@@ -61,6 +64,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let portField = NSTextField(string: "")
     private let launchAtLoginBox = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
     private let autoUpdateBox = NSButton(checkboxWithTitle: "Install updates automatically", target: nil, action: nil)
+    private let messageNotificationsBox = NSButton(checkboxWithTitle: "Notify about new text messages", target: nil, action: nil)
     private let updateStatusLabel = NSTextField(labelWithString: "")
     private let downloadsLabel = NSTextField(labelWithString: "")
 
@@ -269,6 +273,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         pairingField.stringValue = settings.knownPairingCode ?? "Loading…"
         launchAtLoginBox.state = settings.launchAtLoginEnabled ? .on : .off
         autoUpdateBox.state = settings.autoUpdateEnabled ? .on : .off
+        messageNotificationsBox.state = settings.messageNotificationsEnabled ? .on : .off
         updateStatusLabel.stringValue = hooks.updateStatus()
         downloadsLabel.stringValue = hooks.downloadsPath()
 
@@ -493,6 +498,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         hooks.checkForUpdates()
     }
 
+    @objc private func toggleMessageNotifications() {
+        settings.messageNotificationsEnabled = messageNotificationsBox.state == .on
+    }
+
+    @objc private func clearMessages() {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete the stored messages?"
+        alert.informativeText = "Only this Mac's copy is deleted. The messages stay on the phone and are fetched again when the Messages window opens."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.hooks.clearMessages()
+        }
+    }
+
     // MARK: - Auto lock actions
 
     @objc private func toggleAutoLock() {
@@ -595,6 +618,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         launchAtLoginBox.action = #selector(toggleLaunchAtLogin)
         autoUpdateBox.target = self
         autoUpdateBox.action = #selector(toggleAutoUpdate)
+        messageNotificationsBox.target = self
+        messageNotificationsBox.action = #selector(toggleMessageNotifications)
         updateStatusLabel.font = .systemFont(ofSize: 11)
         updateStatusLabel.textColor = .secondaryLabelColor
         updateStatusLabel.lineBreakMode = .byTruncatingTail
@@ -619,6 +644,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             [NSGridCell.emptyContentView, row([updateStatusLabel, button("Check now", #selector(checkForUpdates))])],
             [NSGridCell.emptyContentView, hint("Checked on GitHub once a day while the app runs. A new version is installed only if it carries a valid signature, then the app restarts.")],
             [label("Incoming files:"), row([downloadsLabel, button("Reveal…", #selector(revealDownloads))])],
+            [label("Messages:"), messageNotificationsBox],
+            [NSGridCell.emptyContentView, row([button("Delete Stored Messages…", #selector(clearMessages))])],
+            [NSGridCell.emptyContentView, hint("A copy of the phone's messages is kept on this Mac so the window opens at once. The phone stays the original.")],
         ])
         return configure(grid)
     }

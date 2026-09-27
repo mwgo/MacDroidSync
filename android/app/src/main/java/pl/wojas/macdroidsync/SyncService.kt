@@ -49,6 +49,18 @@ class SyncService : Service() {
     private lateinit var incomingFiles: IncomingFiles
     private lateinit var beacon: PresenceAdvertiser
     private lateinit var photos: PhotoSyncEngine
+    private lateinit var smsReader: SmsReader
+    private lateinit var smsSender: SmsSender
+    private lateinit var smsWatcher: SmsWatcher
+
+    /**
+     * The newest received SMS and MMS row ids already reported, so a change in
+     * the database turns into sms-new for exactly the messages that just arrived.
+     * Set when a session starts: what came in before is not news to the Mac.
+     */
+    @Volatile
+    private var smsMarks: Pair<Long, Long>? = null
+    private val smsLock = Mutex()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val retryTrigger = Channel<Unit>(Channel.CONFLATED)
@@ -110,6 +122,9 @@ class SyncService : Service() {
         incomingFiles = IncomingFiles(this)
         beacon = PresenceAdvertiser(this)
         photos = PhotoSyncEngine(this, prefs)
+        smsReader = SmsReader(this)
+        smsSender = SmsSender(this)
+        smsWatcher = SmsWatcher(this) { onSmsDatabaseChanged() }
         announcedBeacon = beaconWanted
         scope.launch { outbox.sweepIncomplete() }
 
@@ -160,6 +175,7 @@ class SyncService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        smsWatcher.stop()
         beacon.stop()
         ringer.stop()
         runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
@@ -247,6 +263,7 @@ class SyncService : Service() {
             // it would let this phone work to instructions from a Mac that is no
             // longer here, and possibly no longer issues them at all.
             photoConfig = null
+            stopWatchingSms()
             pendingAcks.values.forEach { it.complete(FileVerdict(ok = false, detail = null, delivered = false)) }
             pendingAcks.clear()
             // A file that was still arriving is thrown away, so Download never
@@ -265,6 +282,7 @@ class SyncService : Service() {
             connectedMac = macName
             showConnected(macName)
             drainOutbox()
+            startWatchingSms()
         }
 
         override fun onClipboard(text: String) {
@@ -329,6 +347,10 @@ class SyncService : Service() {
             }
         }
 
+        override fun onSmsRequest(type: String, request: SmsPayload) {
+            scope.launch { answerSms(type, request) }
+        }
+
         override fun onPhotoPull(keys: List<String>?, manifestId: String?) {
             val config = photoConfig?.takeIf { it.enabled }
             if (config == null) {
@@ -359,6 +381,125 @@ class SyncService : Service() {
                     reason = "this phone has no photo configuration from the Mac",
                 )
             }.onFailure { Log.w(TAG, "Could not answer the photo pull", it) }
+        }
+    }
+
+    // endregion
+
+    // region Messages
+
+    /**
+     * Answers one request of the Mac. Every request gets an answer, a refusal
+     * included, so the Mac never waits for its timeout on a phone that is there.
+     */
+    private suspend fun answerSms(type: String, request: SmsPayload) {
+        val peer = connection?.takeIf { it.isAuthenticated } ?: return
+        val reply = SmsPayload(requestId = request.requestId, threadId = request.threadId, partId = request.partId)
+        val refusal = Permissions.smsRefusal(this)
+        try {
+            when {
+                refusal != null -> peer.sendSms(type, reply, ok = false, reason = refusal)
+                type == MessageType.SMS_THREADS -> {
+                    smsReader.forgetNames()
+                    peer.sendSms(type, reply.copy(threads = smsReader.threads()))
+                }
+                type == MessageType.SMS_THREAD -> {
+                    val threadId = request.threadId
+                    if (threadId == null) {
+                        peer.sendSms(type, reply, ok = false, reason = "no conversation was named")
+                        return
+                    }
+                    val (messages, more) = smsReader.messages(
+                        threadId,
+                        request.after,
+                        request.before,
+                        SmsRules.clampLimit(request.limit),
+                    )
+                    peer.sendSms(type, reply.copy(messages = messages, more = more))
+                }
+                type == MessageType.SMS_IMAGE -> {
+                    val jpeg = request.partId?.let { smsReader.image(it) }
+                    if (jpeg == null) {
+                        peer.sendSms(type, reply, ok = false, reason = "this phone has no such picture")
+                    } else {
+                        peer.sendSms(type, reply, image = jpeg)
+                    }
+                }
+                type == MessageType.SMS_SEND -> sendSmsForMac(peer, request)
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not answer $type", error)
+            runCatching {
+                peer.sendSms(type, reply, ok = false, reason = error.message ?: "the phone could not read its messages")
+            }
+        }
+    }
+
+    private fun sendSmsForMac(peer: PeerConnection, request: SmsPayload) {
+        val status = SmsPayload(requestId = request.requestId, threadId = request.threadId)
+        val address = request.address?.trim().orEmpty()
+        val text = request.text.orEmpty()
+        val refusal = when {
+            !Permissions.hasSmsSend(this) -> "MacDroidSync has no permission to send messages on the phone"
+            address.isEmpty() || !SmsRules.canReply(address) -> "this conversation cannot take a reply"
+            text.isBlank() -> "the message is empty"
+            else -> null
+        }
+        if (refusal != null) {
+            peer.sendSms(MessageType.SMS_STATUS, status.copy(state = "failed"), ok = false, reason = refusal)
+            return
+        }
+        smsSender.send(address, text) { state, reason ->
+            scope.launch {
+                val current = connection?.takeIf { it.isAuthenticated } ?: return@launch
+                runCatching {
+                    current.sendSms(MessageType.SMS_STATUS, status.copy(state = state), ok = state != "failed", reason = reason)
+                }
+            }
+        }
+    }
+
+    private fun startWatchingSms() {
+        if (!Permissions.hasSmsRead(this)) return
+        scope.launch {
+            smsMarks = runCatching { smsReader.inboxMarks() }
+                .onFailure { Log.w(TAG, "Could not read the message database", it) }
+                .getOrNull()
+            withContext(Dispatchers.Main) { smsWatcher.start() }
+        }
+    }
+
+    private fun stopWatchingSms() {
+        scope.launch(Dispatchers.Main) { smsWatcher.stop() }
+        smsMarks = null
+    }
+
+    /** New received messages become sms-new; anything else only says "changed". */
+    private fun onSmsDatabaseChanged() {
+        scope.launch {
+            smsLock.withLock {
+                val peer = connection?.takeIf { it.isAuthenticated } ?: return@withLock
+                val marks = smsMarks ?: return@withLock
+                try {
+                    val (found, next) = smsReader.newSince(marks)
+                    smsMarks = next
+                    if (found.isEmpty()) {
+                        peer.sendSms(MessageType.SMS_CHANGED, SmsPayload())
+                        return@withLock
+                    }
+                    val threads = smsReader.threads().associateBy { it.id }
+                    for ((threadId, messages) in found) {
+                        val thread = threads[threadId] ?: SmsThread(
+                            id = threadId,
+                            addresses = listOfNotNull(messages.last().address),
+                            date = messages.last().date,
+                        )
+                        peer.sendSms(MessageType.SMS_NEW, SmsPayload(threadId = threadId, thread = thread, messages = messages))
+                    }
+                } catch (error: Exception) {
+                    Log.w(TAG, "Could not report the change in messages", error)
+                }
+            }
         }
     }
 
@@ -674,6 +815,7 @@ class SyncService : Service() {
     }
 
     private fun stopEverything() {
+        smsWatcher.stop()
         beacon.stop()
         ringer.stop()
         drainJob?.cancel()

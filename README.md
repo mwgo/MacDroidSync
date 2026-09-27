@@ -16,6 +16,9 @@ Clipboard sharing between macOS and Android over Wi-Fi, in the spirit of KDE Con
   Mac's Photos library, byte for byte - EXIF and geotag included. Edits and deletions on the phone are
   followed too, everything is set up on the Mac, and what the phone already held when you switched it on
   counts as the starting point rather than as a backlog. Off until switched on; see *Photo sync* below.
+* **Text messages on the Mac.** A *Messages* window lists the phone's conversations, shows them with
+  MMS pictures, and sends replies through the phone. A new message raises a notification on the Mac.
+  See *Messages* below.
 * **The status bar icon on Android only exists while a Mac is connected.** No connection, no icon.
 * **Ping** the phone straight from the Mac menu and get the round trip time.
 
@@ -89,6 +92,7 @@ lives in *Settings…* instead:
 | `Pause auto lock for an hour` | gets the automatic locking out of the way for a while; greyed out on a safe network, where nothing is armed to begin with |
 | `Photo sync — 12 waiting…` | opens the sync window, where every decision about an individual photo is made; greyed out while nothing waits there |
 | `Sync photos now` | asks the phone to describe its camera folder without waiting for the interval |
+| `Messages…` (⌘M) | the phone's text messages, see *Messages* below; the unread count is in the title |
 | `Settings…` (⌘,) | the settings window, see below |
 
 #### The settings window
@@ -98,7 +102,7 @@ other shortcuts there:
 
 | Tab | What is in it |
 |---|---|
-| **General** | the pairing code with *Copy* and *Regenerate…*, the listening port, *Launch at login*, *Install updates automatically* with *Check now*, and where incoming files are saved |
+| **General** | the pairing code with *Copy* and *Regenerate…*, the listening port, *Launch at login*, *Install updates automatically* with *Check now*, where incoming files are saved, *Notify about new text messages* and *Delete Stored Messages…* |
 | **Auto lock** | the *Lock when the phone leaves* switch, the three sensitivity presets with their numbers spelled out, the away threshold in dBm, the live reading next to it, and the pause |
 | **Safe networks** | the networks on which the Mac does not lock itself, with **+** adding the one it is on, and the identifier of that network under the list; see *Safe networks* below |
 | **Photos** | the switch that lets photos into the Photos library, the state of the Photos permission, what is imported and what is waiting, the window the phone is using, and the list of items that were not sent with the reason |
@@ -173,7 +177,8 @@ Then open the app once and, in *Settings* in the toolbar menu:
 1. Type the **pairing code** from the Mac's settings window (case and dashes do not matter).
 2. Leave *Mac address* empty to find the Mac over Bonjour, or type an address if discovery is blocked
    (client isolation on the access point, a VPN, or the emulator, where the host is `10.0.2.2`).
-3. Grant **notifications** and **display over other apps**.
+3. Grant **notifications** and **display over other apps**, and **messages and contacts** if the Mac
+   should show your text messages.
 4. Press *Save and reconnect*, go back, and turn on *Keep the clipboard in sync*.
 
 #### Signing
@@ -242,6 +247,34 @@ only start an activity from the background if it holds this permission. MacDroid
 `ClipboardBridgeActivity`, a fully transparent window with no animation, does the clipboard work as soon
 as it gains focus and finishes right away. Without the permission, incoming clipboard items become a
 tappable notification instead of being applied automatically.
+
+## Messages
+
+`Messages…` in the menu opens a window laid out like a messaging app: conversations on the left, with a
+search field, and the selected conversation on the right, with MMS pictures in the bubbles and a field
+to reply in.
+
+* **The phone is the source.** The window opens at once on the copy the Mac keeps, then asks the phone
+  for the list and the conversation on screen, and replaces what it stored with what the phone says - a
+  message deleted on the phone disappears on the Mac too. Older messages come a hundred at a time with
+  *Load earlier messages*. Pictures are fetched when they are on screen.
+* **Replies go out from the phone** as ordinary SMS. The message shows as *Sending…* straight away, then
+  *Sent* or *Delivered*, or *Not sent* in red with the phone's reason. Sender names such as `BANK` and
+  group conversations take no reply.
+* **A new message raises a notification** on the Mac, one per conversation; clicking it opens that
+  conversation. None is shown for the conversation you are looking at, and none for what arrived while
+  the Mac was away. Switched off in *Settings › General*.
+* **Unread marks** come from the phone and go once you open the conversation on the Mac. The phone's own
+  count is not changed: only the default messaging app may do that.
+
+On the phone, grant *Messages and contacts* in the app's settings. Contacts are optional; without them
+the Mac shows numbers. On Android 13 and newer a sideloaded app may have to be allowed first under
+*App info › ⋮ › Allow restricted settings* before Android offers the SMS permission.
+
+The Mac's copy lives in `~/Library/Application Support/MacDroidSync/Messages` (readable by your user
+only) and the pictures in `~/Library/Caches/MacDroidSync/MessageImages`, up to 200 MB. *Delete Stored
+Messages…* in *Settings › General* removes both; so does regenerating the pairing code. The protocol is
+section 9 of [PROTOCOL.md](PROTOCOL.md).
 
 ## Photo sync
 

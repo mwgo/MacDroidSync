@@ -69,11 +69,13 @@ The plaintext of every sealed frame is a JSON object. Absent fields are omitted.
 | `path` | string | where the receiver saved the file (`file-ack` with `ok`) |
 | `beacon` | bool | whether the phone broadcasts its presence beacon (`hello`, `presence`) |
 | `photo` | object | photo sync, see section 8 |
+| `sms` | object | messages, see section 9 |
 
 Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
 `request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`, `file-offer`, `file-chunk`,
 `file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`,
-`photo-config`, `photo-preview`.
+`photo-config`, `photo-preview`, `sms-threads`, `sms-thread`, `sms-image`,
+`sms-send`, `sms-status`, `sms-new`, `sms-changed`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
 that connection (replay and reordering protection).
@@ -519,3 +521,106 @@ approved that edit, so it is taken out with it rather than asked about again.
 That is not caution for its own sake: macOS shows a confirmation alert before an
 app removes anything from the Photos library, so a sync that deleted by itself
 would put that alert on screen unasked, twice an hour.
+
+## 9. Messages
+
+The Mac shows the phone's text messages and sends replies typed there. The phone
+is the only source: it reads its messaging database when asked and never keeps a
+copy of its own. The Mac keeps one (see "What the Mac keeps") so its window opens
+without waiting.
+
+```
+  Mac                                           phone
+   |-- sms-threads {requestId} ----------------->|  the conversation list
+   |<- sms-threads {requestId, threads} ---------|  or ok:false + reason
+   |-- sms-thread {requestId, threadId, limit} ->|  newest page of one
+   |<- sms-thread {requestId, messages, more} ---|
+   |-- sms-image {requestId, partId} ----------->|  one MMS picture
+   |<- sms-image {requestId, partId} + data -----|  a JPEG, or ok:false
+   |-- sms-send {requestId, address, text} ----->|
+   |<- sms-status {requestId, state:"sent"} -----|  then "delivered", or
+   |                                             |  state:"failed", ok:false
+   |<- sms-new {thread, messages} ---------------|  just arrived: a banner
+   |<- sms-changed ------------------------------|  anything else changed
+```
+
+Every request carries a `requestId` the Mac chose, and the answer carries it back;
+an answer whose id the Mac is not waiting for is dropped. Every request is
+answered, a refusal included, so a Mac only ever waits out its ten second timeout
+on a phone that is an older build and does not know the type at all.
+
+### The `sms` object
+
+| field | on | meaning |
+|-------|----|---------|
+| `requestId` | every request and its answer | correlation, chosen by the Mac |
+| `threadId` | `sms-thread`, `sms-send`, `sms-status`, `sms-new` | the phone's conversation id |
+| `before` | `sms-thread` from the Mac | milliseconds; only messages older than this. Absent means the newest page |
+| `after` | `sms-thread` from the Mac | milliseconds; only messages newer than this |
+| `limit` | `sms-thread` from the Mac | page size, 100 by default, at most 200 |
+| `threads` | `sms-threads` from the phone | newest first, at most 200 |
+| `messages` | `sms-thread`, `sms-new` from the phone | oldest first |
+| `more` | `sms-thread` from the phone | older messages exist than the page holds |
+| `thread` | `sms-new` | the conversation as it now looks |
+| `address`, `text` | `sms-send` | where to, and what |
+| `state` | `sms-status` | `sent`, `delivered` or `failed` |
+| `partId` | `sms-image` | the MMS part to draw |
+
+A thread is `{id, addresses, name?, snippet?, date, unread, lastFromMe?, count?}`.
+`name` is present only while the phone may read its contacts. A message is
+`{id, date, fromMe, text?, mms?, images?, status?, address?}`:
+
+* `id` starts with `s` for an SMS and `m` for an MMS, because the phone numbers
+  the two tables independently.
+* `images` lists the pictures of an MMS as `{partId, mime?, width?, height?}`. The
+  bytes are asked for separately with `sms-image`, when the picture is on screen;
+  the size is there so the Mac can leave the right space before they arrive.
+* `status` is `pending`, `sent`, `delivered` or `failed` on messages this side
+  sent, and absent on received ones.
+* `address` is the sender, for messages received in a group conversation.
+
+`state` and `status` are strings, not enums, by the rule in section 3: a word the
+other side does not know shows as nothing in particular, it does not break the
+session.
+
+### New messages
+
+The phone watches its messaging database for the length of an authenticated
+session. When the session starts it notes the newest received row of each table,
+so what arrived before is not news. A change after that is read against those
+marks: received rows above them go out as `sms-new`, one per conversation, and the
+marks move up. Any other change - a message sent from the phone, one deleted, a
+delivery report - goes out as `sms-changed`, and the Mac fetches the list again.
+Both are sent a second after the database settles, so one incoming MMS, which
+touches several tables, is reported once.
+
+### Sending
+
+The phone sends with the system's SMS manager and reports `sent` once every part
+left, `delivered` once every part was confirmed, and `failed` with a reason. Not
+every network sends delivery reports, so `delivered` may never come. The phone is
+not the default messaging app, so Android itself records the sent message; the
+Mac sees it in the next page of that conversation, and drops its own placeholder
+then.
+
+A conversation with a sender name rather than a number (fewer than three digits)
+or with several people is refused before anything is sent.
+
+### What the Mac keeps
+
+A copy of the list and of the pages it fetched, as JSON in
+`~/Library/Application Support/MacDroidSync/Messages` (folder 0700, files 0600),
+and the pictures it fetched in `~/Library/Caches/MacDroidSync/MessageImages`, at
+most 200 MB, oldest first out. Every page from the phone replaces what is stored
+for the stretch of time it covers, and a conversation missing from the list is
+deleted, so the copy follows deletions on the phone. The copy is deleted from
+Settings and when the pairing code is regenerated.
+
+### Limits
+
+* 200 conversations and 200 messages per answer, snippets cut to 160 characters.
+  A page of 100 messages is some tens of kilobytes, far below the frame limit.
+* Pictures are sent as JPEG, no side longer than 1280 pixels.
+* Nothing can be marked as read on the phone: only the default messaging app may
+  write there. The Mac clears its own unread mark once a conversation was opened.
+

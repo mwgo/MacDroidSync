@@ -41,6 +41,13 @@ class SettingsActivity : ScreenActivity() {
             refreshPermissionRows()
         }
 
+    private val smsPermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            refreshPermissionRows()
+            // The watcher starts with the session, so a fresh grant needs a new one.
+            if (Permissions.hasSmsRead(this)) SyncService.start(this, SyncService.ACTION_RECONNECT)
+        }
+
     private val mediaLocationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refreshPermissionRows() }
 
@@ -62,6 +69,7 @@ class SettingsActivity : ScreenActivity() {
         binding.overlayButton.setOnClickListener { requestOverlay() }
         binding.mediaButton.setOnClickListener { requestMedia() }
         binding.mediaLocationButton.setOnClickListener { requestMediaLocation() }
+        binding.smsButton.setOnClickListener { requestSms() }
     }
 
     override fun onResume() {
@@ -147,6 +155,14 @@ class SettingsActivity : ScreenActivity() {
         }
     }
 
+    private fun requestSms() {
+        if (Permissions.hasSmsRead(this) && Permissions.hasSmsSend(this) && Permissions.hasContacts(this)) {
+            openAppSettings()
+        } else {
+            smsPermission.launch(Permissions.smsPermissions)
+        }
+    }
+
     private fun openAppSettings() {
         startActivity(
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
@@ -159,6 +175,11 @@ class SettingsActivity : ScreenActivity() {
         row(Permissions.canDrawOverlays(this), binding.overlayState, binding.overlayButton)
         row(Permissions.hasMediaRead(this), binding.mediaState, binding.mediaButton)
         row(Permissions.hasMediaLocation(this), binding.mediaLocationState, binding.mediaLocationButton)
+        val smsGranted = Permissions.hasSmsRead(this) && Permissions.hasSmsSend(this)
+        row(smsGranted && Permissions.hasContacts(this), binding.smsState, binding.smsButton)
+        if (smsGranted && !Permissions.hasContacts(this)) {
+            binding.smsState.text = getString(R.string.permission_sms_partial)
+        }
         // A partial grant reads as granted to Android but is useless here, so it
         // says so instead of showing a green tick.
         if (Permissions.hasPartialMediaRead(this)) {

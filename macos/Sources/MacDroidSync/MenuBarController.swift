@@ -63,6 +63,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let snoozeMenuItem = NSMenuItem(title: "Pause auto lock for an hour", action: #selector(toggleSnooze), keyEquivalent: "")
     private let photoWindowMenuItem = NSMenuItem(title: "Photo sync…", action: #selector(showPhotoSync(_:)), keyEquivalent: "")
     private let photoSyncNowMenuItem = NSMenuItem(title: "Sync photos now", action: #selector(syncPhotosNow), keyEquivalent: "")
+    private let messagesMenuItem = NSMenuItem(title: "Messages…", action: #selector(showMessages(_:)), keyEquivalent: "m")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
     private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
 
@@ -75,6 +76,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Same rule as the settings window, and it never opens by itself: the
     /// operator asks for it from the menu or from a notification.
     private var photoSyncWindow: PhotoSyncWindowController?
+    private var messagesWindow: MessagesWindowController?
+    private lazy var sms = SmsCoordinator(store: SmsStore()) { [weak self] type, payload in
+        self?.server.requestSms(type: type, payload: payload) ?? false
+    }
     /// Keys the operator has already been told about, so a list that stands for
     /// a week does not raise a banner on every cycle.
     private var notifiedPhotoKeys: Set<String> = []
@@ -128,6 +133,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         network.start()
         notifier.requestAuthorization()
         wireUpdater()
+        wireMessages()
         updater.start()
 
         // Says in the log where the auto lock stands before anything else has
@@ -155,6 +161,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         updater.stop()
         settingsWindow?.close()
         photoSyncWindow?.close()
+        messagesWindow?.close()
         lockStateObservers.forEach(DistributedNotificationCenter.default().removeObserver)
         lockStateObservers.removeAll()
         presence.stop()
@@ -172,7 +179,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in [
             pingMenuItem, sendMenuItem, sendFilesMenuItem, downloadsMenuItem,
             autoLockMenuItem, snoozeMenuItem, settingsMenuItem, quitMenuItem,
-            photoWindowMenuItem, photoSyncNowMenuItem,
+            photoWindowMenuItem, photoSyncNowMenuItem, messagesMenuItem,
         ] {
             item.target = self
         }
@@ -199,6 +206,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // The window where every decision is made, then the manual run.
         menu.addItem(photoWindowMenuItem)
         menu.addItem(photoSyncNowMenuItem)
+        menu.addItem(.separator())
+        menu.addItem(messagesMenuItem)
         menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
         menu.addItem(.separator())
@@ -247,6 +256,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             : "Photo sync — \(decisions) waiting…"
         photoWindowMenuItem.isEnabled = decisions > 0
         photoSyncNowMenuItem.isEnabled = connected && settings.photosEnabled
+        // Always open: the stored copy is worth reading without the phone.
+        let unread = sms.unreadCount
+        messagesMenuItem.title = unread == 0 ? "Messages…" : "Messages — \(unread) unread…"
 
         downloadsMenuItem.title = "Open \(server.destinationDirectory.lastPathComponent) folder"
         // Nothing worth opening until the phone has actually delivered a file.
@@ -357,7 +369,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 // the first request. Doing it again here only put a second copy
                 // on the wire.
                 self.photoScheduler.connected()
+                self.sms.connected()
+            } else if state != .transferring {
+                self.sms.disconnected()
             }
+            self.messagesWindow?.connectionChanged()
         }
         server.onClipboardReceived = { [weak self] text in
             guard let self else { return }
@@ -989,6 +1005,36 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private static let photoNoticeInterval: TimeInterval = 6 * 3600
     private static let photoNoticeBurst = 25
 
+    // MARK: - Messages
+
+    @objc private func showMessages(_ sender: Any?) {
+        openMessages(threadId: nil)
+    }
+
+    private func openMessages(threadId: Int64?) {
+        if messagesWindow == nil {
+            messagesWindow = MessagesWindowController(
+                coordinator: sms,
+                hooks: MessagesHooks(isConnected: { [weak self] in self?.server.isConnected ?? false })
+            )
+        }
+        messagesWindow?.present(threadId: threadId)
+    }
+
+    private func wireMessages() {
+        server.onSms = { [weak self] reply in self?.sms.handle(reply) }
+        sms.onEvent = { [weak self] event in
+            self?.messagesWindow?.handle(event)
+            if case .threads = event { self?.refreshMenuTitles() }
+        }
+        sms.onIncoming = { [weak self] thread, messages in
+            guard let self, Settings.shared.messageNotificationsEnabled else { return }
+            if self.messagesWindow?.isShowing(thread.id) == true { return }
+            self.notifier.messageReceived(thread: thread, messages: messages)
+        }
+        notifier.onOpenMessages = { [weak self] threadId in self?.openMessages(threadId: threadId) }
+    }
+
     // MARK: - Settings
 
     @objc private func showSettings(_ sender: Any?) {
@@ -1023,6 +1069,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             regeneratePairingCode: { [weak self] in
                 guard let self else { return "" }
                 let code = self.settings.regeneratePairingCode()
+                // A new code usually means another phone; its messages are not this one's.
+                self.sms.store.removeAll()
+                self.messagesWindow?.close()
                 self.server.restart()
                 // The beacon UUID is derived from the code, so the scan has to
                 // be pointed at the new one.
@@ -1087,7 +1136,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             checkForUpdates: { [weak self] in
                 self?.updater.check(install: Settings.shared.autoUpdateEnabled)
             },
-            updateStatus: { [weak self] in self?.updater.status ?? "" }
+            updateStatus: { [weak self] in self?.updater.status ?? "" },
+            clearMessages: { [weak self] in
+                self?.sms.store.removeAll()
+                self?.messagesWindow?.close()
+                self?.refreshMenuTitles()
+            }
         )
     }
 

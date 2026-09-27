@@ -91,6 +91,24 @@ object Permissions {
         else -> null
     }
 
+    /** Reading the messages the Mac shows, see PROTOCOL.md section 9. */
+    fun hasSmsRead(context: Context): Boolean = granted(context, Manifest.permission.READ_SMS)
+
+    fun hasSmsSend(context: Context): Boolean = granted(context, Manifest.permission.SEND_SMS)
+
+    /** Names instead of bare numbers. Optional: without it the Mac shows numbers. */
+    fun hasContacts(context: Context): Boolean = granted(context, Manifest.permission.READ_CONTACTS)
+
+    /** The sentence the Mac shows when it cannot have the messages, or null. */
+    fun smsRefusal(context: Context): String? =
+        if (hasSmsRead(context)) null else "MacDroidSync has no permission to read messages on the phone"
+
+    val smsPermissions = arrayOf(
+        Manifest.permission.READ_SMS,
+        Manifest.permission.SEND_SMS,
+        Manifest.permission.READ_CONTACTS,
+    )
+
     private fun granted(context: Context, permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 }

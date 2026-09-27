@@ -79,6 +79,18 @@ public enum MessageType {
     /// not on the Mac yet - that is what the decision is about - so a preview has
     /// to be asked for.
     public static let photoPreview = "photo-preview"
+    /// Messages, see PROTOCOL.md section 9. Requests from the Mac, answered
+    /// with the same type and the same `sms.requestId`.
+    public static let smsThreads = "sms-threads"
+    public static let smsThread = "sms-thread"
+    public static let smsImage = "sms-image"
+    public static let smsSend = "sms-send"
+    /// Phone to Mac: how a message sent for the Mac is getting on.
+    public static let smsStatus = "sms-status"
+    /// Phone to Mac: messages that have just arrived.
+    public static let smsNew = "sms-new"
+    /// Phone to Mac: something else changed; this Mac's copy is out of date.
+    public static let smsChanged = "sms-changed"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.
@@ -110,6 +122,8 @@ public struct Message: Codable {
     /// ten flat fields it holds: this struct carries every field of every message
     /// type, and each one added here costs three edits on both platforms.
     public var photo: PhotoPayload?
+    /// Messages, see PROTOCOL.md section 9.
+    public var sms: SmsPayload?
 
     public init(
         v: Int = Wire.version,
@@ -131,7 +145,8 @@ public struct Message: Codable {
         ok: Bool? = nil,
         path: String? = nil,
         beacon: Bool? = nil,
-        photo: PhotoPayload? = nil
+        photo: PhotoPayload? = nil,
+        sms: SmsPayload? = nil
     ) {
         self.v = v
         self.seq = seq
@@ -153,6 +168,7 @@ public struct Message: Codable {
         self.path = path
         self.beacon = beacon
         self.photo = photo
+        self.sms = sms
     }
 
     public static func now() -> Int64 {

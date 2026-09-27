@@ -39,6 +39,14 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
+    <!-- The Mac's Messages window: reading conversations, sending replies typed
+         on the Mac, and contact names instead of bare numbers (optional). -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
     <!-- The app is perfectly usable on a phone without Bluetooth LE; only the
          auto lock needs it. -->
     <uses-feature

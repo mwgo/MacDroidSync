@@ -55,6 +55,8 @@ public final class PeerSession {
     /// The phone's answer to `requestPhotoPreview`: the key, the JPEG bytes, or
     /// nil bytes and the phone's reason when it has none to give.
     public var onPhotoPreview: ((String, Data?, String?) -> Void)?
+    /// Anything the phone says about messages, see PROTOCOL.md section 9.
+    public var onSms: ((SmsReply) -> Void)?
 
     /// Where incoming files are written; without a sink they are refused.
     public var fileSink: FileSink?
@@ -384,6 +386,16 @@ public final class PeerSession {
             guard let key = message.photo?.keys?.first else { return }
             let bytes = (message.ok ?? true) ? message.data.flatMap { Data(base64Encoded: $0) } : nil
             onPhotoPreview?(key, bytes, message.reason)
+        case MessageType.smsThreads, MessageType.smsThread, MessageType.smsImage,
+             MessageType.smsStatus, MessageType.smsNew, MessageType.smsChanged:
+            let ok = message.ok ?? true
+            onSms?(SmsReply(
+                type: message.type,
+                payload: message.sms ?? SmsPayload(),
+                ok: ok,
+                reason: message.reason,
+                image: ok ? message.data.flatMap { Data(base64Encoded: $0) } : nil
+            ))
         case MessageType.bye:
             Log.info("Peer said goodbye: \(message.reason ?? "no reason")")
             connection.cancel()
@@ -428,6 +440,15 @@ public final class PeerSession {
             type: MessageType.photoPreview,
             photo: PhotoPayload(manifestId: nil, keys: [key])
         ))
+    }
+
+    // MARK: - Messages
+
+    /// One request about messages: `sms-threads`, `sms-thread`, `sms-image` or
+    /// `sms-send`. The answer comes back through `onSms`.
+    public func sendSmsRequest(type: String, payload: SmsPayload) throws {
+        guard isAuthenticated else { return }
+        try send(Message(seq: codec.nextSequence(), type: type, sms: payload))
     }
 
     // MARK: - Outgoing files
