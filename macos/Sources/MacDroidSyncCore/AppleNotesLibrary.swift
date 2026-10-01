@@ -25,6 +25,8 @@ public protocol NotesLibrary: AnyObject {
     /// Replaces the body, which drops the old attachments, attaches `files`
     /// again, and moves the note into `folder` when it is elsewhere.
     func update(id: String, folder: String, html: String, files: [URL]) async throws -> MacNoteInfo
+    /// Into another folder, the note itself untouched.
+    func move(id: String, folder: String) async throws -> MacNoteInfo
     /// Into Recently Deleted, where Notes keeps it for thirty days.
     func delete(id: String) async throws
     func ensureFolder(_ name: String) async throws
@@ -110,6 +112,10 @@ public final class AppleNotesLibrary: NotesLibrary {
             ["id": id, "folder": folder, "htmlFile": try write(html), "files": files.map(\.path)],
             as: MacNoteInfo.self
         )
+    }
+
+    public func move(id: String, folder: String) async throws -> MacNoteInfo {
+        try await call("move", ["id": id, "folder": folder], as: MacNoteInfo.self)
     }
 
     public func delete(id: String) async throws {
@@ -325,6 +331,11 @@ public final class AppleNotesLibrary: NotesLibrary {
             note = Notes.notes.byId(req.id);
           }
           return JSON.stringify(info(note));
+        }
+        case 'move': {
+          const note = Notes.notes.byId(req.id);
+          if (note.container().name() !== req.folder) Notes.move(note, { to: ensureFolder(Notes, account, req.folder) });
+          return JSON.stringify(info(Notes.notes.byId(req.id)));
         }
         case 'delete':
           Notes.delete(Notes.notes.byId(req.id));

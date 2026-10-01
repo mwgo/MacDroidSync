@@ -241,6 +241,18 @@ class NotesHost(private val store: NotesStore) {
         }
     }
 
+    /**
+     * Moves a note the Mac moved, without touching its text: written again from
+     * Notes, its pictures and files would end up where Notes keeps them.
+     */
+    fun move(id: String, folder: String): NotesPayload {
+        val note = store.note(id)?.takeIf { it.deleted == null } ?: throw Refused("missing")
+        if (folder.isBlank()) throw Refused("missing")
+        if (store.folder(folder) == null) store.addFolder(folder)
+        if (note.folder != folder) store.move(id, folder)
+        return NotesPayload(id = id, hash = hashOf(store.read(id)))
+    }
+
     fun delete(id: String, baseHash: String?) {
         synchronized(store) {
             val note = store.note(id) ?: return

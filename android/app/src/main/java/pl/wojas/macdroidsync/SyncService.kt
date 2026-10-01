@@ -435,12 +435,11 @@ class SyncService : Service() {
             val answer = when (type) {
                 MessageType.NOTES_MANIFEST -> notesHost.manifest().copy(requestId = request.requestId)
                 MessageType.NOTES_GET -> reply.copy(note = notesHost.get(request.id ?: throw NotesHost.Refused("missing")))
-                MessageType.NOTES_PUT -> notesHost.put(
-                    request.id,
-                    request.folder.orEmpty(),
-                    request.markdown ?: throw NotesHost.Refused("empty"),
-                    request.baseHash,
-                ).copy(requestId = request.requestId)
+                // Without text it is a move to another folder and nothing else.
+                MessageType.NOTES_PUT -> when (val markdown = request.markdown) {
+                    null -> notesHost.move(request.id ?: throw NotesHost.Refused("missing"), request.folder.orEmpty())
+                    else -> notesHost.put(request.id, request.folder.orEmpty(), markdown, request.baseHash)
+                }.copy(requestId = request.requestId)
                 MessageType.NOTES_DELETE -> {
                     notesHost.delete(request.id ?: throw NotesHost.Refused("missing"), request.baseHash)
                     reply

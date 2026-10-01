@@ -239,7 +239,7 @@ class MarkdownEditor(
     private fun imageSpan(image: MdImage) = NoteImageSpan(image, style, ::tableWidth, loadImage)
 
     /** Draws a file's tile anew, a recording playing on; the field keeps what it drew of the text otherwise. */
-    fun redraw(span: ObjectSpan) = edit { refresh(text, span) }
+    fun redraw(span: ObjectSpan) = edit(quiet = true) { refresh(text, span) }
 
     private fun fileSpan(file: MdFile) = NoteFileSpan(file, style, ::tableWidth, fileInfo)
 
@@ -254,6 +254,8 @@ class MarkdownEditor(
         if (table == null) {
             e.delete(at, if (at + 1 < e.length && e[at + 1] == '\n') at + 2 else at + 1)
         } else {
+            // A table opened and closed without a change leaves the note as it was.
+            if (table == span.table) return@edit
             span.table = table
             refresh(e, span)
         }
@@ -1170,7 +1172,14 @@ class MarkdownEditor(
 
     // endregion
 
-    private inline fun edit(block: () -> Unit) {
+    /**
+     * The editor changed the note by itself - a task ticked, a paragraph moved,
+     * a table written back - or only redrew it; the screen tells which by
+     * comparing the Markdown. Not called for a [quiet] redraw.
+     */
+    var onEdited: (() -> Unit)? = null
+
+    private inline fun edit(quiet: Boolean = false, block: () -> Unit) {
         val was = applying
         applying = true
         try {
@@ -1182,6 +1191,7 @@ class MarkdownEditor(
             lastSelection = view.selectionStart to view.selectionEnd
             updateCodeViews()
             publishState()
+            if (!quiet) onEdited?.invoke()
         }
     }
 

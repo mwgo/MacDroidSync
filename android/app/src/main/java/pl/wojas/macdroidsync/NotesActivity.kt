@@ -64,6 +64,9 @@ class NotesActivity : ScreenActivity() {
     /** Set once the note is deleted, so that leaving the screen does not write it back. */
     private var deleted = false
 
+    /** The source as it was put on screen, to tell whether it was edited there. */
+    private var sourceShown = ""
+
     /** A note in the trash, shown to be read and restored, never written. */
     private var inTrash = false
 
@@ -76,6 +79,16 @@ class NotesActivity : ScreenActivity() {
 
     /** Set while the screen puts text in itself, which is no edit of the user's. */
     private var loading = false
+
+    /**
+     * The note as this screen writes it, taken right after it was shown. A
+     * note from the Mac may be written differently from how the editor writes
+     * the same thing back - its own list marks, its own blank lines - and
+     * looking at it, folding it, opening a picture or a table must not count
+     * as a change: a change goes to the Mac, and Notes then puts the note's
+     * pictures and files at its end. Only text that differs from this is saved.
+     */
+    private var baseline = ""
 
     /** Saves a moment after typing stops, so that an edit reaches the Mac soon, not only on leaving. */
     private val autosave = Runnable { if (!isFinishing && openTable == null && !drawingOpen) saveNote() }
@@ -240,12 +253,17 @@ class NotesActivity : ScreenActivity() {
         noteId = id
         inTrash = note.deleted != null
         loading = true
-        editor.setMarkdown(savedInstanceState?.getString(STATE_MARKDOWN) ?: store.read(id))
+        editor.setMarkdown(store.read(id))
+        baseline = editor.toMarkdown()
+        // Edits carried over a rotation are still edits.
+        savedInstanceState?.getString(STATE_MARKDOWN)?.takeIf { it != baseline }?.let(editor::setMarkdown)
         loading = false
-        unsaved = savedInstanceState?.getString(STATE_MARKDOWN)?.let { it != store.read(id) } == true
+        unsaved = editor.toMarkdown() != baseline
         store.attach(id, storeEditor)
         binding.editor.doAfterTextChanged { edited() }
         binding.source.doAfterTextChanged { edited() }
+        // A task ticked while reading changes no text, only what a line is.
+        editor.onEdited = { if (!loading && !inSource && openTable == null && editor.toMarkdown() != baseline) edited() }
         if (inTrash) {
             binding.editor.showSoftInputOnFocus = false
             binding.editor.isFocusable = false
@@ -302,6 +320,14 @@ class NotesActivity : ScreenActivity() {
         binding.root.removeCallbacks(autosave)
         if (deleted || inTrash || !::noteId.isInitialized) return
         val markdown = currentMarkdown()
+        if (markdown == baseline) {
+            unsaved = false
+            if (isFinishing && isBlank(markdown) && isBlank(store.read(noteId))) {
+                store.discard(noteId)
+                deleted = true
+            }
+            return
+        }
         if (isFinishing && isBlank(markdown)) {
             store.discard(noteId)
             deleted = true
@@ -309,6 +335,7 @@ class NotesActivity : ScreenActivity() {
             // A note emptied while it is open is not written as it goes: the Mac
             // would take an empty note for one to delete.
             store.save(noteId, markdown)
+            baseline = markdown
             unsaved = false
         }
     }
@@ -331,6 +358,7 @@ class NotesActivity : ScreenActivity() {
         val scroll = binding.editorScroll.scrollY
         loading = true
         editor.setMarkdown(markdown)
+        baseline = editor.toMarkdown()
         loading = false
         if (binding.editor.hasFocus() && caret >= 0) binding.editor.setSelection(minOf(caret, binding.editor.length()))
         binding.editorScroll.post { binding.editorScroll.scrollTo(0, scroll) }
@@ -844,7 +872,8 @@ class NotesActivity : ScreenActivity() {
     private fun openSource() {
         if (inSource) return
         stopEditing()
-        binding.source.setText(editor.toMarkdown())
+        sourceShown = editor.toMarkdown()
+        binding.source.setText(sourceShown)
         binding.noteFrame.isVisible = false
         binding.sourceScroll.isVisible = true
         binding.sourceScroll.scrollTo(0, 0)
@@ -858,7 +887,9 @@ class NotesActivity : ScreenActivity() {
         if (!inSource) return
         binding.source.clearFocus()
         WindowCompat.getInsetsController(window, binding.source).hide(WindowInsetsCompat.Type.ime())
-        editor.setMarkdown(binding.source.text.toString())
+        // Read back only when it was changed: the formatted note it came from is the same otherwise.
+        val source = binding.source.text.toString()
+        if (source != sourceShown) editor.setMarkdown(source)
         binding.sourceScroll.isVisible = false
         binding.noteFrame.isVisible = true
         binding.editorScroll.scrollTo(0, 0)

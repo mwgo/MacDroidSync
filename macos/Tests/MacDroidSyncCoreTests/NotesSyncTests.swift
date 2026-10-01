@@ -132,8 +132,18 @@ private final class FakeNotes: NotesLibrary {
     }
 
     func update(id: String, folder: String, html: String, files: [URL]) async throws -> MacNoteInfo {
+        writes += 1
         edit(id, html: stored(html, files))
         notes[id]?.info.folder = folder
+        return notes[id]!.info
+    }
+
+    var writes = 0
+
+    func move(id: String, folder: String) async throws -> MacNoteInfo {
+        tick += 1
+        notes[id]?.info.folder = folder
+        notes[id]?.info.modified = tick
         return notes[id]!.info
     }
 
@@ -156,6 +166,8 @@ private final class FakePhone {
 
     var notes: [String: Note] = [:]
     var assets: [String: Data] = [:]
+    var writes = 0
+    var writtenFolders = 0
     var editing: Set<String> = []
     weak var coordinator: NotesCoordinator?
     private var counter = 0
@@ -197,7 +209,12 @@ private final class FakePhone {
             } else if let id = request.id, let base = request.baseHash, let note = notes[id], hash(note.markdown) != base {
                 ok = false
                 reason = "changed"
+            } else if let id = request.id, request.markdown == nil {
+                writtenFolders += 1
+                notes[id]?.folder = request.folder ?? "Notes"
+                reply.hash = notes[id].map { hash($0.markdown) }
             } else {
+                writes += 1
                 let id = request.id ?? add("", folder: request.folder ?? "Notes")
                 notes[id] = Note(folder: request.folder ?? "Notes", markdown: request.markdown ?? "")
                 reply.id = id
@@ -371,6 +388,28 @@ final class NotesCoordinatorTests: XCTestCase {
         mac.edit(macId, html: mac.notes[macId]!.html.replacingOccurrences(of: "tekst", with: "tekst z Maca"))
         await sync()
         XCTAssertEqual(phone.notes[id]?.markdown, "# Dyktafon\ntekst z Maca\n[nagranie.m4a](\(path))")
+    }
+
+    func testAMoveOnEitherSideMovesTheNoteAndWritesNothing() async {
+        let id = phone.add("* lista\n# Tytuł")
+        phone.notes[id]?.markdown = "# Plan\n* punkt z gwiazdką\n![](images/00000000-0000-0000-0000-00000000000a.jpg)"
+        phone.assets["images/00000000-0000-0000-0000-00000000000a.jpg"] = Data([0xFF, 0xD8, 0xFF])
+        await sync()
+        let macId = coordinator.store.pair(androidId: id)!.macId
+        let macWrites = mac.writes
+        let phoneWrites = phone.writes
+
+        phone.notes[id]?.folder = "Praca"
+        await sync()
+        XCTAssertEqual(mac.notes[macId]?.info.folder, "Praca")
+        XCTAssertEqual(mac.writes, macWrites)
+
+        _ = try? await mac.move(id: macId, folder: "Dom")
+        await sync()
+        XCTAssertEqual(phone.notes[id]?.folder, "Dom")
+        XCTAssertEqual(phone.notes[id]?.markdown, "# Plan\n* punkt z gwiazdką\n![](images/00000000-0000-0000-0000-00000000000a.jpg)")
+        XCTAssertEqual(phone.writes, phoneWrites)
+        XCTAssertTrue(coordinator.store.conflicts.isEmpty)
     }
 
     func testTooManyDeletionsWaitForTheOperator() async {

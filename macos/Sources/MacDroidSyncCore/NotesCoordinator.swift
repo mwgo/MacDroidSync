@@ -200,26 +200,50 @@ public final class NotesCoordinator {
     private func perform(_ step: NotesSyncPlan.Step, phone: [String: NoteEntry], mac: [String: MacNoteInfo]) async throws {
         switch step {
         case .pushToMac(let androidId):
-            guard let pair = store.pair(androidId: androidId) else { return }
-            try await push(androidId: androidId, into: pair.macId, keeping: pair)
+            guard let pair = store.pair(androidId: androidId), let entry = phone[androidId] else { return }
+            if entry.hash == pair.androidHash {
+                try await moveOnMac(pair, to: entry.folder)
+            } else {
+                try await push(androidId: androidId, into: pair.macId, keeping: pair)
+            }
         case .createOnMac(let androidId):
             try await push(androidId: androidId, into: nil, keeping: nil)
         case .pullFromMac(let macId):
             guard let pair = store.pair(macId: macId), let entry = phone[pair.androidId] else { return }
             let content = try await readMac(macId)
-            if isUnchanged(content, pair: pair) {
-                remember(content, in: pair)
+            if key(content) == pair.macMarkdown {
+                // Notes moved the date on, or the note to another folder; the
+                // text is as it was, so the phone's note is not written again.
+                if content.info.folder == pair.macFolder {
+                    remember(content, in: pair)
+                } else {
+                    try await moveOnPhone(pair, content: content)
+                }
                 return
             }
             try await pull(content, into: pair.androidId, baseHash: entry.hash, keeping: pair)
         case .both(let androidId):
             guard let pair = store.pair(androidId: androidId), let entry = phone[androidId] else { return }
             let content = try await readMac(pair.macId)
-            if isUnchanged(content, pair: pair) {
-                try await push(androidId: androidId, into: pair.macId, keeping: pair)
-                return
+            let phoneEdited = entry.hash != pair.androidHash
+            let macEdited = key(content) != pair.macMarkdown
+            switch (phoneEdited, macEdited) {
+            case (true, true):
+                try await conflict(pair: pair, entry: entry, mac: content)
+            case (_, false):
+                // Only the phone's text changed, or a folder on one side.
+                if phoneEdited {
+                    try await push(androidId: androidId, into: pair.macId, keeping: pair)
+                } else if entry.folder != pair.androidFolder {
+                    try await moveOnMac(pair, to: entry.folder)
+                } else {
+                    try await moveOnPhone(pair, content: content)
+                }
+            case (false, true):
+                // Edited in Notes, moved on the phone: the text comes, the phone's folder stays.
+                try await pull(content, into: androidId, baseHash: entry.hash, keeping: pair, folder: entry.folder)
+                if let moved = store.pair(androidId: androidId) { try await moveOnMac(moved, to: entry.folder) }
             }
-            try await conflict(pair: pair, entry: entry, mac: content)
         case .createOnPhone(let macId):
             let content = try await readMac(macId)
             try await pull(content, into: nil, baseHash: nil, keeping: nil)
@@ -317,7 +341,13 @@ public final class NotesCoordinator {
     /// nil. Returns the Markdown it was sent as, or nil when the phone left it
     /// for later: it changed there in between, or it is open being edited.
     @discardableResult
-    private func pull(_ content: MacNoteContent, into androidId: String?, baseHash: String?, keeping pair: NotesPair?) async throws -> String? {
+    private func pull(
+        _ content: MacNoteContent,
+        into androidId: String?,
+        baseHash: String?,
+        keeping pair: NotesPair?,
+        folder chosen: String? = nil
+    ) async throws -> String? {
         var recorded = pair?.macAttachments
         if recorded == nil, let androidId {
             // A pair from before the lines were recorded: the phone's note has them.
@@ -328,7 +358,7 @@ public final class NotesCoordinator {
             }
         }
         let resolved = resolve(content, known: pair?.assets ?? [:], recorded: recorded)
-        let folder = content.info.folder
+        let folder = chosen ?? content.info.folder
         var put = NotesPayload(id: androidId, folder: folder, markdown: resolved.markdown, baseHash: baseHash)
         for (path, sha) in resolved.uploads { try await upload(sha: sha, path: path) }
         var answer = try await ask(MessageType.notesPut, put, refusalIsAnswer: true)
@@ -450,8 +480,32 @@ public final class NotesCoordinator {
         return markdown
     }
 
-    private func isUnchanged(_ content: MacNoteContent, pair: NotesPair) -> Bool {
-        key(content) == pair.macMarkdown && content.info.folder == pair.macFolder
+    /// The phone moved the note to another folder and changed nothing else.
+    private func moveOnMac(_ pair: NotesPair, to folder: String) async throws {
+        let moved = try await library.move(id: pair.macId, folder: folder)
+        var pair = pair
+        pair.androidFolder = folder
+        pair.macFolder = moved.folder
+        pair.macModified = moved.modified
+        store.setPair(pair)
+        Log.info("Notes sync: \"\(moved.name)\" moved to \(folder) in Notes")
+    }
+
+    /// Notes moved the note to another folder and changed nothing else.
+    private func moveOnPhone(_ pair: NotesPair, content: MacNoteContent) async throws {
+        let answer = try await ask(
+            MessageType.notesPut,
+            NotesPayload(id: pair.androidId, folder: content.info.folder),
+            refusalIsAnswer: true
+        )
+        guard answer.ok else { return }
+        var pair = pair
+        pair.androidFolder = content.info.folder
+        pair.macFolder = content.info.folder
+        pair.macModified = content.info.modified
+        if let hash = answer.payload.hash { pair.androidHash = hash }
+        store.setPair(pair)
+        Log.info("Notes sync: \"\(content.info.name)\" moved to \(content.info.folder) on the phone")
     }
 
     /// Notes moved the date on but nothing in the note changed.

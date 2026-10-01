@@ -686,7 +686,7 @@ no), `missing`, `deleted`, `changed`, `editing`, `missing asset`, `bad path`, `b
 | `folders` | `notes-manifest` answer | the phone's folders |
 | `notes` | `notes-manifest` answer | `{id, folder, title, modified, hash, deleted?}` per note |
 | `note` | `notes-get` answer | `{id, folder, markdown, hash, assets: [{path, size, sha256}]}` |
-| `id`, `folder`, `markdown` | `notes-put` | the note; no `id` makes a new one |
+| `id`, `folder`, `markdown` | `notes-put` | the note; no `id` makes a new one, no `markdown` only moves it to `folder` |
 | `baseHash` | `notes-put`, `notes-delete` | the hash the Mac last saw; a different one is refused as `changed` |
 | `hash` | `notes-put` answer | the note's hash now |
 | `titleSuffix` | `notes-copy` | added to the copy's title |
@@ -702,7 +702,9 @@ no), `missing`, `deleted`, `changed`, `editing`, `missing asset`, `bad path`, `b
   place once the last piece is in and `sha256` matches. `notes-put` is refused with `missing asset`
   while the note refers to a file the phone does not have, so the files go first.
 * A note open on the phone with changes not yet saved is refused as `editing`, and the Mac tries again
-  on its next cycle. The phone saves a note 1.5 s after typing stops.
+  on its next cycle. The phone saves a note 1.5 s after typing stops, and only when its text differs
+  from what the screen showed when the note was opened: reading it, folding it, looking at a picture or
+  opening a table and closing it unchanged writes nothing, so nothing goes to the Mac either.
 
 ### What the Mac does
 
@@ -712,6 +714,8 @@ the phone connects, when it sends `notes-changed`, when the list differs from th
 the sync is switched on. For every pair of notes:
 
 * changed on the phone only: written into Notes; changed in Notes only: sent with `notes-put`;
+* moved to another folder and otherwise unchanged: moved on the other side and not written, because a
+  note written again into Notes has its pictures and files put at its end;
 * changed on both: Notes keeps its version, the phone's becomes a copy (`notes-copy`, titled
   `… (Android, Oct 1 12:30)`), and an entry in the conflicts list shows both versions with their
   pictures;

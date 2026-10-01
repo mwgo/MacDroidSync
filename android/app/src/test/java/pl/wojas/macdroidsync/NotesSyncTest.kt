@@ -89,6 +89,16 @@ class NotesSyncTest {
     }
 
     @Test
+    fun `a move from the Mac changes the folder and nothing else`() {
+        val note = store.create("Dom", "# A\n- punkt")
+        val before = host.get(note.id).hash
+        val answer = host.move(note.id, "Praca")
+        assertEquals("Praca", store.note(note.id)!!.folder)
+        assertEquals("# A\n- punkt", store.read(note.id))
+        assertEquals(before, answer.hash)
+    }
+
+    @Test
     fun `a note being edited is left alone`() {
         val note = store.create("Dom", "# A")
         store.attach(note.id, object : NotesStore.Editor {
