@@ -3,6 +3,7 @@ package pl.wojas.macdroidsync
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -109,7 +110,7 @@ class NotesStoreTest {
         assertTrue(path != "images/p.png")
         assertEquals("strokes", File(temp.root, path.removeSuffix(".png") + ".json").readText())
 
-        s.delete(note.id)
+        s.deleteForever(note.id)
         assertFalse(File(temp.root, "images/p.png").exists())
         assertTrue(File(temp.root, path).exists())
         assertNull(s.note(note.id))
@@ -127,9 +128,68 @@ class NotesStoreTest {
         assertTrue(file.path != "files/1/umowa.pdf" && file.path.endsWith("/umowa.pdf"))
         assertEquals("pdf", File(temp.root, file.path).readText())
 
-        s.delete(note.id)
+        s.deleteForever(note.id)
         assertFalse(File(temp.root, "files/1").exists())
         assertTrue(File(temp.root, file.path).exists())
+    }
+
+    @Test
+    fun `a deleted note waits in the trash, and can come back`() {
+        val s = store()
+        val note = s.create("A", "# Notatka\ntekst")
+        s.delete(note.id)
+        assertTrue(s.notes.isEmpty())
+        assertEquals(listOf(note.id), s.trashed.map { it.id })
+        assertEquals(NotesStore.TRASH, s.groups().last().folder.name)
+        assertFalse(s.save(note.id, "# Notatka\ninny"))
+
+        assertEquals(now, store().note(note.id)!!.deleted)
+        s.restore(note.id)
+        assertEquals(listOf(note.id), s.notes.map { it.id })
+        assertTrue(s.groups().none { it.isTrash })
+    }
+
+    @Test
+    fun `the trash empties itself after thirty days`() {
+        val s = store()
+        val note = s.create("A", "# Stara")
+        s.delete(note.id)
+        now += NotesStore.TRASH_DAYS * 24 * 60 * 60 * 1000 + 1
+        s.purge()
+        assertNull(s.note(note.id))
+        assertFalse(File(temp.root, note.id + ".md").exists())
+    }
+
+    @Test
+    fun `a note that never had anything goes for good, one that had goes to the trash`() {
+        val s = store()
+        val empty = s.create("A", "")
+        val written = s.create("A", "# Coś")
+        s.discard(empty.id)
+        s.discard(written.id)
+        assertNull(s.note(empty.id))
+        assertNotNull(s.note(written.id)!!.deleted)
+    }
+
+    @Test
+    fun `a note from the Mac drops the pictures it no longer has and tells the screen`() {
+        val s = store()
+        File(temp.root, "images").mkdirs()
+        val path = "images/00000000-0000-0000-0000-000000000001.png"
+        File(temp.root, path).writeText("png")
+        val note = s.create("A", "# Obraz\n![]($path)")
+        var shown: String? = null
+        s.attach(note.id, object : NotesStore.Editor {
+            override val dirty = false
+            override fun reload(markdown: String) { shown = markdown }
+        })
+        var changes = 0
+        s.addListener { changes++ }
+        s.saveFromSync(note.id, "B", "# Obraz\nbez obrazu")
+        assertFalse(File(temp.root, path).exists())
+        assertEquals("B", s.note(note.id)!!.folder)
+        assertEquals("# Obraz\nbez obrazu", shown)
+        assertTrue(changes > 0)
     }
 
     @Test

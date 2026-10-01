@@ -36,6 +36,10 @@
          app, it terminates it. -->
     <key>NSPhotoLibraryUsageDescription</key>
     <string>MacDroidSync adds the photos and videos from your Android phone to your Photos library, and removes the ones you delete on the phone once you confirm.</string>
+    <!-- The notes sync reads and writes Notes through Apple events; without
+         this key macOS refuses them without ever asking the user. -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>MacDroidSync keeps the notes of your Android phone and your notes in Notes the same.</string>
     <!-- Without this key macOS refuses the Bluetooth LE scan the auto lock needs. -->
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>MacDroidSync listens for the presence beacon of your Android phone so it can lock this Mac when you walk away.</string>

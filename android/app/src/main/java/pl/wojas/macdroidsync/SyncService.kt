@@ -88,6 +88,22 @@ class SyncService : Service() {
     private val photoSendLock = Mutex()
     private var lastPhotoProgressAt = 0L
 
+    /**
+     * Whether the Mac syncs the notes in this session. Like the photo
+     * configuration it belongs to the session and is never written down.
+     */
+    @Volatile
+    private var notesEnabled = false
+    private lateinit var notesStore: NotesStore
+    private lateinit var notesHost: NotesHost
+    private val notesLock = Mutex()
+    private var notesChangedJob: Job? = null
+
+    /** Set while a change from the Mac is being written, so it is not reported back to it. */
+    @Volatile
+    private var applyingNotes = false
+    private val notesListener: () -> Unit = { if (!applyingNotes) scheduleNotesChanged() }
+
     @Volatile
     private var connection: PeerConnection? = null
 
@@ -125,6 +141,9 @@ class SyncService : Service() {
         smsReader = SmsReader(this)
         smsSender = SmsSender(this)
         smsWatcher = SmsWatcher(this) { onSmsDatabaseChanged() }
+        notesStore = NotesStore.shared(this)
+        notesHost = NotesHost(notesStore)
+        notesStore.addListener(notesListener)
         announcedBeacon = beaconWanted
         scope.launch { outbox.sweepIncomplete() }
 
@@ -175,6 +194,7 @@ class SyncService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        notesStore.removeListener(notesListener)
         smsWatcher.stop()
         beacon.stop()
         ringer.stop()
@@ -263,6 +283,8 @@ class SyncService : Service() {
             // it would let this phone work to instructions from a Mac that is no
             // longer here, and possibly no longer issues them at all.
             photoConfig = null
+            notesEnabled = false
+            notesChangedJob?.cancel()
             stopWatchingSms()
             pendingAcks.values.forEach { it.complete(FileVerdict(ok = false, detail = null, delivered = false)) }
             pendingAcks.clear()
@@ -351,6 +373,15 @@ class SyncService : Service() {
             scope.launch { answerSms(type, request, image) }
         }
 
+        override fun onNotesConfig(enabled: Boolean) {
+            Log.i(TAG, "Notes sync with the Mac is ${if (enabled) "on" else "off"}")
+            notesEnabled = enabled
+        }
+
+        override fun onNotesRequest(type: String, request: NotesPayload, data: ByteArray?) {
+            scope.launch { answerNotes(type, request, data) }
+        }
+
         override fun onPhotoPull(keys: List<String>?, manifestId: String?) {
             val config = photoConfig?.takeIf { it.enabled }
             if (config == null) {
@@ -381,6 +412,81 @@ class SyncService : Service() {
                     reason = "this phone has no photo configuration from the Mac",
                 )
             }.onFailure { Log.w(TAG, "Could not answer the photo pull", it) }
+        }
+    }
+
+    // endregion
+
+    // region Notes
+
+    /**
+     * Answers one request of the Mac about notes, one at a time. Every request
+     * is answered, a refusal included, with the request's own type and id.
+     */
+    private suspend fun answerNotes(type: String, request: NotesPayload, data: ByteArray?) = notesLock.withLock {
+        val peer = connection?.takeIf { it.isAuthenticated } ?: return@withLock
+        val reply = NotesPayload(requestId = request.requestId, id = request.id, path = request.path)
+        if (!notesEnabled) {
+            runCatching { peer.sendNotes(type, reply, ok = false, reason = "off") }
+            return@withLock
+        }
+        try {
+            applyingNotes = true
+            val answer = when (type) {
+                MessageType.NOTES_MANIFEST -> notesHost.manifest().copy(requestId = request.requestId)
+                MessageType.NOTES_GET -> reply.copy(note = notesHost.get(request.id ?: throw NotesHost.Refused("missing")))
+                MessageType.NOTES_PUT -> notesHost.put(
+                    request.id,
+                    request.folder.orEmpty(),
+                    request.markdown ?: throw NotesHost.Refused("empty"),
+                    request.baseHash,
+                ).copy(requestId = request.requestId)
+                MessageType.NOTES_DELETE -> {
+                    notesHost.delete(request.id ?: throw NotesHost.Refused("missing"), request.baseHash)
+                    reply
+                }
+                MessageType.NOTES_COPY -> notesHost.copy(
+                    request.id ?: throw NotesHost.Refused("missing"),
+                    request.titleSuffix.orEmpty(),
+                ).copy(requestId = request.requestId)
+                MessageType.NOTES_ASSET_GET -> {
+                    val (bytes, total) = notesHost.readAsset(request.path.orEmpty(), request.offset ?: 0)
+                    peer.sendNotes(type, reply.copy(offset = request.offset ?: 0, total = total), data = bytes)
+                    return@withLock
+                }
+                MessageType.NOTES_ASSET_PUT -> {
+                    notesHost.writeAsset(
+                        request.path.orEmpty(),
+                        request.offset ?: 0,
+                        request.total ?: 0,
+                        data ?: ByteArray(0),
+                        request.sha256,
+                    )
+                    reply.copy(offset = request.offset)
+                }
+                else -> return@withLock
+            }
+            peer.sendNotes(type, answer)
+        } catch (refused: NotesHost.Refused) {
+            Log.i(TAG, "Refused $type: ${refused.reason}")
+            runCatching { peer.sendNotes(type, reply, ok = false, reason = refused.reason) }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not answer $type", error)
+            runCatching { peer.sendNotes(type, reply, ok = false, reason = error.message ?: "error") }
+        } finally {
+            applyingNotes = false
+        }
+    }
+
+    /** Tells the Mac a second after the notes stop changing, so a burst of edits is one message. */
+    private fun scheduleNotesChanged() {
+        if (!notesEnabled) return
+        notesChangedJob?.cancel()
+        notesChangedJob = scope.launch {
+            delay(NOTES_CHANGED_DELAY_MS)
+            val peer = connection?.takeIf { it.isAuthenticated && notesEnabled } ?: return@launch
+            runCatching { peer.sendNotes(MessageType.NOTES_CHANGED, NotesPayload()) }
+                .onFailure { Log.w(TAG, "Could not tell the Mac the notes changed", it) }
         }
     }
 
@@ -910,6 +1016,7 @@ class SyncService : Service() {
 
     companion object {
         private const val TAG = Prefs.TAG
+        private const val NOTES_CHANGED_DELAY_MS = 1000L
 
         const val ACTION_START = "pl.wojas.macdroidsync.START"
         const val ACTION_STOP = "pl.wojas.macdroidsync.STOP"

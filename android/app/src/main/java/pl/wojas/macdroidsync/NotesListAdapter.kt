@@ -37,6 +37,7 @@ class NotesListAdapter(
     class Labels(
         val pinned: String,
         val all: String,
+        val trash: String,
         val untitled: String,
         val highlight: Int,
         val edited: (Long) -> String,
@@ -175,6 +176,7 @@ class NotesListAdapter(
             b.name.text = when {
                 group.isPinned -> labels.pinned
                 group.isAll -> labels.all
+                group.isTrash -> labels.trash
                 else -> folder.name
             }
             // All the notes together fold no more than a folder of one note would help.
@@ -183,7 +185,7 @@ class NotesListAdapter(
             val rotation = if (folder.collapsed && !searching) -90f else 0f
             if (animate) b.chevron.animate().rotation(rotation).setDuration(FOLD_TURN).start() else b.chevron.rotation = rotation
             // The pinned notes belong to folders of their own; a new one goes into a folder.
-            val realFolder = !group.isPinned && !group.isAll
+            val realFolder = !group.isPinned && !group.isAll && !group.isTrash
             b.add.isVisible = realFolder && !searching
             b.root.setOnClickListener { if (!searching && !group.isAll) callbacks.toggle(folder) }
             b.root.setOnLongClickListener {

@@ -70,12 +70,14 @@ The plaintext of every sealed frame is a JSON object. Absent fields are omitted.
 | `beacon` | bool | whether the phone broadcasts its presence beacon (`hello`, `presence`) |
 | `photo` | object | photo sync, see section 8 |
 | `sms` | object | messages, see section 9 |
+| `notes` | object | notes, see section 10 |
 
 Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
 `request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`, `file-offer`, `file-chunk`,
 `file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`,
 `photo-config`, `photo-preview`, `sms-threads`, `sms-thread`, `sms-image`, `sms-avatar`,
-`sms-send`, `sms-status`, `sms-new`, `sms-changed`.
+`sms-send`, `sms-status`, `sms-new`, `sms-changed`, `notes-config`, `notes-manifest`, `notes-get`,
+`notes-put`, `notes-delete`, `notes-copy`, `notes-asset-get`, `notes-asset-put`, `notes-changed`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
 that connection (replay and reordering protection).
@@ -644,4 +646,86 @@ Settings and when the pairing code is regenerated.
 * Pictures are sent as JPEG, no side longer than 1280 pixels.
 * Nothing can be marked as read on the phone: only the default messaging app may
   write there. The Mac clears its own unread mark once a conversation was opened.
+
+## 10. Notes
+
+The phone's Markdown notes and the notes of one account of Notes on the Mac are kept the same. As with
+the photos the Mac decides: it keeps which note belongs to which, asks the phone for its notes and
+reads Notes, and works out what to do. The phone describes its notes, hands them out, takes in what it
+is given and says when something changed; it keeps no state of the sync.
+
+```
+  Mac                                           phone
+   |-- notes-config {enabled} ------------------>|  in the handshake, after photo-config
+   |-- notes-manifest {requestId} -------------->|  every note: id, folder, title, hash
+   |<- notes-manifest {requestId, folders, notes}|
+   |-- notes-get {requestId, id} --------------->|  one note: Markdown and its files
+   |<- notes-get {requestId, note} --------------|
+   |-- notes-asset-get {path, offset} ---------->|  1 MiB of a picture or file
+   |<- notes-asset-get {offset, total} + data ---|
+   |-- notes-asset-put {path, offset, total, sha256} + data ->|
+   |<- notes-asset-put {offset} -----------------|
+   |-- notes-put {id?, folder, markdown, baseHash} ->|  write, or make a new note
+   |<- notes-put {id, hash} ---------------------|  or ok:false, reason
+   |-- notes-delete {id, baseHash} ------------->|  into the phone's trash
+   |-- notes-copy {id, titleSuffix} ------------>|  the phone's version kept aside
+   |<- notes-changed ----------------------------|  a second after the notes settle
+```
+
+Every request carries a `requestId` and is answered with the same type and id, a refusal included:
+`ok: false` with `reason`. The reasons are plain words, not an enum: `off` (no configuration, or it said
+no), `missing`, `deleted`, `changed`, `editing`, `missing asset`, `bad path`, `bad offset`, `checksum`,
+`too big`.
+
+### The `notes` object
+
+| field | on | meaning |
+|-------|----|---------|
+| `requestId` | every request and its answer | correlation, chosen by the Mac |
+| `enabled` | `notes-config` | whether the notes are synced in this session; absent is `false` |
+| `folders` | `notes-manifest` answer | the phone's folders |
+| `notes` | `notes-manifest` answer | `{id, folder, title, modified, hash, deleted?}` per note |
+| `note` | `notes-get` answer | `{id, folder, markdown, hash, assets: [{path, size, sha256}]}` |
+| `id`, `folder`, `markdown` | `notes-put` | the note; no `id` makes a new one |
+| `baseHash` | `notes-put`, `notes-delete` | the hash the Mac last saw; a different one is refused as `changed` |
+| `hash` | `notes-put` answer | the note's hash now |
+| `titleSuffix` | `notes-copy` | added to the copy's title |
+| `path`, `offset`, `total`, `sha256` | `notes-asset-*` | which file, where in it, its size and checksum |
+
+* `hash` is the SHA-256 of the Markdown followed by `\n<path>:<sha256>` for every picture and file it
+  refers to, in order: a turned picture keeps its path, so the text alone would not show the change.
+* A note in the phone's trash is listed with `deleted: true`; that is how a deletion on the phone is
+  learnt. A note missing from the manifest altogether reads as deleted too. A note with nothing in it
+  is not listed: there is nothing to give the Mac yet.
+* Paths are relative to the phone's notes folder and untrusted both ways. The phone accepts only
+  `images/<uuid>.<ext>` and `files/<uuid>/<name>`, writes a file aside as `<path>.part` and puts it in
+  place once the last piece is in and `sha256` matches. `notes-put` is refused with `missing asset`
+  while the note refers to a file the phone does not have, so the files go first.
+* A note open on the phone with changes not yet saved is refused as `editing`, and the Mac tries again
+  on its next cycle. The phone saves a note 1.5 s after typing stops.
+
+### What the Mac does
+
+Notes has no notifications of its own, so the Mac lists it every ten seconds while the phone is
+connected and the sync is on; a list is identifiers and dates and takes milliseconds. A cycle runs when
+the phone connects, when it sends `notes-changed`, when the list differs from the last cycle, and when
+the sync is switched on. For every pair of notes:
+
+* changed on the phone only: written into Notes; changed in Notes only: sent with `notes-put`;
+* changed on both: Notes keeps its version, the phone's becomes a copy (`notes-copy`, titled
+  `… (Android, Oct 1 12:30)`), and an entry in the conflicts list shows both versions with their
+  pictures;
+* deleted on one side: deleted on the other - into Recently Deleted in Notes, into the trash on the
+  phone - unless the other side changed it, in which case it is put back where it was deleted and the
+  conflicts list says so;
+* more than `max(5, pairs / 5)` deletions at once wait in the conflicts list until allowed.
+
+A newer date in Notes is not taken for an edit by itself: Notes moves it on for reasons of its own, so
+the Mac compares the note's text with what it read at the last sync. Notes rewrites what it is given -
+headings as sized bold text, monospace as Courier, quotes as plain lines - so tasks and quotes travel as
+`☐`/`☑` and `│` at the start of the line. A picture set into the body as data is kept by Notes as a
+broken attachment, so the phone's pictures and files are attached from files, which Notes puts at the
+end of the note (and, by a fault of its own, twice; the second copy is removed). A picture comes back in
+the body; any other attached file leaves an empty line there and cannot always be read back, so the Mac
+remembers which of the phone's files stands at each such line, and the phone keeps its own.
 

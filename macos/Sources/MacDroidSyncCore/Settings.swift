@@ -37,6 +37,8 @@ public final class Settings: SyncConfiguration {
         static let lastUpdateCheckAt = "lastUpdateCheckAt"
         static let pendingUpdateNotice = "pendingUpdateNotice"
         static let messageNotificationsEnabled = "messageNotificationsEnabled"
+        static let notesSyncEnabled = "notesSyncEnabled"
+        static let notesAccount = "notesAccount"
     }
 
     private let defaults = UserDefaults.standard
@@ -188,6 +190,19 @@ public final class Settings: SyncConfiguration {
     public var messageNotificationsEnabled: Bool {
         get { defaults.object(forKey: Keys.messageNotificationsEnabled) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Keys.messageNotificationsEnabled) }
+    }
+
+    /// Keeping the phone's notes and Notes the same. Off until switched on:
+    /// the first sync copies every note of each side to the other.
+    public var notesSyncEnabled: Bool {
+        get { defaults.bool(forKey: Keys.notesSyncEnabled) }
+        set { defaults.set(newValue, forKey: Keys.notesSyncEnabled) }
+    }
+
+    /// The Notes account synced; nil means iCloud, or the default account without one.
+    public var notesAccount: String? {
+        get { defaults.string(forKey: Keys.notesAccount) }
+        set { defaults.set(newValue, forKey: Keys.notesAccount) }
     }
 
     public var autoUpdateEnabled: Bool {

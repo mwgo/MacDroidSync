@@ -60,6 +60,16 @@ class PeerConnection(
          * [sendSms], so the Mac is never left waiting.
          */
         fun onSmsRequest(type: String, request: SmsPayload, image: ByteArray?)
+
+        /** Whether and how the Mac syncs the notes, for this session; inside the handshake. */
+        fun onNotesConfig(enabled: Boolean)
+
+        /**
+         * A request about notes, see PROTOCOL.md section 10. [data] is a piece of
+         * a picture or file for notes-asset-put. Every one is answered with
+         * [sendNotes].
+         */
+        fun onNotesRequest(type: String, request: NotesPayload, data: ByteArray?)
     }
 
     /** Where files coming from the Mac are written; without it they are refused. */
@@ -200,6 +210,19 @@ class PeerConnection(
                 mime = if (image != null) "image/jpeg" else null,
                 data = image?.let { Base64.encodeToString(it, Base64.NO_WRAP) },
                 sms = payload,
+            )
+        )
+    }
+
+    /** An answer about notes, or notes-changed. [data] is a piece of a picture or file. */
+    fun sendNotes(type: String, payload: NotesPayload, ok: Boolean = true, reason: String? = null, data: ByteArray? = null) {
+        send(
+            Message(
+                type = type,
+                ok = if (ok) null else false,
+                reason = if (ok) null else reason,
+                data = data?.let { Base64.encodeToString(it, Base64.NO_WRAP) },
+                notes = payload,
             )
         )
     }
@@ -409,6 +432,18 @@ class PeerConnection(
             MessageType.SMS_SEND -> listener.onSmsRequest(
                 message.type,
                 message.sms ?: SmsPayload(),
+                message.data?.let { runCatching { Base64.decode(it, Base64.DEFAULT) }.getOrNull() },
+            )
+            MessageType.NOTES_CONFIG -> listener.onNotesConfig(message.notes?.enabled == true)
+            MessageType.NOTES_MANIFEST,
+            MessageType.NOTES_GET,
+            MessageType.NOTES_PUT,
+            MessageType.NOTES_DELETE,
+            MessageType.NOTES_COPY,
+            MessageType.NOTES_ASSET_GET,
+            MessageType.NOTES_ASSET_PUT -> listener.onNotesRequest(
+                message.type,
+                message.notes ?: NotesPayload(),
                 message.data?.let { runCatching { Base64.decode(it, Base64.DEFAULT) }.getOrNull() },
             )
             MessageType.FILE_OFFER -> handleFileOffer(message, listener)

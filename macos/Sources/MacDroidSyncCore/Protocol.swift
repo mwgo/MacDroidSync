@@ -93,6 +93,19 @@ public enum MessageType {
     public static let smsNew = "sms-new"
     /// Phone to Mac: something else changed; this Mac's copy is out of date.
     public static let smsChanged = "sms-changed"
+    /// Notes, see PROTOCOL.md section 10. Mac to phone inside the handshake:
+    /// whether the notes are synced in this session.
+    public static let notesConfig = "notes-config"
+    /// Requests from the Mac, answered with the same type and `notes.requestId`.
+    public static let notesManifest = "notes-manifest"
+    public static let notesGet = "notes-get"
+    public static let notesPut = "notes-put"
+    public static let notesDelete = "notes-delete"
+    public static let notesCopy = "notes-copy"
+    public static let notesAssetGet = "notes-asset-get"
+    public static let notesAssetPut = "notes-asset-put"
+    /// Phone to Mac: a note changed there.
+    public static let notesChanged = "notes-changed"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.
@@ -126,6 +139,8 @@ public struct Message: Codable {
     public var photo: PhotoPayload?
     /// Messages, see PROTOCOL.md section 9.
     public var sms: SmsPayload?
+    /// Notes, see PROTOCOL.md section 10.
+    public var notes: NotesPayload?
 
     public init(
         v: Int = Wire.version,
@@ -148,7 +163,8 @@ public struct Message: Codable {
         path: String? = nil,
         beacon: Bool? = nil,
         photo: PhotoPayload? = nil,
-        sms: SmsPayload? = nil
+        sms: SmsPayload? = nil,
+        notes: NotesPayload? = nil
     ) {
         self.v = v
         self.seq = seq
@@ -171,6 +187,7 @@ public struct Message: Codable {
         self.beacon = beacon
         self.photo = photo
         self.sms = sms
+        self.notes = notes
     }
 
     public static func now() -> Int64 {

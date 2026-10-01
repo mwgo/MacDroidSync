@@ -290,6 +290,21 @@
                     android:src="@drawable/ic_tool_copy"
                     android:tooltipText="@string/note_copy" />
 
+                <!-- A note in the trash is only read; it can be restored or deleted for good. -->
+                <ImageButton
+                    android:id="@+id/toolRestore"
+                    style="@style/NoteTool.Icon"
+                    android:contentDescription="@string/note_restore"
+                    android:src="@drawable/ic_tool_undo"
+                    android:tooltipText="@string/note_restore" />
+
+                <ImageButton
+                    android:id="@+id/toolDeleteForever"
+                    style="@style/NoteTool.Icon"
+                    android:contentDescription="@string/note_delete_forever"
+                    android:src="@drawable/ic_tool_delete"
+                    android:tooltipText="@string/note_delete_forever" />
+
                 <ImageButton
                     android:id="@+id/toolDeleteNote"
                     style="@style/NoteTool.Icon"

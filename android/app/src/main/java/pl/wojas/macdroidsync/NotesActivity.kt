@@ -63,6 +63,27 @@ class NotesActivity : ScreenActivity() {
 
     /** Set once the note is deleted, so that leaving the screen does not write it back. */
     private var deleted = false
+
+    /** A note in the trash, shown to be read and restored, never written. */
+    private var inTrash = false
+
+    /**
+     * Whether the screen holds changes the store does not have yet. Read off the
+     * main thread by the sync, which leaves a note being edited alone.
+     */
+    @Volatile
+    private var unsaved = false
+
+    /** Set while the screen puts text in itself, which is no edit of the user's. */
+    private var loading = false
+
+    /** Saves a moment after typing stops, so that an edit reaches the Mac soon, not only on leaving. */
+    private val autosave = Runnable { if (!isFinishing && openTable == null && !drawingOpen) saveNote() }
+
+    private val storeEditor = object : NotesStore.Editor {
+        override val dirty get() = unsaved
+        override fun reload(markdown: String) = runOnUiThread { reloadFromSync(markdown) }
+    }
     private var inSource = false
     private lateinit var images: NoteImages
     private lateinit var viewer: ImageViewer
@@ -209,14 +230,27 @@ class NotesActivity : ScreenActivity() {
         editor.onFileTap = ::fileTapped
         editor.onStateChanged = ::showState
         binding.setUpToolbar(editor)
-        store = NotesStore(File(filesDir, "notes"))
+        store = NotesStore.shared(this)
         val id = intent.getStringExtra(EXTRA_NOTE_ID)
-        if (id == null || store.note(id) == null) {
+        val note = id?.let(store::note)
+        if (id == null || note == null) {
             finish()
             return
         }
         noteId = id
+        inTrash = note.deleted != null
+        loading = true
         editor.setMarkdown(savedInstanceState?.getString(STATE_MARKDOWN) ?: store.read(id))
+        loading = false
+        unsaved = savedInstanceState?.getString(STATE_MARKDOWN)?.let { it != store.read(id) } == true
+        store.attach(id, storeEditor)
+        binding.editor.doAfterTextChanged { edited() }
+        binding.source.doAfterTextChanged { edited() }
+        if (inTrash) {
+            binding.editor.showSoftInputOnFocus = false
+            binding.editor.isFocusable = false
+            Toast.makeText(this, R.string.note_in_trash, Toast.LENGTH_SHORT).show()
+        }
         if (savedInstanceState?.getBoolean(STATE_IN_SOURCE) == true) openSource()
         showPinned()
         showTools()
@@ -265,14 +299,41 @@ class NotesActivity : ScreenActivity() {
 
     /** Writes the note back, or drops it when leaving a note that has nothing in it. */
     private fun saveNote() {
-        if (deleted || !::noteId.isInitialized) return
+        binding.root.removeCallbacks(autosave)
+        if (deleted || inTrash || !::noteId.isInitialized) return
         val markdown = currentMarkdown()
         if (isFinishing && isBlank(markdown)) {
-            store.delete(noteId)
+            store.discard(noteId)
             deleted = true
-        } else {
+        } else if (!isBlank(markdown) || isFinishing) {
+            // A note emptied while it is open is not written as it goes: the Mac
+            // would take an empty note for one to delete.
             store.save(noteId, markdown)
+            unsaved = false
         }
+    }
+
+    private fun edited() {
+        if (loading || inTrash) return
+        unsaved = true
+        binding.root.removeCallbacks(autosave)
+        binding.root.postDelayed(autosave, AUTOSAVE_DELAY_MS)
+    }
+
+    /**
+     * The Mac changed the note while it is open here. Shown at once unless
+     * something has been typed since the last save, or a table, a drawing or
+     * the source is open; then the next save is what the Mac gets back.
+     */
+    private fun reloadFromSync(markdown: String) {
+        if (unsaved || inSource || openTable != null || drawingOpen || isFinishing) return
+        val caret = binding.editor.selectionStart
+        val scroll = binding.editorScroll.scrollY
+        loading = true
+        editor.setMarkdown(markdown)
+        loading = false
+        if (binding.editor.hasFocus() && caret >= 0) binding.editor.setSelection(minOf(caret, binding.editor.length()))
+        binding.editorScroll.post { binding.editorScroll.scrollTo(0, scroll) }
     }
 
     private fun isBlank(markdown: String) = Markdown.parse(markdown).all {
@@ -344,6 +405,27 @@ class NotesActivity : ScreenActivity() {
         }
     }
 
+    /** Back out of the trash, and the screen becomes an ordinary note screen. */
+    private fun restoreNote() {
+        store.restore(noteId)
+        inTrash = false
+        binding.editor.isFocusable = true
+        binding.editor.isFocusableInTouchMode = true
+        showTools()
+    }
+
+    private fun deleteForever() {
+        MaterialAlertDialogBuilder(this)
+            .setMessage(R.string.note_delete_forever_confirm)
+            .setPositiveButton(R.string.note_delete_forever) { _, _ ->
+                deleted = true
+                store.deleteForever(noteId)
+                finish()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun deleteNote() {
         val title = NoteSummary.of(currentMarkdown()).title.ifEmpty { getString(R.string.notes_untitled) }
         MaterialAlertDialogBuilder(this)
@@ -391,16 +473,18 @@ class NotesActivity : ScreenActivity() {
             toolRowRemove, toolColumnRemove, toolTableDelete,
         )
         val readingTools = setOf(toolFoldAll, toolShowMarkdown, toolPin, toolMoveNote, toolCopyNote, toolDeleteNote)
+        val trashTools = setOf(toolRestore, toolDeleteForever)
         val insertTools = setOf(toolInsertClose, toolTable, toolImageGallery, toolImageCamera, toolDrawing, toolFile, toolRecord)
         val recordTools = setOf(toolRecordCancel, recordTime, toolRecordStop)
         val drawTools = drawing.tools.toSet()
         val shown = when {
+            inTrash -> trashTools
             recording != null -> recordTools
             inSource -> setOf(toolCloseMarkdown)
             drawingOpen -> drawTools
             openTable != null -> tableToolsShown()
             editor.hasFocus() && inserting -> insertTools
-            editor.hasFocus() -> tools.children.toSet() - readingTools - toolCloseMarkdown - tableTools - insertTools - drawTools - recordTools
+            editor.hasFocus() -> tools.children.toSet() - readingTools - trashTools - toolCloseMarkdown - tableTools - insertTools - drawTools - recordTools
             else -> readingTools
         }
         taskCount.isVisible = shown == readingTools && taskCount.text.isNotEmpty()
@@ -496,6 +580,7 @@ class NotesActivity : ScreenActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (::noteId.isInitialized) store.detach(noteId, storeEditor)
         imageWork.shutdown()
     }
 
@@ -819,6 +904,8 @@ class NotesActivity : ScreenActivity() {
         toolMoveNote.setOnClickListener { moveNote() }
         toolCopyNote.setOnClickListener { copyNote() }
         toolDeleteNote.setOnClickListener { deleteNote() }
+        toolRestore.setOnClickListener { restoreNote() }
+        toolDeleteForever.setOnClickListener { deleteForever() }
         toolCloseMarkdown.setOnClickListener { closeSource() }
         toolTableDone.setOnClickListener { closeTable(delete = false) }
         toolRowAdd.setOnClickListener { tableEditor.addRow() }
@@ -971,6 +1058,7 @@ class NotesActivity : ScreenActivity() {
 
     companion object {
         private const val RECORD_BIT_RATE = 96_000
+        private const val AUTOSAVE_DELAY_MS = 1500L
         private const val RECORD_SAMPLE_RATE = 44_100
         private const val RECORDING_RED = 0xFFE5383B.toInt()
 

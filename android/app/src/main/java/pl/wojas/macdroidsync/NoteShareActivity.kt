@@ -35,7 +35,7 @@ class NoteShareActivity : Activity() {
             val pictures = imageUris.mapNotNull { images.import(it) }
             val attached = fileUris.mapNotNull { files.import(it) }
             val shared = SharedNote.of(subject, text, pictures, attached)
-            val store = NotesStore(File(filesDir, "notes"))
+            val store = NotesStore.shared(this)
             val folder = store.folders.firstOrNull()?.name
                 ?: getString(R.string.notes_default_folder).also { store.addFolder(it) }
             val note = store.create(folder, shared.markdown)

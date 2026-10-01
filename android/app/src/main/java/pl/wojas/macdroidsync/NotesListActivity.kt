@@ -76,6 +76,7 @@ class NotesListActivity : ScreenActivity() {
 
         val labels = NotesListAdapter.Labels(
             pinned = getString(R.string.notes_pinned),
+            trash = getString(R.string.notes_trash),
             all = getString(R.string.notes_all),
             untitled = getString(R.string.notes_untitled),
             highlight = ColorUtils.setAlphaComponent(
@@ -186,13 +187,15 @@ class NotesListActivity : ScreenActivity() {
             ?: (0 until list.childCount).map(list::getChildAt).lastOrNull { it.top <= y }
             ?: return null
         val target = adapter.folderAt(list.getChildAdapterPosition(child)) ?: return null
-        return target.takeIf { it != dragged?.let(::groupOf) }
+        // The trash is not somewhere to drop a note; deleting asks first.
+        return target.takeIf { it != NotesStore.TRASH && it != dragged?.let(::groupOf) }
     }
 
     /** The group a note is shown in now. */
     private fun groupOf(id: String): String? {
         val note = store.note(id) ?: return null
         return when {
+            note.deleted != null -> NotesStore.TRASH
             note.pinned -> NotesStore.PINNED
             !byFolder() -> NotesStore.ALL
             else -> note.folder
@@ -272,10 +275,24 @@ class NotesListActivity : ScreenActivity() {
         binding.toolTheme.tooltipText = label
     }
 
+    /** A change from the Mac arrives on the sync's thread; the list shows it once it is back here. */
+    private val storeChanged: () -> Unit = {
+        runOnUiThread {
+            texts.clear()
+            thumbnails.evictAll()
+            if (dragged == null) refresh()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        store.removeListener(storeChanged)
+    }
+
     override fun onResume() {
         super.onResume()
-        // The note screen changes the notes on disk; read them all again.
-        store = NotesStore(File(filesDir, "notes"))
+        store = NotesStore.shared(this)
+        store.addListener(storeChanged)
         if (store.isNew) {
             val folder = getString(R.string.notes_default_folder)
             store.addFolder(folder)

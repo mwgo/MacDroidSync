@@ -83,6 +83,23 @@ object MessageType {
 
     /** Phone to Mac: something else changed, the Mac's copy is out of date. */
     const val SMS_CHANGED = "sms-changed"
+
+    /**
+     * Notes, see PROTOCOL.md section 10. The configuration comes from the Mac in
+     * the handshake; every other request comes from the Mac too and is answered
+     * with the same type.
+     */
+    const val NOTES_CONFIG = "notes-config"
+    const val NOTES_MANIFEST = "notes-manifest"
+    const val NOTES_GET = "notes-get"
+    const val NOTES_PUT = "notes-put"
+    const val NOTES_DELETE = "notes-delete"
+    const val NOTES_COPY = "notes-copy"
+    const val NOTES_ASSET_GET = "notes-asset-get"
+    const val NOTES_ASSET_PUT = "notes-asset-put"
+
+    /** Phone to Mac: a note changed here, the Mac should look again. */
+    const val NOTES_CHANGED = "notes-changed"
 }
 
 /** One protocol message; absent fields are left out of the JSON payload. */
@@ -120,6 +137,8 @@ data class Message(
     val photo: PhotoPayload? = null,
     /** Messages, see PROTOCOL.md section 9. */
     val sms: SmsPayload? = null,
+    /** Notes, see PROTOCOL.md section 10. */
+    val notes: NotesPayload? = null,
 ) {
     fun toBytes(): ByteArray {
         val json = JSONObject()
@@ -144,6 +163,7 @@ data class Message(
         beacon?.let { json.put("beacon", it) }
         photo?.let { json.put("photo", it.toJson()) }
         sms?.let { json.put("sms", it.toJson()) }
+        notes?.let { json.put("notes", it.toJson()) }
         return json.toString().toByteArray(Charsets.UTF_8)
     }
 
@@ -172,6 +192,7 @@ data class Message(
                 beacon = if (json.has("beacon")) json.optBoolean("beacon") else null,
                 photo = json.optJSONObject("photo")?.let { PhotoPayload.fromJson(it) },
                 sms = json.optJSONObject("sms")?.let { SmsPayload.fromJson(it) },
+                notes = json.optJSONObject("notes")?.let { NotesPayload.fromJson(it) },
             )
         }
 

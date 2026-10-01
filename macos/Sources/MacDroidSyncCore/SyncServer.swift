@@ -35,6 +35,10 @@ public final class SyncServer {
     public var onPhotoPreview: ((String, Data?, String?) -> Void)?
     /// Anything the phone says about messages, on the main queue.
     public var onSms: ((SmsReply) -> Void)?
+    /// Anything the phone says about notes, on the main queue.
+    public var onNotes: ((NotesReply) -> Void)?
+    /// Whether the notes are synced, told to the phone when a session starts.
+    public var notesEnabled: (() -> Bool)?
     /// A gallery item arriving, kept apart from the ordinary file callbacks so a
     /// photo sync never shows up as the user's own transfer.
     public var onPhotoProgress: ((String, Int64, Int64) -> Void)?
@@ -262,6 +266,7 @@ public final class SyncServer {
         session.fileSink = makeFileSink?(destinationDirectory)
             ?? FileReceiver(directory: destinationDirectory)
         session.photoConfigProvider = makePhotoConfig
+        session.notesConfigProvider = { [weak self] in self?.notesEnabled?() ?? false }
         state = .connecting
 
         session.onAuthenticated = { [weak self, weak session] deviceName in
@@ -308,6 +313,9 @@ public final class SyncServer {
         }
         session.onSms = { [weak self] reply in
             DispatchQueue.main.async { self?.onSms?(reply) }
+        }
+        session.onNotes = { [weak self] reply in
+            DispatchQueue.main.async { self?.onNotes?(reply) }
         }
         session.onPhotoProgress = { [weak self] name, received, total in
             DispatchQueue.main.async { self?.onPhotoProgress?(name, received, total) }
@@ -422,6 +430,25 @@ public final class SyncServer {
                 return false
             }
         }
+    }
+
+    /// Sends one request about notes; false when there is no phone to send it to.
+    public func requestNotes(type: String, payload: NotesPayload, data: Data? = nil) -> Bool {
+        queue.sync {
+            guard let session, session.isAuthenticated else { return false }
+            do {
+                try session.sendNotesRequest(type: type, payload: payload, data: data)
+                return true
+            } catch {
+                Log.error("Could not send \(type) to the phone: \(error.localizedDescription)")
+                return false
+            }
+        }
+    }
+
+    /// Tells the connected phone whether the notes are synced now.
+    public func sendNotesConfig(enabled: Bool) {
+        _ = requestNotes(type: MessageType.notesConfig, payload: NotesPayload(enabled: enabled))
     }
 
     /// Whether a transfer to the phone is currently in flight.

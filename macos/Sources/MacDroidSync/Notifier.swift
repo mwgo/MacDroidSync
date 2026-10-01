@@ -24,6 +24,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var onOpenPhotoSync: (() -> Void)?
     /// A message banner was clicked: open that conversation.
     var onOpenMessages: ((Int64) -> Void)?
+    /// A note conflict banner was clicked.
+    var onOpenNoteConflicts: (() -> Void)?
+
+    private static let noteConflictCategory = "note-conflict"
 
     private static let messageCategory = "sms-received"
     private static let showMessage = "show-message"
@@ -72,6 +76,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             UNNotificationCategory(
                 identifier: Self.decisionCategory,
                 actions: [review],
+                intentIdentifiers: [],
+                options: []
+            ),
+            UNNotificationCategory(
+                identifier: Self.noteConflictCategory,
+                actions: [],
                 intentIdentifiers: [],
                 options: []
             ),
@@ -161,6 +171,25 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(content, identifier: Self.decisionIdentifier)
     }
 
+    /// Something the notes sync could not settle alone; nothing was lost, so no sound.
+    func noteConflict(_ conflict: NotesConflict) {
+        let content = UNMutableNotificationContent()
+        switch conflict.kind {
+        case NotesConflict.Kind.edited:
+            content.title = "Note changed on both sides"
+            content.body = "\(conflict.title): the phone's version was kept as a copy."
+        case NotesConflict.Kind.deletions:
+            content.title = "Notes deletions waiting"
+            content.body = "\(conflict.count ?? 0) notes were deleted at once. Allow it in the conflicts window."
+        default:
+            content.title = "Deleted note restored"
+            content.body = "\(conflict.title) was changed on the other side, so it was kept."
+        }
+        content.categoryIdentifier = Self.noteConflictCategory
+        content.sound = nil
+        post(content)
+    }
+
     private func post(_ content: UNMutableNotificationContent, identifier: String = UUID().uuidString) {
         guard isAvailable, isAuthorized else { return }
         let request = UNNotificationRequest(
@@ -200,6 +229,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 let thread = response.notification.request.content.userInfo[Self.threadKey] as? NSNumber
             else { return }
             DispatchQueue.main.async { [weak self] in self?.onOpenMessages?(thread.int64Value) }
+            return
+        }
+        if response.notification.request.content.categoryIdentifier == Self.noteConflictCategory {
+            DispatchQueue.main.async { [weak self] in self?.onOpenNoteConflicts?() }
             return
         }
         if response.notification.request.content.categoryIdentifier == Self.decisionCategory {

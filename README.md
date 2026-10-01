@@ -19,6 +19,8 @@ Clipboard sharing between macOS and Android over Wi-Fi, in the spirit of KDE Con
 * **Text messages on the Mac.** A *Messages* window lists the phone's conversations, shows them with
   MMS pictures, and sends replies through the phone. A new message raises a notification on the Mac.
   See *Messages* below.
+* **Notes on both sides.** The phone's *MD Notes* app and Notes on the Mac hold the same notes, kept the
+  same within seconds either way, pictures and files included. See *Notes* below.
 * **The status bar icon on Android only exists while a Mac is connected.** No connection, no icon.
 * **Ping** the phone straight from the Mac menu and get the round trip time.
 
@@ -283,6 +285,35 @@ The Mac's copy lives in `~/Library/Application Support/MacDroidSync/Messages` (r
 only) and the pictures in `~/Library/Caches/MacDroidSync/MessageImages`, up to 200 MB. *Delete Stored
 Messages…* in *Settings › General* removes both; so does regenerating the pairing code. The protocol is
 section 9 of [PROTOCOL.md](PROTOCOL.md).
+
+## Notes
+
+The phone's *MD Notes* app and the iCloud account of Notes on the Mac hold the same notes. Switch it on
+in *Settings › General › Notes*; the first time, macOS asks whether MacDroidSync may control Notes.
+
+* **Within seconds either way.** The phone saves a note a moment after typing stops and tells the Mac,
+  which writes it into Notes; the Mac looks at Notes every ten seconds and sends what changed to the
+  phone. While the two are apart nothing is synced, and every note is compared again when they meet.
+* **Everything is copied the first time.** Notes on one side only are added to the other; a note that is
+  already on both - same folder, same title, same words - is taken as one. Folders match by name and
+  the missing ones are made.
+* **A note changed on both sides** keeps the version in Notes, and the phone's version becomes a copy
+  titled *… (Android, Oct 1 12:30)* on both sides. Nothing is lost; the entry in *Note conflicts…* shows
+  the two versions side by side, pictures included, until it is dismissed.
+* **Deletions follow.** A note deleted on the phone goes to *Recently Deleted* in Notes, one deleted in
+  Notes to *Recently Deleted* at the end of the phone's list, for thirty days, where it can be restored.
+  A note deleted on one side and changed on the other comes back instead, and more than a fifth of the
+  notes (at least five) deleted at once wait in *Note conflicts…* to be allowed.
+* **What the two can hold differs.** Headings, bold, italic, underline, monospace, lists and tables
+  carry over as they are; tasks and quotes travel as ☐/☑ and │ at the start of the line. Pictures, files
+  and recordings from the phone become attachments at the end of the note in Notes - a script cannot
+  place them anywhere else - and a note edited in Notes comes back to the phone with them there too. Pinning, folder renames and
+  password protected notes are not synced, and a note open with unsaved changes on the phone waits until
+  it is saved.
+
+The Mac keeps which notes belong together, the conflicts and a copy of the pictures in
+`~/Library/Application Support/MacDroidSync/Notes`. The protocol is section 10 of
+[PROTOCOL.md](PROTOCOL.md).
 
 ## Photo sync
 
