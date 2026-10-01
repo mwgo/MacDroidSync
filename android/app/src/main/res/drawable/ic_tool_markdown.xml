@@ -1,0 +1,16 @@
+<!-- Show the Markdown source: the Markdown mark, an M and an arrow in a frame. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="208"
+    android:viewportHeight="208">
+    <group android:translateY="40">
+        <path
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="12"
+            android:pathData="M15,6 H193 A9,9 0 0 1 202,15 V113 A9,9 0 0 1 193,122 H15 A9,9 0 0 1 6,113 V15 A9,9 0 0 1 15,6 Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M30,98 V30 H50 L70,55 L90,30 H110 V98 H90 V59 L70,84 L50,59 V98 Z M155,98 L125,65 H145 V30 H165 V65 H185 Z" />
+    </group>
+</vector>

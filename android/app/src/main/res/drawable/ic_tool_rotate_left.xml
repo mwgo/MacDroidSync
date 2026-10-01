@@ -1,0 +1,18 @@
+<!-- Turn the picture a quarter anticlockwise: an arrow bending left over a frame. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineJoin="round"
+        android:pathData="M10,11h10v10H10z" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M17,7.5C16,5 13.5,3.5 10.5,3.5c-3.5,0 -6.5,3 -6.5,6.5 M4,10l2.6,-1.4 M4,10l-1.4,-2.6" />
+</vector>

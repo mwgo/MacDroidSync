@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The outgoing MMS PDU, read by the phone's messaging service while it sends. -->
+<!-- The outgoing MMS PDU, read by the phone's messaging service while it sends,
+     the photo the camera app writes for a note, and the files attached to
+     notes, handed to other apps to open or share. -->
 <paths>
     <cache-path name="mms" path="mms/" />
+    <cache-path name="camera" path="camera/" />
+    <files-path name="note_files" path="notes/files/" />
 </paths>

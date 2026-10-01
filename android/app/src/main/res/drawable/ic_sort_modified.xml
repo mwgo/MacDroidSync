@@ -1,0 +1,13 @@
+<!-- The notes are sorted by when they were edited: a clock with an arrow down. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M9.5,12m-6.5,0a6.5,6.5 0 1,0 13,0a6.5,6.5 0 1,0 -13,0 M9.5,8.5v3.5l2.5,1.5 M19.5,5v14 M17,16.5l2.5,2.5l2.5,-2.5" />
+</vector>

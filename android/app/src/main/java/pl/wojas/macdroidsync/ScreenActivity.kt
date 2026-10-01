@@ -1,9 +1,11 @@
 package pl.wojas.macdroidsync
 
+import android.content.res.Configuration
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 
@@ -26,6 +28,19 @@ abstract class ScreenActivity : AppCompatActivity() {
                 right = bars.right,
                 bottom = maxOf(bars.bottom, keyboard.bottom),
             )
+            insets
+        }
+    }
+
+    /**
+     * For a screen without an app bar: [page] keeps clear of the status bar
+     * itself, and the status bar gets dark icons on a light background.
+     */
+    protected fun keepClearOfStatusBar(page: View) {
+        val night = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = !night
+        ViewCompat.setOnApplyWindowInsetsListener(page) { view, insets ->
+            view.updatePadding(top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top)
             insets
         }
     }

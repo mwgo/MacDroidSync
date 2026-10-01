@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Voice recordings in the notes. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Only Android 9 needs a permission to write into the public Download folder;
          from Android 10 on the same job goes through MediaStore without one. -->
     <uses-permission
@@ -79,6 +81,53 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- The Markdown notes, with a launcher icon of their own: the list of
+             notes, and the screen of one note above it. The separate task
+             affinity keeps them out of the MacDroidSync task, which they would
+             otherwise be stacked onto when that one is running. -->
+        <activity
+            android:name=".NotesListActivity"
+            android:exported="true"
+            android:icon="@drawable/ic_notes"
+            android:label="@string/notes_app_name"
+            android:taskAffinity="${applicationId}.notes"
+            android:windowSoftInputMode="stateAlwaysHidden|adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".NotesActivity"
+            android:exported="false"
+            android:label="@string/notes_app_name"
+            android:parentActivityName=".NotesListActivity"
+            android:taskAffinity="${applicationId}.notes"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Share sheet target that makes a new note of shared text, pictures and files. -->
+        <activity
+            android:name=".NoteShareActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:icon="@drawable/ic_notes"
+            android:label="@string/note_share_label"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.ShareTarget">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
 

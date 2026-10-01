@@ -90,6 +90,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
+    // Already pulled in by Material; named here because the notes list uses it directly.
+    implementation("androidx.recyclerview:recyclerview:1.1.0")
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 

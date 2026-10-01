@@ -1,0 +1,16 @@
+<!-- Remove the current column: a column outlined, and a solid column with a minus beside it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.6"
+        android:pathData="M3.8,3H9.2V21H3.8Z" />
+    <!-- The new or removed row or column, solid, with its sign cut out of it. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M11.5,2.2H21.5V21.8H11.5Z M13.3,10.9H19.7V13.1H13.3Z" />
+</vector>
