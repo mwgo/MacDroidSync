@@ -46,6 +46,8 @@ final class NotesMarkupTests: XCTestCase {
         XCTAssertTrue(out.html.contains("<table><tbody><tr><td><div>A</div></td><td><div>B</div></td></tr><tr><td><div>1</div></td>"))
         XCTAssertTrue(out.html.contains("<div><tt>let x = 1 &lt; 2</tt></div>"))
         XCTAssertFalse(out.html.contains("<img"))
+        let placed = NotesMarkup.html(fromMarkdown: md) { URL(fileURLWithPath: "/w/" + ($0 as NSString).lastPathComponent) }.html
+        XCTAssertTrue(placed.contains("</table></div><div><tt>let x = 1 &lt; 2</tt></div><div><img src=\"file:///w/00000000-0000-0000-0000-000000000001.jpg\"></div><div><img src=\"file:///w/Umowa.pdf\"></div>"))
         XCTAssertEqual(out.files.map(\.name), ["00000000-0000-0000-0000-000000000001.jpg", "Umowa.pdf"])
     }
 

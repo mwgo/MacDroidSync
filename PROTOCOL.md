@@ -727,9 +727,15 @@ the sync is switched on. For every pair of notes:
 A newer date in Notes is not taken for an edit by itself: Notes moves it on for reasons of its own, so
 the Mac compares the note's text with what it read at the last sync. Notes rewrites what it is given -
 headings as sized bold text, monospace as Courier, quotes as plain lines - so tasks and quotes travel as
-`☐`/`☑` and `│` at the start of the line. A picture set into the body as data is kept by Notes as a
-broken attachment, so the phone's pictures and files are attached from files, which Notes puts at the
-end of the note (and, by a fault of its own, twice; the second copy is removed). A picture comes back in
-the body; any other attached file leaves an empty line there and cannot always be read back, so the Mac
-remembers which of the phone's files stands at each such line, and the phone keeps its own.
+`☐`/`☑` and `│` at the start of the line.
+
+Pictures and files take some doing. Notes keeps a picture set into the body as data as a broken
+"File" attachment, and puts an attachment made by script at the end of the note (twice, by a fault of
+its own). What it does take in place is `<img src="file://…">` - for a picture or any other file - but
+only for a file it was handed by an Apple event first, as Notes runs in a sandbox. So the Mac copies
+each file of the note under its own name, attaches them all to the note, which grants the access, and
+then sets the body, in which each one is such a reference where it stands; setting the body drops the
+attachments made a moment before. Read back, a picture comes in the body as data; any other file leaves
+an empty line there and cannot always be read back, so the Mac remembers which of the phone's files
+stands at each such line, and the phone keeps its own.
 

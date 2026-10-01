@@ -304,10 +304,9 @@ in *Settings › General › Notes*; the first time, macOS asks whether MacDroid
   Notes to *Recently Deleted* at the end of the phone's list, for thirty days, where it can be restored.
   A note deleted on one side and changed on the other comes back instead, and more than a fifth of the
   notes (at least five) deleted at once wait in *Note conflicts…* to be allowed.
-* **What the two can hold differs.** Headings, bold, italic, underline, monospace, lists and tables
-  carry over as they are; tasks and quotes travel as ☐/☑ and │ at the start of the line. Pictures, files
-  and recordings from the phone become attachments at the end of the note in Notes - a script cannot
-  place them anywhere else - and a note edited in Notes comes back to the phone with them there too. Pinning, folder renames and
+* **What the two can hold differs.** Headings, bold, italic, underline, monospace, lists, tables,
+  pictures, files and recordings carry over as they are, each in its place; tasks and quotes travel as
+  ☐/☑ and │ at the start of the line. Pinning, folder renames and
   password protected notes are not synced, and a note open with unsaved changes on the phone waits until
   it is saved.
 

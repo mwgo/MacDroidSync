@@ -110,16 +110,19 @@ private final class FakeNotes: NotesLibrary {
         return MacNoteContent(info: note.info, html: note.html, attachments: [])
     }
 
-    /// As Notes does with attached files: a picture shows at the end of the
-    /// body, anything else leaves an empty line there and cannot be read back
-    /// when `hidesFiles` is set.
+    /// As Notes does with a file the body refers to: a picture shows in its
+    /// place with its data, anything else leaves an empty line there.
     private func stored(_ html: String, _ files: [URL]) -> String {
-        html + files.map { file in
+        var html = html
+        for file in files {
+            let reference = "<div><img src=\"\(file.absoluteString)\"></div>"
             if ["jpg", "png"].contains(file.pathExtension), let data = try? Data(contentsOf: file) {
-                return "<div><img src=\"data:image/jpeg;base64,\(data.base64EncodedString())\"/></div>"
+                html = html.replacingOccurrences(of: reference, with: "<div><img src=\"data:image/jpeg;base64,\(data.base64EncodedString())\"/></div>")
+            } else {
+                html = html.replacingOccurrences(of: reference, with: "<div><br><br></div>")
             }
-            return "<div><br><br></div>"
-        }.joined()
+        }
+        return html
     }
 
     func create(folder: String, html: String, files: [URL]) async throws -> MacNoteInfo {
@@ -365,7 +368,7 @@ final class NotesCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.store.conflicts.isEmpty)
     }
 
-    func testPicturesGoToNotesAsFilesAndKeepTheirPathOnThePhone() async {
+    func testPicturesStandInTheirPlaceInNotesAndKeepTheirPathOnThePhone() async {
         let path = "images/00000000-0000-0000-0000-000000000009.jpg"
         phone.assets[path] = Data([0xFF, 0xD8, 0xFF, 0x01])
         let id = phone.add("# Morze\n![](\(path))\ntekst")
@@ -374,8 +377,7 @@ final class NotesCoordinatorTests: XCTestCase {
         XCTAssertTrue(mac.notes[macId]!.html.contains("<img"))
         mac.edit(macId, html: mac.notes[macId]!.html.replacingOccurrences(of: "tekst", with: "tekst z Maca"))
         await sync()
-        // Notes holds attached pictures at the end, and so does the phone after an edit there.
-        XCTAssertEqual(phone.notes[id]?.markdown, "# Morze\ntekst z Maca\n![](\(path))")
+        XCTAssertEqual(phone.notes[id]?.markdown, "# Morze\n![](\(path))\ntekst z Maca")
     }
 
     func testAFileNotesWillNotHandBackStaysOnThePhone() async {
@@ -387,7 +389,7 @@ final class NotesCoordinatorTests: XCTestCase {
         XCTAssertTrue(mac.notes[macId]!.html.contains("<br><br>"))
         mac.edit(macId, html: mac.notes[macId]!.html.replacingOccurrences(of: "tekst", with: "tekst z Maca"))
         await sync()
-        XCTAssertEqual(phone.notes[id]?.markdown, "# Dyktafon\ntekst z Maca\n[nagranie.m4a](\(path))")
+        XCTAssertEqual(phone.notes[id]?.markdown, "# Dyktafon\n[nagranie.m4a](\(path))\ntekst z Maca")
     }
 
     func testAMoveOnEitherSideMovesTheNoteAndWritesNothing() async {

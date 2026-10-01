@@ -245,21 +245,11 @@ public final class AppleNotesLibrary: NotesLibrary {
       return { id: note.id(), name: note.name(), folder: note.container().name(), modified: note.modificationDate().getTime() };
     }
 
-    // Notes puts an attachment made by script into the note twice, one object
-    // in two places; the second place is taken out again.
-    function attach(Notes, note, files) {
-      (files || []).forEach(file => {
-        const before = {};
-        note.attachments.id().forEach(id => { before[id] = true; });
-        Notes.make({ new: 'attachment', at: note, withData: Path(file) });
-        const ids = note.attachments.id();
-        const seen = {};
-        for (let i = ids.length - 1; i >= 0; i--) {
-          if (before[ids[i]]) continue;
-          if (seen[ids[i]]) { try { Notes.delete(note.attachments[i]); } catch (e) {} }
-          seen[ids[i]] = true;
-        }
-      });
+    // Notes reads a file the body refers to only once it was handed the file
+    // by an Apple event: attaching it does that. The attachments made here go
+    // again with the body set right after, which puts each file in its place.
+    function grant(Notes, note, files) {
+      (files || []).forEach(file => Notes.make({ new: 'attachment', at: note, withData: Path(file) }));
     }
 
     function safeName(name) {
@@ -318,14 +308,18 @@ public final class AppleNotesLibrary: NotesLibrary {
         }
         case 'create': {
           const folder = ensureFolder(Notes, account, req.folder);
-          const note = Notes.make({ new: 'note', at: folder, withProperties: { body: readText(req.htmlFile) } });
-          attach(Notes, note, req.files);
+          const html = readText(req.htmlFile);
+          const note = Notes.make({ new: 'note', at: folder, withProperties: { body: html } });
+          if ((req.files || []).length) {
+            grant(Notes, note, req.files);
+            note.body = html;
+          }
           return JSON.stringify(info(Notes.notes.byId(note.id())));
         }
         case 'update': {
           let note = Notes.notes.byId(req.id);
+          grant(Notes, note, req.files);
           note.body = readText(req.htmlFile);
-          attach(Notes, note, req.files);
           if (req.folder && note.container().name() !== req.folder) {
             Notes.move(note, { to: ensureFolder(Notes, account, req.folder) });
             note = Notes.notes.byId(req.id);

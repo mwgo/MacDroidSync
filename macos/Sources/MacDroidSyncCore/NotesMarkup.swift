@@ -126,10 +126,12 @@ public enum NotesMarkup {
 
     // MARK: - Markdown to Notes
 
-    /// A note ready for Notes: its body, and the pictures and files to attach
-    /// after it, in order. A picture set into the body as data is kept by Notes
-    /// as a broken "File" attachment, so pictures are attached from files too,
-    /// which Notes puts at the end of the note.
+    /// A note ready for Notes: its body, and the pictures and files it shows, in
+    /// order. Notes keeps a picture set into the body as data as a broken "File"
+    /// attachment, and puts one made by script at the end of the note; what it
+    /// does take in place is `<img src="file://…">` for a file it was given by
+    /// an Apple event just before, a picture or any other file. So each one
+    /// stands in the body as such a reference to its local copy.
     public struct Outgoing: Equatable {
         public var html: String
         public var files: [(path: String, name: String)]
@@ -139,8 +141,9 @@ public enum NotesMarkup {
         }
     }
 
-    /// The body Notes is given for `markdown`, with its pictures and files listed to attach.
-    public static func html(fromMarkdown markdown: String) -> Outgoing {
+    /// The body Notes is given for `markdown`. `local` is the copy on this Mac
+    /// of a picture or file by its path on the phone; one without is left out.
+    public static func html(fromMarkdown markdown: String, local: (String) -> URL? = { _ in nil }) -> Outgoing {
         var html = ""
         var files: [(String, String)] = []
         var openList: String?
@@ -186,8 +189,10 @@ public enum NotesMarkup {
                     html += "</tbody></table></div>"
                 case .image(let path, _):
                     files.append((path, (path as NSString).lastPathComponent))
+                    if let url = local(path) { html += "<div><img src=\"\(escape(url.absoluteString))\"></div>" }
                 case .file(let path, let name):
                     files.append((path, name))
+                    if let url = local(path) { html += "<div><img src=\"\(escape(url.absoluteString))\"></div>" }
                 case .bullet, .numbered:
                     break
                 }

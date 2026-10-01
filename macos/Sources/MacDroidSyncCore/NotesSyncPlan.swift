@@ -211,7 +211,8 @@ public final class NotesSyncStore {
     public struct State: Codable, Equatable {
         public var pairs: [NotesPair] = []
         public var conflicts: [NotesConflict] = []
-        /// 2 since pictures go to Notes as attached files; absent is 1.
+        /// 2 since pictures go to Notes as attached files, 3 since they stand
+        /// in place there; absent is 1.
         public var version: Int?
 
         public init(version: Int? = nil) {
@@ -280,6 +281,15 @@ public final class NotesSyncStore {
     }
 
     /// Everything goes, pairs included: the next sync starts from scratch.
+    /// Marks the pairs whose phone side is to be written into Notes again.
+    public func rewrite(androidIds: Set<String>, version: Int) {
+        for index in state.pairs.indices where androidIds.contains(state.pairs[index].androidId) {
+            state.pairs[index].androidHash = ""
+        }
+        state.version = version
+        save()
+    }
+
     public func removeAll() {
         state = State()
         try? FileManager.default.removeItem(at: directory)

@@ -164,6 +164,7 @@ public final class NotesCoordinator {
             let phoneFolders = manifest.payload.folders ?? []
             var mac = try await library.list()
             try await createFolders(phoneFolders, existing: Set(mac.map(\.folder)))
+            if (store.state.version ?? 1) < 3 { try await putPicturesInPlace(phone: phone) }
             try await pairTheSame(phone: phone, mac: mac)
 
             let plan = NotesSyncPlan.plan(pairs: store.pairs, phone: phone, mac: mac, allowDeletions: allowDeletionsOnce)
@@ -297,15 +298,19 @@ public final class NotesCoordinator {
             try await download(asset)
         }
         let byPath = assetMap(doc)
-        let outgoing = NotesMarkup.html(fromMarkdown: doc.markdown)
+        // Every picture and file gets a copy under its own name, which Notes
+        // shows; the body refers to these copies where each one stands.
         let work = store.freshWorkFolder()
-        let files: [URL] = outgoing.files.compactMap { file in
-            guard let sha = byPath[file.path], let source = store.assetURL(sha256: sha) else { return nil }
+        var copies: [String: URL] = [:]
+        for (path, name) in NotesMarkup.html(fromMarkdown: doc.markdown).files where copies[path] == nil {
+            guard let sha = byPath[path], let source = store.assetURL(sha256: sha) else { continue }
             let target = work.appendingPathComponent(UUID().uuidString, isDirectory: true)
-                .appendingPathComponent(Self.safeFileName(file.name))
+                .appendingPathComponent(Self.safeFileName(name))
             try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            return (try? FileManager.default.copyItem(at: source, to: target)) == nil ? nil : target
+            if (try? FileManager.default.copyItem(at: source, to: target)) != nil { copies[path] = target }
         }
+        let outgoing = NotesMarkup.html(fromMarkdown: doc.markdown) { copies[$0] }
+        let files = outgoing.files.compactMap { copies[$0.path] }
         let folder = doc.folder.isEmpty ? "Notes" : doc.folder
         let written: MacNoteInfo
         if let macId {
@@ -316,7 +321,7 @@ public final class NotesCoordinator {
         // Read back for what Notes made of it: the text to compare later edits to.
         let content = try await readMac(written.id)
         // Pictures come back in the body; the other files are the attachments
-        // Notes keeps out of it, in their order.
+        // Notes keeps out of it, each leaving an empty line where it stands.
         let attachedLines = outgoing.files.filter { !$0.path.hasPrefix("images/") }.map { "[\($0.name)](\($0.path))" }
         var assets = pair?.assets ?? [:]
         doc.assets.forEach { assets[$0.sha256] = $0.path }
@@ -568,6 +573,35 @@ public final class NotesCoordinator {
 
     private func assetMap(_ doc: NoteDoc) -> [String: String] {
         Dictionary(doc.assets.map { ($0.path, $0.sha256) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Before version 3 the phone's pictures and files went to the end of the
+    /// note in Notes. A note the phone gave Notes that way - its pictures in the
+    /// text on the phone, all at the end in Notes - is written again, now with
+    /// each one in its place. A note that came from Notes is left alone: its
+    /// pictures are where they were, and writing it would lose what only Notes
+    /// can hold, such as fonts and links.
+    private func putPicturesInPlace(phone: [NoteEntry]) async throws {
+        let live = Set(phone.filter { !$0.isDeleted }.map(\.id))
+        var rewrite: Set<String> = []
+        for pair in store.pairs where live.contains(pair.androidId) && !pair.assets.isEmpty {
+            guard Self.attachmentsAtEnd(pair.macMarkdown) else { continue }
+            let answer = try await ask(MessageType.notesGet, NotesPayload(id: pair.androidId), refusalIsAnswer: true)
+            guard let doc = answer.payload.note, !Self.attachmentsAtEnd(doc.markdown) else { continue }
+            rewrite.insert(pair.androidId)
+        }
+        if !rewrite.isEmpty { Log.info("Notes sync: putting the pictures of \(rewrite.count) note(s) in their place") }
+        store.rewrite(androidIds: rewrite, version: 3)
+    }
+
+    /// Whether every picture and file of a note comes after all of its text.
+    static func attachmentsAtEnd(_ markdown: String) -> Bool {
+        let lines = markdown.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        func isAttachment(_ line: String) -> Bool {
+            line == NotesMarkup.attachmentPlaceholder || NotesMarkup.imageLine(line) != nil || NotesMarkup.fileLine(line) != nil
+        }
+        guard let first = lines.firstIndex(where: isAttachment) else { return false }
+        return lines[first...].allSatisfy(isAttachment)
     }
 
     // MARK: - Folders and the first sync
