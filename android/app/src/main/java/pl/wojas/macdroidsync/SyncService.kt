@@ -444,6 +444,14 @@ class SyncService : Service() {
                     notesHost.delete(request.id ?: throw NotesHost.Refused("missing"), request.baseHash)
                     reply
                 }
+                MessageType.NOTES_FOLDER_DELETE -> {
+                    notesHost.deleteFolder(request.folder ?: throw NotesHost.Refused("missing"))
+                    reply
+                }
+                MessageType.NOTES_SYNCED -> {
+                    notesHost.synced(request.notes.orEmpty())
+                    reply
+                }
                 MessageType.NOTES_COPY -> notesHost.copy(
                     request.id ?: throw NotesHost.Refused("missing"),
                     request.titleSuffix.orEmpty(),

@@ -10,7 +10,37 @@ enum class BlockType { PARAGRAPH, BULLET, NUMBERED, CHECKBOX, QUOTE, HEADING, CO
 
 enum class Inline { ITALIC, BOLD, UNDERLINE, CODE }
 
-data class Block(val type: BlockType, val level: Int = 0, val checked: Boolean = false)
+/** [level] is a heading's; [depth] how far a list item is nested, 0 for the outermost. */
+data class Block(val type: BlockType, val level: Int = 0, val checked: Boolean = false, val depth: Int = 0) {
+    val isListItem: Boolean get() = type in LIST_ITEMS
+
+    companion object {
+        val LIST_ITEMS = setOf(BlockType.BULLET, BlockType.NUMBERED, BlockType.CHECKBOX)
+
+        /** How deep lists nest, the outermost level not counted. */
+        const val MAX_DEPTH = 5
+    }
+}
+
+/** Counts the items of numbered lists, each level of a nested list on its own. */
+class ListNumbers {
+    private val counts = IntArray(Block.MAX_DEPTH + 1)
+
+    /** The number of the line's item in its list, 0 for a line that is not a numbered item. */
+    fun next(block: Block): Int {
+        if (!block.isListItem) {
+            counts.fill(0)
+            return 0
+        }
+        val depth = block.depth.coerceIn(0, Block.MAX_DEPTH)
+        for (d in depth + 1..Block.MAX_DEPTH) counts[d] = 0
+        if (block.type != BlockType.NUMBERED) {
+            counts[depth] = 0
+            return 0
+        }
+        return ++counts[depth]
+    }
+}
 
 /** A style over [start, end) of a line's text, with the delimiters already taken out. */
 data class InlineStyle(val style: Inline, val start: Int, val end: Int)
@@ -72,6 +102,8 @@ object Markdown {
     private val bullet = Regex("^[-*] ")
     private val numbered = Regex("^\\d+\\. ")
     private val quote = Regex("^>( |$)")
+    /** What each level of a nested list is indented by, which suits both bullets and numbers. */
+    private const val INDENT = "    "
     private val separatorCell = Regex("^:?-+:?$")
     private val image = Regex("^\\s*!\\[([^\\]]*)]\\(([^)\\s]+)\\)\\s*$")
 
@@ -237,12 +269,45 @@ object Markdown {
     /** Whether the line opens or closes a fenced code block. */
     fun isFence(line: String) = line.trimStart().startsWith("```")
 
+    /** How many columns of indent [line] starts with, a tab counting as four. */
+    private fun indentOf(line: String): Pair<Int, Int> {
+        var columns = 0
+        var chars = 0
+        while (chars < line.length && (line[chars] == ' ' || line[chars] == '\t')) {
+            columns += if (line[chars] == '\t') INDENT.length else 1
+            chars++
+        }
+        return columns to chars
+    }
+
+    /**
+     * How deep a list item indented by [columns] is, given the indents of the
+     * items open above it, outermost first: deeper than the one above when it
+     * is indented further, however far, and back at the level it lines up with
+     * otherwise. A list's first item is its outermost level, however indented.
+     */
+    private fun depthOf(open: MutableList<Int>, columns: Int): Int {
+        while (open.isNotEmpty() && open.last() > columns) open.removeAt(open.size - 1)
+        if (open.isEmpty() || open.last() < columns) open += columns
+        return (open.size - 1).coerceAtMost(Block.MAX_DEPTH)
+    }
+
     fun parse(markdown: String): List<MdLine> {
         val source = markdown.replace("\r\n", "\n").split('\n')
         val lines = mutableListOf<MdLine>()
+        val indents = mutableListOf<Int>()
         var i = 0
         while (i < source.size) {
             val line = source[i]
+            val (columns, chars) = indentOf(line)
+            val item = detectBlockPrefix(line.substring(chars))?.takeIf { it.first.isListItem }
+            if (item != null) {
+                val (text, styles) = parseInline(line.substring(chars + item.second))
+                lines += MdLine(item.first.copy(depth = depthOf(indents, columns)), text, styles)
+                i++
+                continue
+            }
+            indents.clear()
             if (isFence(line)) {
                 // The lines up to the closing fence, or to the end of a note that never closes it, as they are.
                 val start = lines.size
@@ -285,11 +350,12 @@ object Markdown {
     }
 
     fun toMarkdown(lines: List<MdLine>): String {
-        var number = 0
+        val numbers = ListNumbers()
         return lines.mapIndexed { i, line ->
             val block = line.block
-            number = if (block.type == BlockType.NUMBERED) number + 1 else 0
-            when (block.type) {
+            val number = numbers.next(block)
+            val indent = if (block.isListItem) INDENT.repeat(block.depth) else ""
+            indent + when (block.type) {
                 BlockType.CODE -> {
                     // A run of code lines shares one pair of fences.
                     val open = if (lines.getOrNull(i - 1)?.block?.type != BlockType.CODE) "```\n" else ""

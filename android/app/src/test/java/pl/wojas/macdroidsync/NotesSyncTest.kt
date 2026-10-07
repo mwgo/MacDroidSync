@@ -164,4 +164,30 @@ class NotesSyncTest {
         assertFalse(File(temp.root, image).exists())
         assertFalse(File(temp.root, "$image.part").exists())
     }
+
+    @Test
+    fun `a folder the Mac lost goes once only blank notes are left in it`() {
+        store.addFolder("Dom")
+        val note = store.create("Praca", "# A\ntekst")
+        store.create("Praca", "")
+        refused("not empty") { host.deleteFolder("Praca") }
+        store.delete(note.id)
+        host.deleteFolder("Praca")
+        assertEquals(listOf("Dom"), store.folders.map { it.name })
+        host.deleteFolder("Nie ma")
+    }
+
+    @Test
+    fun `a note counts as synced while the Mac's hash for it holds`() {
+        val a = store.create("Dom", "# A\nraz")
+        val b = store.create("Dom", "# B\ndwa")
+        assertFalse(store.isUnsynced(store.note(a.id)!!))
+        host.synced(listOf(NoteEntry(a.id, "Dom", "", 0, host.get(a.id).hash), NoteEntry(b.id, "Dom", "", 0, "stary")))
+        assertFalse(store.isUnsynced(store.note(a.id)!!))
+        assertTrue(store.isUnsynced(store.note(b.id)!!))
+        now += 10
+        store.save(a.id, "# A\nzmiana")
+        assertTrue(store.isUnsynced(store.note(a.id)!!))
+        assertTrue(NotesStore(temp.root) { now }.isUnsynced(store.note(a.id)!!))
+    }
 }

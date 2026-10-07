@@ -103,7 +103,11 @@ private final class FakeNotes: NotesLibrary {
     }
 
     func list() async throws -> [MacNoteInfo] { notes.values.map(\.info).sorted { $0.id < $1.id } }
-    func folders() async throws -> [String] { Array(Set(notes.values.map(\.info.folder))) }
+    /// Folders without a note in them; those with one come from the notes.
+    var emptyFolders: Set<String> = []
+    var deletedFolders: [String] = []
+
+    func folders() async throws -> [String] { Array(Set(notes.values.map(\.info.folder)).union(emptyFolders)) }
 
     func read(id: String, into folder: URL) async throws -> MacNoteContent {
         guard let note = notes[id] else { throw NotesLibraryError.failed("no note \(id)") }
@@ -155,7 +159,16 @@ private final class FakeNotes: NotesLibrary {
         deleted.append(id)
     }
 
-    func ensureFolder(_ name: String) async throws {}
+    func ensureFolder(_ name: String) async throws {
+        if !notes.values.contains(where: { $0.info.folder == name }) { emptyFolders.insert(name) }
+    }
+
+    func deleteFolder(_ name: String) async throws -> Bool {
+        if notes.values.contains(where: { $0.info.folder == name }) { return false }
+        emptyFolders.remove(name)
+        deletedFolders.append(name)
+        return true
+    }
 }
 
 /// The phone's side, as NotesHost on Android does it.
@@ -167,7 +180,13 @@ private final class FakePhone {
         var deleted = false
     }
 
-    var notes: [String: Note] = [:]
+    var notes: [String: Note] = [:] {
+        didSet { folders.formUnion(notes.values.map(\.folder)) }
+    }
+    /// As the phone keeps them: a folder stays when its notes go.
+    var folders: Set<String> = []
+    /// What the last notes-synced said Notes holds as it is.
+    var synced: [String: String] = [:]
     var assets: [String: Data] = [:]
     var writes = 0
     var writtenFolders = 0
@@ -191,7 +210,7 @@ private final class FakePhone {
         var reason: String?
         switch type {
         case MessageType.notesManifest:
-            reply.folders = Array(Set(notes.values.map(\.folder)))
+            reply.folders = Array(folders)
             reply.notes = notes.map { id, note in
                 NoteEntry(id: id, folder: note.folder, title: NotesCoordinator.title(of: note.markdown), modified: 1,
                           hash: note.deleted ? "" : hash(note.markdown), deleted: note.deleted ? true : nil)
@@ -232,6 +251,16 @@ private final class FakePhone {
             return true
         case MessageType.notesDelete:
             if let id = request.id { notes[id]?.deleted = true }
+        case MessageType.notesFolderDelete:
+            let folder = request.folder ?? ""
+            if notes.values.contains(where: { $0.folder == folder && !$0.deleted }) {
+                ok = false
+                reason = "not empty"
+            } else {
+                folders.remove(folder)
+            }
+        case MessageType.notesSynced:
+            synced = Dictionary((request.notes ?? []).map { ($0.id, $0.hash) }, uniquingKeysWith: { a, _ in a })
         case MessageType.notesCopy:
             if let id = request.id, let note = notes[id] {
                 var lines = note.markdown.components(separatedBy: "\n")
@@ -424,5 +453,56 @@ final class NotesCoordinatorTests: XCTestCase {
         coordinator.allowHeldDeletions()
         for _ in 0..<500 where coordinator.isRunning { try? await Task.sleep(nanoseconds: 5_000_000) }
         XCTAssertEqual(mac.notes.count, 0)
+    }
+
+    // MARK: - Folders and what is synced
+
+    func testAnEmptyFolderDeletedInNotesGoesFromThePhoneAndStaysGone() async {
+        phone.folders.insert("Pusty")
+        phone.add("# Notatka\ntekst")
+        await sync()
+        XCTAssertTrue(mac.emptyFolders.contains("Pusty"))
+        mac.emptyFolders.remove("Pusty")
+        await sync()
+        XCTAssertFalse(phone.folders.contains("Pusty"))
+        await sync()
+        XCTAssertFalse(mac.emptyFolders.contains("Pusty"))
+    }
+
+    func testAFolderDeletedOnThePhoneGoesFromNotes() async {
+        phone.folders.insert("Pusty")
+        await sync()
+        phone.folders.remove("Pusty")
+        await sync()
+        XCTAssertEqual(mac.deletedFolders, ["Pusty"])
+    }
+
+    func testAFolderDeletedInNotesWithItsNotesGoesOnThePhoneWithThem() async {
+        let id = phone.add("# W domu\ntekst", folder: "Dom")
+        await sync()
+        let macId = coordinator.store.pair(androidId: id)!.macId
+        // Deleting a folder in Notes puts its notes in Recently Deleted.
+        try? await mac.delete(id: macId)
+        mac.emptyFolders.remove("Dom")
+        await sync()
+        XCTAssertTrue(phone.notes[id]!.deleted)
+        XCTAssertFalse(phone.folders.contains("Dom"))
+    }
+
+    func testANewFolderOnThePhoneIsMadeInNotesNotDeleted() async {
+        phone.add("# A\nb")
+        await sync()
+        phone.folders.insert("Nowy")
+        await sync()
+        XCTAssertTrue(mac.emptyFolders.contains("Nowy"))
+        XCTAssertTrue(phone.folders.contains("Nowy"))
+    }
+
+    func testThePhoneLearnsWhichNotesNotesHoldsAsTheyAre() async {
+        let a = phone.add("# A\nraz")
+        let b = phone.add("# B\ndwa")
+        await sync()
+        XCTAssertEqual(Set(phone.synced.keys), [a, b])
+        XCTAssertEqual(phone.synced[a], phone.hash("# A\nraz"))
     }
 }

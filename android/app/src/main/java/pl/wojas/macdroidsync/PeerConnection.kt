@@ -441,7 +441,9 @@ class PeerConnection(
             MessageType.NOTES_DELETE,
             MessageType.NOTES_COPY,
             MessageType.NOTES_ASSET_GET,
-            MessageType.NOTES_ASSET_PUT -> listener.onNotesRequest(
+            MessageType.NOTES_ASSET_PUT,
+            MessageType.NOTES_FOLDER_DELETE,
+            MessageType.NOTES_SYNCED -> listener.onNotesRequest(
                 message.type,
                 message.notes ?: NotesPayload(),
                 message.data?.let { runCatching { Base64.decode(it, Base64.DEFAULT) }.getOrNull() },

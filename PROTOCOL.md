@@ -77,7 +77,8 @@ Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
 `file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`,
 `photo-config`, `photo-preview`, `sms-threads`, `sms-thread`, `sms-image`, `sms-avatar`,
 `sms-send`, `sms-status`, `sms-new`, `sms-changed`, `notes-config`, `notes-manifest`, `notes-get`,
-`notes-put`, `notes-delete`, `notes-copy`, `notes-asset-get`, `notes-asset-put`, `notes-changed`.
+`notes-put`, `notes-delete`, `notes-copy`, `notes-asset-get`, `notes-asset-put`, `notes-folder-delete`,
+`notes-synced`, `notes-changed`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
 that connection (replay and reordering protection).
@@ -669,13 +670,15 @@ is given and says when something changed; it keeps no state of the sync.
    |<- notes-put {id, hash} ---------------------|  or ok:false, reason
    |-- notes-delete {id, baseHash} ------------->|  into the phone's trash
    |-- notes-copy {id, titleSuffix} ------------>|  the phone's version kept aside
+   |-- notes-folder-delete {folder} ------------>|  a folder deleted in Notes
+   |-- notes-synced {notes} -------------------->|  after a cycle: what Notes holds as it is
    |<- notes-changed ----------------------------|  a second after the notes settle
 ```
 
 Every request carries a `requestId` and is answered with the same type and id, a refusal included:
 `ok: false` with `reason`. The reasons are plain words, not an enum: `off` (no configuration, or it said
 no), `missing`, `deleted`, `changed`, `editing`, `missing asset`, `bad path`, `bad offset`, `checksum`,
-`too big`.
+`too big`, `not empty`, `last folder`.
 
 ### The `notes` object
 
@@ -690,6 +693,8 @@ no), `missing`, `deleted`, `changed`, `editing`, `missing asset`, `bad path`, `b
 | `baseHash` | `notes-put`, `notes-delete` | the hash the Mac last saw; a different one is refused as `changed` |
 | `hash` | `notes-put` answer | the note's hash now |
 | `titleSuffix` | `notes-copy` | added to the copy's title |
+| `folder` | `notes-folder-delete` | the folder to remove; refused as `not empty` while a note the Mac knows of is in it |
+| `notes` | `notes-synced` | `{id, hash}` (with `folder`, `title` and `modified` filled in but not used) of every note Notes holds as it is; the phone marks those whose hash still matches |
 | `path`, `offset`, `total`, `sha256` | `notes-asset-*` | which file, where in it, its size and checksum |
 
 * `hash` is the SHA-256 of the Markdown followed by `\n<path>:<sha256>` for every picture and file it
@@ -724,10 +729,21 @@ the sync is switched on. For every pair of notes:
   conflicts list says so;
 * more than `max(5, pairs / 5)` deletions at once wait in the conflicts list until allowed.
 
+Folders go by name. The Mac remembers those both sides had after the last cycle: one of them missing on
+a side now was deleted there, and goes on the other side as well once the notes in it are gone, which
+the steps for the notes see to (`notes-folder-delete` on the phone, which moves a blank note left in it
+to its first folder; an empty folder only, in Notes). Until then it stays on the list and is not made
+again. A folder only the phone has and that the Mac never saw is made in Notes. At the end of a cycle
+the Mac sends `notes-synced`, and the phone shows a dot before the title of a note it edited since.
+
 A newer date in Notes is not taken for an edit by itself: Notes moves it on for reasons of its own, so
 the Mac compares the note's text with what it read at the last sync. Notes rewrites what it is given -
 headings as sized bold text, monospace as Courier, quotes as plain lines - so tasks and quotes travel as
-`☐`/`☑` and `│` at the start of the line.
+`☐`/`☑` and `│` at the start of the line. A heading is told by its size against the size most of the
+note's text has, since a note made smaller in Notes has all its sizes smaller. Its scripting has no
+checklists at all: none can be made, and one made in Notes reads back as a plain list without its
+ticks. A nested list goes inside its parent list next to the items, as Notes writes it, and the phone
+indents each level by four spaces; a task inside a list goes there with its mark.
 
 Pictures and files take some doing. Notes keeps a picture set into the body as data as a broken
 "File" attachment, and puts an attachment made by script at the end of the note (twice, by a fault of

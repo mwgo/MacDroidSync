@@ -163,7 +163,12 @@ public final class NotesCoordinator {
             let phone = manifest.payload.notes ?? []
             let phoneFolders = manifest.payload.folders ?? []
             var mac = try await library.list()
-            try await createFolders(phoneFolders, existing: Set(mac.map(\.folder)))
+            let folders = NotesSyncPlan.folders(
+                known: store.state.folders.map(Set.init),
+                phone: phoneFolders,
+                mac: try await library.folders()
+            )
+            for folder in folders.createOnMac { try await library.ensureFolder(folder) }
             if (store.state.version ?? 1) < 3 { try await putPicturesInPlace(phone: phone) }
             try await pairTheSame(phone: phone, mac: mac)
 
@@ -187,6 +192,8 @@ public final class NotesCoordinator {
                 }
             }
             if plan.heldDeletions > 0 { holdDeletions(plan.heldDeletions) }
+            let waiting = try await deleteFolders(folders)
+            try await finish(waiting: waiting)
             mac = try await library.list()
             macSignature = signature(mac)
             store.clearWork()
@@ -606,13 +613,44 @@ public final class NotesCoordinator {
 
     // MARK: - Folders and the first sync
 
-    /// Folders of the phone that Notes has not got yet. The other way round they
-    /// come with their first note: the phone makes a folder for a note it is given.
-    private func createFolders(_ phoneFolders: [String], existing: Set<String>) async throws {
-        let missing = phoneFolders.filter { !existing.contains($0) }
-        guard !missing.isEmpty else { return }
-        let all = Set(try await library.folders())
-        for folder in missing where !all.contains(folder) { try await library.ensureFolder(folder) }
+    /// A folder deleted on one side goes on the other once the notes in it are
+    /// gone, which the steps before saw to. Returns those still waiting, a
+    /// folder that has notes left in it, on the phone and in Notes.
+    private func deleteFolders(_ folders: NotesSyncPlan.Folders) async throws -> (phone: Set<String>, mac: Set<String>) {
+        var phone = Set<String>()
+        var mac = Set<String>()
+        for folder in folders.deleteOnPhone {
+            let answer = try await ask(MessageType.notesFolderDelete, NotesPayload(folder: folder), refusalIsAnswer: true)
+            if answer.ok {
+                Log.info("Notes sync: folder \"\(folder)\" deleted on the phone")
+            } else {
+                phone.insert(folder)
+            }
+        }
+        for folder in folders.deleteOnMac {
+            if try await library.deleteFolder(folder) {
+                Log.info("Notes sync: folder \"\(folder)\" deleted in Notes")
+            } else {
+                mac.insert(folder)
+            }
+        }
+        return (phone, mac)
+    }
+
+    /// Remembers the folders both sides have now, with the deletions still to
+    /// carry out, and tells the phone which of its notes Notes holds as they are.
+    private func finish(waiting: (phone: Set<String>, mac: Set<String>)) async throws {
+        let manifest = try await ask(MessageType.notesManifest, NotesPayload())
+        let phone = Set(manifest.payload.folders ?? [])
+        let mac = Set(try await library.folders())
+        store.setFolders(phone.intersection(mac).union(waiting.phone.intersection(phone)).union(waiting.mac.intersection(mac)))
+        let entries = manifest.payload.notes ?? []
+        let byId = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let synced = store.pairs.compactMap { pair -> NoteEntry? in
+            guard let entry = byId[pair.androidId], !entry.isDeleted, entry.hash == pair.androidHash else { return nil }
+            return NoteEntry(id: entry.id, folder: entry.folder, title: "", modified: entry.modified, hash: entry.hash)
+        }
+        _ = try await ask(MessageType.notesSynced, NotesPayload(notes: synced), refusalIsAnswer: true)
     }
 
     /// The same note on both sides before they were ever synced - same folder,

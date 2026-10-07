@@ -483,11 +483,15 @@ class NotesActivity : ScreenActivity() {
      * and after every edit too, since the field alone would leave a new line
      * flush against the toolbar.
      */
+    /** Whether the caret is on a list item, which is when the indent buttons are shown. */
+    private var onListItem = false
+
     private fun keepCaretInView(scroll: View, field: EditText) {
         scroll.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
             if (bottom - top < oldBottom - oldTop && field.hasFocus()) field.post { showCaret(field) }
         }
-        field.doAfterTextChanged { if (field.hasFocus()) field.post { showCaret(field) } }
+        // Not for a fold, which changes the text far from the caret.
+        field.doAfterTextChanged { if (field.hasFocus() && (field as? MarkdownEditText)?.scrollHeld != true) field.post { showCaret(field) } }
     }
 
     /**
@@ -505,6 +509,7 @@ class NotesActivity : ScreenActivity() {
         val insertTools = setOf(toolInsertClose, toolTable, toolImageGallery, toolImageCamera, toolDrawing, toolFile, toolRecord)
         val recordTools = setOf(toolRecordCancel, recordTime, toolRecordStop)
         val drawTools = drawing.tools.toSet()
+        val indentTools = setOf(toolOutdent, toolIndent)
         val shown = when {
             inTrash -> trashTools
             recording != null -> recordTools
@@ -512,13 +517,15 @@ class NotesActivity : ScreenActivity() {
             drawingOpen -> drawTools
             openTable != null -> tableToolsShown()
             editor.hasFocus() && inserting -> insertTools
-            editor.hasFocus() -> tools.children.toSet() - readingTools - trashTools - toolCloseMarkdown - tableTools - insertTools - drawTools - recordTools
+            editor.hasFocus() -> tools.children.toSet() - readingTools - trashTools - toolCloseMarkdown - tableTools - insertTools - drawTools - recordTools -
+                (if (onListItem) emptySet() else indentTools)
             else -> readingTools
         }
         taskCount.isVisible = shown == readingTools && taskCount.text.isNotEmpty()
         val wasShown = tools.children.filter { it.isVisible }.toSet()
         for (tool in tools.children) tool.isVisible = tool in shown
-        if (shown != wasShown) toolsScroll.scrollTo(0, 0)
+        // The indent buttons coming and going with the caret leave the toolbar where it was scrolled to.
+        if (shown - indentTools != wasShown - indentTools) toolsScroll.scrollTo(0, 0)
     }
 
     /**
@@ -958,6 +965,8 @@ class NotesActivity : ScreenActivity() {
         toolNumbered.setOnClickListener { notes.toggleBlock(BlockType.NUMBERED) }
         toolCheckbox.setOnClickListener { notes.toggleBlock(BlockType.CHECKBOX) }
         toolQuote.setOnClickListener { notes.toggleBlock(BlockType.QUOTE) }
+        toolIndent.setOnClickListener { notes.indent(1) }
+        toolOutdent.setOnClickListener { notes.indent(-1) }
         toolInsert.setOnClickListener { showInsertTools(true) }
         toolInsertClose.setOnClickListener { showInsertTools(false) }
         toolImageGallery.setOnClickListener {
@@ -997,6 +1006,12 @@ class NotesActivity : ScreenActivity() {
         toolNumbered.isSelected = state.block.type == BlockType.NUMBERED
         toolCheckbox.isSelected = state.block.type == BlockType.CHECKBOX
         toolQuote.isSelected = state.block.type == BlockType.QUOTE
+        toolOutdent.isEnabled = state.block.depth > 0
+        toolOutdent.alpha = if (toolOutdent.isEnabled) 1f else 0.38f
+        if (state.block.isListItem != onListItem) {
+            onListItem = state.block.isListItem
+            showTools()
+        }
         toolCodeBlock.isSelected = state.block.type == BlockType.CODE
     }
 

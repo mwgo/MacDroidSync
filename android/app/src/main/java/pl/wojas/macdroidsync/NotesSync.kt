@@ -263,6 +263,28 @@ class NotesHost(private val store: NotesStore) {
         }
     }
 
+    /**
+     * Removes a folder the Mac lost, once no note the Mac knows of is left in
+     * it; a blank note there moves as with any deleted folder.
+     */
+    fun deleteFolder(name: String) {
+        synchronized(store) {
+            if (store.folder(name) == null) return
+            if (store.notes.any { it.folder == name && !NotesRules.isBlank(store.read(it.id)) }) throw Refused("not empty")
+            if (!store.deleteFolder(name)) throw Refused("last folder")
+        }
+    }
+
+    /** Marks the notes the Mac holds as they are here: those whose hash it gave still matches. */
+    fun synced(entries: List<NoteEntry>) {
+        synchronized(store) {
+            val ids = entries.filter { entry ->
+                store.note(entry.id)?.let { it.deleted == null && hashOf(store.read(it.id)) == entry.hash } == true
+            }
+            store.markSynced(ids.map { it.id })
+        }
+    }
+
     fun copy(id: String, titleSuffix: String): NotesPayload {
         val copy = store.copy(id, titleSuffix) ?: throw Refused("missing")
         return NotesPayload(id = copy.id, hash = hashOf(store.read(copy.id)))

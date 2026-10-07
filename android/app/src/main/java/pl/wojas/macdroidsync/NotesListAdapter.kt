@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.drawable.ColorDrawable
 import android.view.HapticFeedbackConstants
 import android.text.SpannableString
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
 import android.text.Spanned
 import android.text.style.BackgroundColorSpan
 import android.view.LayoutInflater
@@ -41,6 +43,9 @@ class NotesListAdapter(
         val untitled: String,
         val highlight: Int,
         val edited: (Long) -> String,
+        /** The dot before the title of a note the Mac does not hold as it is. */
+        val unsyncedColor: Int,
+        val isUnsynced: (NotesStore.Note) -> Boolean,
     )
 
     interface Callbacks {
@@ -209,7 +214,10 @@ class NotesListAdapter(
 
         open fun bind(note: NotesStore.Note) {
             val summary = note.summary
-            title.text = marked(summary.title.ifEmpty { labels.untitled })
+            val name = marked(summary.title.ifEmpty { labels.untitled })
+            title.text = if (!labels.isUnsynced(note)) name else SpannableStringBuilder()
+                .append("● ", ForegroundColorSpan(labels.unsyncedColor), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                .append(name)
             edited.text = labels.edited(note.modified)
             val text = snippets[note.id] ?: summary.preview
             preview.text = marked(text)

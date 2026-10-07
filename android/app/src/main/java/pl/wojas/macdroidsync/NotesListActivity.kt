@@ -83,6 +83,8 @@ class NotesListActivity : ScreenActivity() {
                 MaterialColors.getColor(this, androidx.appcompat.R.attr.colorPrimary, 0), 0x55,
             ),
             edited = ::edited,
+            unsyncedColor = getColor(R.color.note_unsynced),
+            isUnsynced = { store.isUnsynced(it) },
         )
         adapter = NotesListAdapter(labels, ::thumbnail, callbacks)
         adapter.asList = prefs().getBoolean(AS_LIST, false)

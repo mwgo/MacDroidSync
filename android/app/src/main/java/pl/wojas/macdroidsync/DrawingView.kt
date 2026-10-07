@@ -6,16 +6,27 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
 import androidx.core.graphics.ColorUtils
 import com.google.android.material.color.MaterialColors
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
+
+/** What a stroke is: drawn by hand, or a shape dragged from one corner or end to the other. */
+enum class Shape { PEN, LINE, ARROW, RECTANGLE, OVAL }
 
 /**
- * A sheet to draw on with a finger. The sheet ends at a line with a handle,
+ * A sheet to draw on with a finger, by hand or in shapes. The sheet ends at a line with a handle,
  * which can be dragged up or down to make it shorter or taller; below it the
  * screen is dimmed and strokes are cut off. [export] gives the sheet as it
  * will go into the note, and [save] and [load] keep its strokes, so that it
@@ -26,8 +37,9 @@ class DrawingView(context: Context) : View(context) {
     /**
      * One stroke: its points as they came, kept to be saved, and the smoothed
      * path drawn through them, which curves through the middle of each step.
+     * A shape keeps only where the finger went down and where it is now.
      */
-    private class Stroke(color: Int, width: Float) {
+    private class Stroke(color: Int, width: Float, val shape: Shape, private val headMin: Float) {
         val points = mutableListOf<Float>()
         val path = Path()
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG).apply {
@@ -41,6 +53,10 @@ class DrawingView(context: Context) : View(context) {
         private var lastY = 0f
 
         fun start(x: Float, y: Float) {
+            if (shape != Shape.PEN) {
+                points.addAll(listOf(x, y, x, y))
+                return
+            }
             points += x
             points += y
             // A dot for a tap: a path of one point draws nothing without a tiny line.
@@ -51,6 +67,12 @@ class DrawingView(context: Context) : View(context) {
         }
 
         fun add(x: Float, y: Float) {
+            if (shape != Shape.PEN) {
+                points[2] = x
+                points[3] = y
+                shapePath()
+                return
+            }
             points += x
             points += y
             path.quadTo(lastX, lastY, (x + lastX) / 2, (y + lastY) / 2)
@@ -59,9 +81,40 @@ class DrawingView(context: Context) : View(context) {
         }
 
         fun end(x: Float, y: Float) {
+            if (shape != Shape.PEN) return add(x, y)
             points += x
             points += y
             path.lineTo(x, y)
+        }
+
+        /** Whether a shape has any size; a tap with a shape tool draws nothing. */
+        fun isTiny(min: Float) = shape != Shape.PEN && hypot(points[2] - points[0], points[3] - points[1]) < min
+
+        private val box = RectF()
+
+        private fun shapePath() {
+            val (x0, y0, x1, y1) = points
+            path.reset()
+            box.set(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+            when (shape) {
+                Shape.RECTANGLE -> path.addRect(box, Path.Direction.CW)
+                Shape.OVAL -> path.addOval(box, Path.Direction.CW)
+                else -> {
+                    path.moveTo(x0, y0)
+                    path.lineTo(x1, y1)
+                    val length = hypot(x1 - x0, y1 - y0)
+                    if (shape == Shape.ARROW && length > 0) {
+                        // Two strokes back from the tip, as long as the line allows.
+                        val head = min(max(paint.strokeWidth * 3, headMin), length / 2)
+                        val angle = atan2(y1 - y0, x1 - x0)
+                        for (side in listOf(-1, 1)) {
+                            val a = angle + PI + side * PI / 7
+                            path.moveTo(x1, y1)
+                            path.lineTo(x1 + head * cos(a).toFloat(), y1 + head * sin(a).toFloat())
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -76,6 +129,7 @@ class DrawingView(context: Context) : View(context) {
 
     var color = Color.BLACK
     var brush = dp(5f)
+    var shape = Shape.PEN
 
     /** Told whenever there is more or less to undo. */
     var onChanged: (() -> Unit)? = null
@@ -156,7 +210,7 @@ class DrawingView(context: Context) : View(context) {
                     return true
                 }
                 if (y > sheet) return false
-                current = Stroke(color, brush).apply { start(x, y) }
+                current = Stroke(color, brush, shape, dp(12f)).apply { start(x, y) }
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
@@ -175,9 +229,10 @@ class DrawingView(context: Context) : View(context) {
                 resizing = false
                 current?.let {
                     it.end(x, y)
-                    strokes += it
                     current = null
                     invalidate()
+                    if (it.isTiny(dp(4f))) return true
+                    strokes += it
                     onChanged?.invoke()
                 }
             }
@@ -196,6 +251,7 @@ class DrawingView(context: Context) : View(context) {
             for (stroke in strokes) put(JSONObject().apply {
                 put("color", stroke.paint.color)
                 put("size", stroke.paint.strokeWidth.toDouble())
+                if (stroke.shape != Shape.PEN) put("shape", stroke.shape.name.lowercase())
                 put("points", JSONArray().apply { stroke.points.forEach { put(it.toDouble()) } })
             })
         })
@@ -215,7 +271,9 @@ class DrawingView(context: Context) : View(context) {
             val item = list.getJSONObject(i)
             val p = item.getJSONArray("points")
             if (p.length() < 2) continue
-            val stroke = Stroke(item.getInt("color"), item.getDouble("size").toFloat() * scale)
+            val shape = Shape.entries.firstOrNull { it.name.lowercase() == item.optString("shape") } ?: Shape.PEN
+            if (shape != Shape.PEN && p.length() < 4) continue
+            val stroke = Stroke(item.getInt("color"), item.getDouble("size").toFloat() * scale, shape, dp(12f))
             val n = p.length() / 2
             for (k in 0 until n) {
                 val x = p.getDouble(2 * k).toFloat() * scale

@@ -125,7 +125,7 @@ final class NotesMarkupTests: XCTestCase {
         ## Po co to robimy
         Nie w stronę "fajnej technologii". A & B
         - Ogólne
-        - Przegląd
+            - Przegląd
         Strona enova.pl
         ```
         monostyled
@@ -152,6 +152,23 @@ final class NotesMarkupTests: XCTestCase {
         let mac = markdown("<div><h1>Lista zakupów</h1></div><div>☐ Mleko</div><div>☑ Jajka</div><div><br><br></div>", title: "Lista zakupów")
         XCTAssertEqual(NotesMarkup.contentKey(phone), NotesMarkup.contentKey(mac))
         XCTAssertNotEqual(NotesMarkup.contentKey(phone), NotesMarkup.contentKey("# Lista zakupów\n- Mleko"))
+    }
+
+    func testNestedListsGoInsideTheirParentListAndComeBackAsDeep() {
+        let md = "# Lista\n- a\n    - b\n        1. c\n    - [ ] d\n- e\n- [x] f"
+        let html = NotesMarkup.html(fromMarkdown: md).html
+        XCTAssertTrue(html.contains("<ul><li>a</li><ul><li>b</li><ol><li>c</li></ol><li>☐ d</li></ul><li>e</li></ul><div>☑ f</div>"))
+        XCTAssertEqual(markdown(html, title: "Lista"), md)
+    }
+
+    func testHeadingsAreToldBySizeAgainstTheTextOfASmallerNote() {
+        let html = """
+        <div><b><font face=".AppleSystemUIFontBold"><span style="font-size: 21px">Mała</span></font></b></div>
+        <div><span style="font-size: 11px">tekst</span></div>
+        <div><b><font face=".AppleSystemUIFontBold"><span style="font-size: 15px">Sekcja</span></font></b></div>
+        <div><span style="font-size: 11px">dalej</span></div>
+        """
+        XCTAssertEqual(markdown(html, title: "Mała"), "# Mała\ntekst\n## Sekcja\ndalej")
     }
 
     func testARoundTripKeepsWhatNotesCanHold() {

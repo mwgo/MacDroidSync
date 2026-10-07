@@ -398,6 +398,20 @@
                     android:tooltipText="@string/tool_checkbox" />
 
                 <ImageButton
+                    android:id="@+id/toolOutdent"
+                    style="@style/NoteTool.Icon"
+                    android:contentDescription="@string/tool_outdent"
+                    android:src="@drawable/ic_tool_outdent"
+                    android:tooltipText="@string/tool_outdent" />
+
+                <ImageButton
+                    android:id="@+id/toolIndent"
+                    style="@style/NoteTool.Icon"
+                    android:contentDescription="@string/tool_indent"
+                    android:src="@drawable/ic_tool_indent"
+                    android:tooltipText="@string/tool_indent" />
+
+                <ImageButton
                     android:id="@+id/toolQuote"
                     style="@style/NoteTool.Icon"
                     android:contentDescription="@string/tool_quote"

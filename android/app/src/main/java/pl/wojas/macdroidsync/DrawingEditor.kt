@@ -35,6 +35,9 @@ class DrawingEditor(private val screen: FrameLayout) {
     private val colorButtons = COLORS.map { (color, label) ->
         button(swatch(color), label) { pickColor(color) }.also { it.tag = color }
     }
+    private val shapeButtons = SHAPES.map { (shape, icon, label) ->
+        button(icon, label, tinted = true) { pickShape(shape) }.also { it.tag = shape }
+    }
     private val sizeButtons = SIZES.map { (size, label) ->
         button(dot(size), label) { pickSize(size) }.also { it.tag = size }
     }
@@ -44,13 +47,14 @@ class DrawingEditor(private val screen: FrameLayout) {
         button(R.drawable.ic_tool_done, R.string.draw_done, tinted = true) { onDone?.invoke() },
         undo,
         button(R.drawable.ic_tool_delete, R.string.draw_discard, tinted = true) { onDiscard?.invoke() },
-    ) + colorButtons + sizeButtons
+    ) + shapeButtons + colorButtons + sizeButtons
 
     init {
         screen.addView(canvas, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         canvas.onChanged = ::showUndo
         pickColor(COLORS.first().first)
         pickSize(SIZES[1].first)
+        pickShape(Shape.PEN)
     }
 
     /** Starts a new drawing on an empty sheet, or draws on a [save]d one again. */
@@ -68,6 +72,11 @@ class DrawingEditor(private val screen: FrameLayout) {
     private fun pickColor(color: Int) {
         canvas.color = color
         for (b in colorButtons) b.isSelected = b.tag == color
+    }
+
+    private fun pickShape(shape: Shape) {
+        canvas.shape = shape
+        for (b in shapeButtons) b.isSelected = b.tag == shape
     }
 
     private fun pickSize(size: Float) {
@@ -127,6 +136,14 @@ class DrawingEditor(private val screen: FrameLayout) {
             Color.rgb(0x43, 0xA0, 0x47) to R.string.draw_green,
             Color.rgb(0x1E, 0x88, 0xE5) to R.string.draw_blue,
             Color.rgb(0x8E, 0x24, 0xAA) to R.string.draw_purple,
+        )
+
+        val SHAPES = listOf(
+            Triple(Shape.PEN, R.drawable.ic_shape_pen, R.string.draw_pen),
+            Triple(Shape.LINE, R.drawable.ic_shape_line, R.string.draw_line),
+            Triple(Shape.ARROW, R.drawable.ic_shape_arrow, R.string.draw_arrow),
+            Triple(Shape.RECTANGLE, R.drawable.ic_shape_rectangle, R.string.draw_rectangle),
+            Triple(Shape.OVAL, R.drawable.ic_shape_circle, R.string.draw_circle),
         )
 
         /** Brush widths in dp. */

@@ -408,7 +408,8 @@ public final class PeerSession {
                 image: ok ? message.data.flatMap { Data(base64Encoded: $0) } : nil
             ))
         case MessageType.notesManifest, MessageType.notesGet, MessageType.notesPut, MessageType.notesDelete,
-             MessageType.notesCopy, MessageType.notesAssetGet, MessageType.notesAssetPut, MessageType.notesChanged:
+             MessageType.notesCopy, MessageType.notesAssetGet, MessageType.notesAssetPut, MessageType.notesChanged,
+             MessageType.notesFolderDelete, MessageType.notesSynced:
             let ok = message.ok ?? true
             onNotes?(NotesReply(
                 type: message.type,

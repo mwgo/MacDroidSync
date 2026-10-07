@@ -97,6 +97,8 @@ object MessageType {
     const val NOTES_COPY = "notes-copy"
     const val NOTES_ASSET_GET = "notes-asset-get"
     const val NOTES_ASSET_PUT = "notes-asset-put"
+    const val NOTES_FOLDER_DELETE = "notes-folder-delete"
+    const val NOTES_SYNCED = "notes-synced"
 
     /** Phone to Mac: a note changed here, the Mac should look again. */
     const val NOTES_CHANGED = "notes-changed"

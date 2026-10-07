@@ -144,6 +144,34 @@ public enum NotesSyncPlan {
         public var heldDeletions: Int
     }
 
+    /// What becomes of the folders. `known` are those both sides had after the
+    /// last cycle: one of them missing on a side now was deleted there and
+    /// goes on the other side too, once it is empty; a folder only the phone
+    /// has and that is new is made in Notes. Without `known`, before the first
+    /// cycle, nothing is deleted.
+    public struct Folders: Equatable {
+        public var createOnMac: [String] = []
+        public var deleteOnPhone: [String] = []
+        public var deleteOnMac: [String] = []
+    }
+
+    public static func folders(known: Set<String>?, phone: [String], mac: [String]) -> Folders {
+        let onMac = Set(mac)
+        let onPhone = Set(phone)
+        var result = Folders()
+        for folder in phone where !onMac.contains(folder) {
+            if known?.contains(folder) == true {
+                result.deleteOnPhone.append(folder)
+            } else {
+                result.createOnMac.append(folder)
+            }
+        }
+        for folder in mac where !onPhone.contains(folder) && known?.contains(folder) == true {
+            result.deleteOnMac.append(folder)
+        }
+        return result
+    }
+
     /// More deletions than this at once wait for the operator, whichever side
     /// they come from: a phone that lost its notes folder must not empty Notes.
     public static func deletionLimit(pairs: Int) -> Int { max(5, pairs / 5) }
@@ -214,6 +242,9 @@ public final class NotesSyncStore {
         /// 2 since pictures go to Notes as attached files, 3 since they stand
         /// in place there; absent is 1.
         public var version: Int?
+        /// The folders both sides had after the last cycle, or a deletion on one
+        /// side not yet carried out on the other; nil before the first cycle.
+        public var folders: [String]?
 
         public init(version: Int? = nil) {
             self.version = version
@@ -266,6 +297,11 @@ public final class NotesSyncStore {
 
     public func removePair(androidId: String) {
         state.pairs.removeAll { $0.androidId == androidId }
+        save()
+    }
+
+    public func setFolders(_ folders: Set<String>) {
+        state.folders = folders.sorted()
         save()
     }
 

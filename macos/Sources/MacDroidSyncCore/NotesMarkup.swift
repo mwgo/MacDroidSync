@@ -16,9 +16,10 @@ public enum NotesMarkup {
     public enum Line: Equatable {
         case paragraph(String)
         case heading(Int, String)
-        case bullet(String)
-        case numbered(String)
-        case checkbox(Bool, String)
+        /// `depth` is how far a list item is nested, 0 for the outermost.
+        case bullet(String, depth: Int)
+        case numbered(String, depth: Int)
+        case checkbox(Bool, String, depth: Int)
         case quote(String)
         case code(String)
         case table([[String]])
@@ -39,12 +40,32 @@ public enum NotesMarkup {
 
     // MARK: - Reading Markdown
 
+    /// What each level of a nested list is indented by, as on the phone.
+    static let indent = "    "
+
+    /// The deepest a list nests, the outermost level not counted; as on the phone.
+    static let maxDepth = 5
+
     public static func lines(_ markdown: String) -> [Line] {
         let source = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var lines: [Line] = []
+        // The indents of the list items open above, outermost first.
+        var indents: [Int] = []
         var i = 0
         while i < source.count {
             let line = source[i]
+            let lead = line.prefix(while: { $0 == " " || $0 == "\t" })
+            let columns = lead.reduce(0) { $0 + ($1 == "\t" ? indent.count : 1) }
+            let body = String(line.dropFirst(lead.count))
+            if listItem(body, depth: 0) != nil {
+                // Deeper than the item above when indented further, back at the level it lines up with otherwise.
+                while let last = indents.last, last > columns { indents.removeLast() }
+                if indents.last.map({ $0 < columns }) ?? true { indents.append(columns) }
+                lines.append(listItem(body, depth: min(indents.count - 1, maxDepth))!)
+                i += 1
+                continue
+            }
+            indents.removeAll()
             if isFence(line) {
                 i += 1
                 var any = false
@@ -79,14 +100,19 @@ public enum NotesMarkup {
         if let match = line.firstMatch(of: headingPrefix) {
             return .heading(match.output[1].substring.map { $0.count } ?? 1, String(line[match.range.upperBound...]))
         }
-        if let match = line.firstMatch(of: checkboxPrefix) {
-            let mark = match.output[1].substring.map(String.init) ?? ""
-            return .checkbox(!mark.trimmingCharacters(in: .whitespaces).isEmpty, String(line[match.range.upperBound...]))
-        }
-        if let match = line.firstMatch(of: bulletPrefix) { return .bullet(String(line[match.range.upperBound...])) }
-        if let match = line.firstMatch(of: numberedPrefix) { return .numbered(String(line[match.range.upperBound...])) }
+        if let item = listItem(line, depth: 0) { return item }
         if let match = line.firstMatch(of: quotePrefix) { return .quote(String(line[match.range.upperBound...])) }
         return .paragraph(line)
+    }
+
+    static func listItem(_ line: String, depth: Int) -> Line? {
+        if let match = line.firstMatch(of: checkboxPrefix) {
+            let mark = match.output[1].substring.map(String.init) ?? ""
+            return .checkbox(!mark.trimmingCharacters(in: .whitespaces).isEmpty, String(line[match.range.upperBound...]), depth: depth)
+        }
+        if let match = line.firstMatch(of: bulletPrefix) { return .bullet(String(line[match.range.upperBound...]), depth: depth) }
+        if let match = line.firstMatch(of: numberedPrefix) { return .numbered(String(line[match.range.upperBound...]), depth: depth) }
+        return nil
     }
 
     private static let headingPrefix = try! Regex("^(#{1,6}) ")
@@ -146,23 +172,28 @@ public enum NotesMarkup {
     public static func html(fromMarkdown markdown: String, local: (String) -> URL? = { _ in nil }) -> Outgoing {
         var html = ""
         var files: [(String, String)] = []
-        var openList: String?
+        // The lists open, outermost first. A nested list stands inside its
+        // parent list next to the items, as Notes writes it.
+        var open: [String] = []
         func closeList() {
-            if let list = openList { html += "</\(list)>" }
-            openList = nil
+            while let list = open.popLast() { html += "</\(list)>" }
         }
-        func listItem(_ kind: String, _ content: String) {
-            if openList != kind {
-                closeList()
+        func listItem(_ kind: String, _ depth: Int, _ content: String) {
+            while open.count > depth + 1, let list = open.popLast() { html += "</\(list)>" }
+            if open.count == depth + 1, open.last != kind, let list = open.popLast() { html += "</\(list)>" }
+            while open.count < depth + 1 {
                 html += "<\(kind)>"
-                openList = kind
+                open.append(kind)
             }
             html += "<li>\(content)</li>"
         }
         for (index, line) in lines(markdown).enumerated() {
             switch line {
-            case .bullet(let text): listItem("ul", inlineHTML(text))
-            case .numbered(let text): listItem("ol", inlineHTML(text))
+            case .bullet(let text, let depth): listItem("ul", depth, inlineHTML(text))
+            case .numbered(let text, let depth): listItem("ol", depth, inlineHTML(text))
+            // A task in a list keeps its place there; one on its own is a line, as Notes shows tasks.
+            case .checkbox(let done, let text, let depth) where depth > 0:
+                listItem("ul", depth, escape(done ? checked : unchecked) + inlineHTML(text))
             default:
                 closeList()
                 switch line {
@@ -175,7 +206,7 @@ public enum NotesMarkup {
                     } else {
                         html += text.trimmingCharacters(in: .whitespaces).isEmpty ? "<div><br></div>" : "<div>\(inlineHTML(text))</div>"
                     }
-                case .checkbox(let done, let text):
+                case .checkbox(let done, let text, _):
                     html += "<div>\(escape(done ? checked : unchecked))\(inlineHTML(text))</div>"
                 case .quote(let text):
                     html += "<div>\(escape(quoteMark))\(inlineHTML(text))</div>"
@@ -306,6 +337,7 @@ public enum NotesMarkup {
     /// The first line is always the title, as on the phone.
     public static func markdown(fromHTML html: String, title: String) -> Incoming {
         let reader = NotesReader()
+        reader.bodySize = NotesReader.bodySize(of: html)
         reader.read(HTMLTree.parse(html))
         var lines = reader.lines
         while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
@@ -634,7 +666,8 @@ final class NotesReader {
             if face.contains("bold"), style.heading == 0 { style.heading = 3 }
         case "span":
             if let size = Self.fontSize(node.attributes["style"]), style.heading != 0 || outer.bold {
-                style.heading = size >= 22 ? 1 : size >= 16 ? 2 : style.heading
+                let scale = size / bodySize
+                style.heading = scale >= 1.6 ? 1 : scale >= 1.2 ? 2 : style.heading
             }
         default:
             break
@@ -642,7 +675,9 @@ final class NotesReader {
         for child in node.children { inline(child, style) }
     }
 
-    private func list(_ node: HTMLNode, ordered: Bool) {
+    /// A list nested in another, inside an item or next to the items, is one level deeper.
+    private func list(_ node: HTMLNode, ordered: Bool, depth: Int = 0) {
+        let indent = String(repeating: NotesMarkup.indent, count: min(depth, NotesMarkup.maxDepth))
         for item in node.children {
             switch item.tag {
             case "li":
@@ -653,13 +688,13 @@ final class NotesReader {
                 let text = render().trimmingCharacters(in: .whitespaces)
                 runs = []
                 if text.hasPrefix(NotesMarkup.unchecked) || text.hasPrefix(NotesMarkup.checked) {
-                    lines.append(Self.prefixed(text))
+                    lines.append(indent + Self.prefixed(text))
                 } else {
-                    lines.append((ordered ? "1. " : "- ") + text)
+                    lines.append(indent + (ordered ? "1. " : "- ") + text)
                 }
-                for list in nested { self.list(list, ordered: list.tag == "ol") }
+                for list in nested { self.list(list, ordered: list.tag == "ol", depth: depth + 1) }
             case "ul", "ol":
-                list(item, ordered: item.tag == "ol")
+                list(item, ordered: item.tag == "ol", depth: depth + 1)
             default:
                 break
             }
@@ -757,6 +792,23 @@ final class NotesReader {
             let trail = String(text.reversed().prefix { $0 == " " })
             return lead + open + core + close + trail
         }.joined()
+    }
+
+    /// The size of the note's text: Notes writes every size out, 24, 18 and 13
+    /// points by default, 21, 15 and 11 in a note made smaller, so a heading is
+    /// told by how much bigger it is. The size most of the text has; 13 when none is given.
+    var bodySize = 13.0
+
+    static func bodySize(of html: String) -> Double {
+        var counts: [Double: Int] = [:]
+        var rest = html[...]
+        while let range = rest.range(of: "font-size:") {
+            rest = rest[range.upperBound...]
+            if let size = Double(rest.drop(while: { $0 == " " }).prefix { $0.isNumber || $0 == "." }), size > 0 {
+                counts[size, default: 0] += 1
+            }
+        }
+        return counts.max { a, b in a.value != b.value ? a.value < b.value : a.key > b.key }?.key ?? 13
     }
 
     private static func fontSize(_ style: String?) -> Double? {

@@ -306,6 +306,22 @@ class MarkdownEditor(
         setBlocks(e, starts, if (level >= 3) null else Block(BlockType.HEADING, level = level + 1))
     }
 
+    /**
+     * Nests the selected list items one level deeper, or one less when [by] is
+     * negative. An item goes at most one level deeper than the item above it.
+     */
+    fun indent(by: Int) = edit {
+        val e = text
+        for (ls in selectedLineStarts(e)) {
+            val marker = markerAt(e, ls)?.takeIf { it.block.isListItem } ?: continue
+            val above = if (ls > 0) markerAt(e, lineStart(e, ls - 1))?.block?.takeIf { it.isListItem } else null
+            val deepest = min(above?.depth?.plus(1) ?: 0, Block.MAX_DEPTH)
+            val depth = (marker.block.depth + by).coerceIn(0, max(deepest, marker.block.depth))
+            marker.block = marker.block.copy(depth = depth)
+        }
+        normalize(e)
+    }
+
     private fun setBlocks(e: Editable, starts: List<Int>, block: Block?) {
         // From the last line up, so that unfolding a heading moves nothing still to do.
         for (ls in starts.asReversed()) {
@@ -319,7 +335,8 @@ class MarkdownEditor(
                 }
                 marker != null -> {
                     if (block.type != BlockType.HEADING) expand(e, marker)
-                    marker.block = block
+                    // A list item turned into another kind stays as deep as it was.
+                    marker.block = if (block.isListItem && marker.block.isListItem) block.copy(depth = marker.block.depth) else block
                 }
                 else -> {
                     e.insert(ls, MARK.toString())
@@ -705,7 +722,11 @@ class MarkdownEditor(
         val type = marker.block.type
         if (type == BlockType.HEADING) return
         val itemWasEmpty = newline == ps + 1 && (newline + 1 == e.length || e[newline + 1] == '\n')
-        if (itemWasEmpty) {
+        if (itemWasEmpty && marker.block.depth > 0) {
+            // Enter on an empty nested item takes it out a level, as in Notes.
+            e.delete(newline, newline + 1)
+            marker.block = marker.block.copy(depth = marker.block.depth - 1)
+        } else if (itemWasEmpty) {
             // Enter on an empty item ends the list, the quote or the code block instead of adding another line to it.
             e.delete(newline, newline + 1)
             e.delete(ps, ps + 1)
@@ -783,7 +804,7 @@ class MarkdownEditor(
                 toggleCollapse(marker)
                 true
             }
-            marker.block.type == BlockType.CHECKBOX && lx >= style.gutter && lx < style.gutter + style.indent -> {
+            marker.block.type == BlockType.CHECKBOX && (lx - style.gutter - style.indent * marker.block.depth).let { it >= 0 && it < style.indent } -> {
                 marker.block = marker.block.copy(checked = !marker.block.checked)
                 edit { normalize(text) }
                 true
@@ -885,6 +906,7 @@ class MarkdownEditor(
     private fun toggleCollapse(marker: MarkerSpan) = edit {
         val e = text
         if (e.getSpanStart(marker) < 0) return@edit
+        view.holdScroll()
         if (marker.hidden != null) expand(e, marker) else collapse(e, marker)
         normalize(e)
         view.invalidate()
@@ -897,6 +919,7 @@ class MarkdownEditor(
      */
     fun toggleAllHeadings() = edit {
         val e = text
+        view.holdScroll()
         if (!allFolded(e)) {
             // From the last up: folding a heading only removes text below it.
             for (marker in foldTargets(e).asReversed()) if (marker.hidden == null) collapse(e, marker)
@@ -994,15 +1017,15 @@ class MarkdownEditor(
             e.setSpan(gutter, 0, e.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
         }
         val live = HashSet<LineSpan>()
-        var number = 0
+        val numbers = ListNumbers()
         var start = 0
         while (start <= e.length) {
             val end = lineEnd(e, start)
             val marker = markerAt(e, start)
             if (marker == null) {
-                number = 0
+                numbers.next(PARAGRAPH)
             } else {
-                number = if (marker.block.type == BlockType.NUMBERED) number + 1 else 0
+                val number = numbers.next(marker.block)
                 val span = lineSpanFor(marker)
                 val changed = marker.number != number || marker.drawn != marker.block
                 marker.number = number
@@ -1197,6 +1220,7 @@ class MarkdownEditor(
 
     private companion object {
         val TITLE = Block(BlockType.HEADING, level = 1)
+        val PARAGRAPH = Block(BlockType.PARAGRAPH)
 
         /** How soon after a deletion the keyboard's replacement for it arrives. */
         const val CORRECTION_WINDOW = 300L

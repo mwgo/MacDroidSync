@@ -7,4 +7,8 @@
     <color name="brand_on_primary_container">#001B3E</color>
     <color name="brand_secondary_container">#DCE2F9</color>
     <color name="brand_on_secondary_container">#151B2C</color>
+    <!-- Navy: when a note was last edited, on the notes list. -->
+    <color name="note_edited">#1F3A8A</color>
+    <!-- The dot before the title of a note not yet synced with the Mac. -->
+    <color name="note_unsynced">#E8710A</color>
 </resources>

@@ -22,9 +22,9 @@ data class NoteSummary(val title: String, val preview: String, val image: String
             val title = if (titled) first!!.text.trim() else ""
             val image = lines.firstNotNullOfOrNull { it.image?.path }
             val preview = StringBuilder()
-            var number = 0
+            val numbers = ListNumbers()
             for (line in if (titled) lines.drop(1) else lines) {
-                number = if (line.block.type == BlockType.NUMBERED) number + 1 else 0
+                val number = numbers.next(line.block)
                 val text = when (line.block.type) {
                     BlockType.IMAGE -> null
                     BlockType.FILE -> line.file?.let { (if (it.isAudio) "🎙 " else "📎 ") + it.name }

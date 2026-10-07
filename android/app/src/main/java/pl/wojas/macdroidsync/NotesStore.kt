@@ -42,7 +42,12 @@ class NotesStore(private val root: File, private val clock: () -> Long = System:
         val summary: NoteSummary,
         /** When the note went to the trash, or null for a note in use. */
         val deleted: Long? = null,
-    )
+        /** The edit time the Mac last said it holds the note at, or null before it ever did. */
+        val synced: Long? = null,
+    ) {
+        /** A note with nothing in it, which the Mac is never given. */
+        val isBlank: Boolean get() = summary.title.isBlank() && summary.preview.isBlank() && summary.image == null
+    }
 
     /** One group of the list: a folder, or the pinned notes, with its notes in their order. */
     data class Group(val folder: Folder, val notes: List<Note>) {
@@ -61,6 +66,30 @@ class NotesStore(private val root: File, private val clock: () -> Long = System:
     private var trash = Folder(TRASH, collapsed = true)
 
     private var order = Sort.MODIFIED
+
+    /** Whether the Mac ever said which notes it holds; until then no note counts as not synced. */
+    var syncing = false
+        private set
+
+    /** A note edited since the Mac last held it, or one it never got. */
+    fun isUnsynced(note: Note) = syncing && note.deleted == null && !note.isBlank && note.synced != note.modified
+
+    /** Records that the Mac holds these notes as they are now. */
+    @Synchronized
+    fun markSynced(ids: Collection<String>) {
+        var changed = !syncing
+        syncing = true
+        val wanted = ids.toSet()
+        noteList.replaceAll { note ->
+            if (note.id in wanted && note.synced != note.modified) {
+                changed = true
+                note.copy(synced = note.modified)
+            } else {
+                note
+            }
+        }
+        if (changed) persist()
+    }
 
     /** How the notes of every folder are ordered. */
     var sort: Sort
@@ -419,6 +448,7 @@ class NotesStore(private val root: File, private val clock: () -> Long = System:
         json.optJSONObject("pinned")?.let { pinned = folderOf(it).copy(name = PINNED) }
         json.optJSONObject("trash")?.let { trash = folderOf(it).copy(name = TRASH) }
         runCatching { Sort.valueOf(json.optString("sort")) }.getOrNull()?.let { order = it }
+        syncing = json.optBoolean("syncing")
         val folders = json.optJSONArray("folders") ?: JSONArray()
         for (i in 0 until folders.length()) folderList += folderOf(folders.getJSONObject(i))
         val notes = json.optJSONArray("notes") ?: JSONArray()
@@ -432,6 +462,7 @@ class NotesStore(private val root: File, private val clock: () -> Long = System:
                 modified = n.optLong("modified"),
                 summary = NoteSummary(n.optString("title"), n.optString("preview"), n.optString("image").ifEmpty { null }),
                 deleted = if (n.has("deleted")) n.optLong("deleted") else null,
+                synced = if (n.has("synced")) n.optLong("synced") else null,
             )
         }
     }
@@ -451,6 +482,7 @@ class NotesStore(private val root: File, private val clock: () -> Long = System:
         val json = JSONObject().apply {
             put("version", 1)
             put("sort", sort.name)
+            if (syncing) put("syncing", true)
             put("pinned", folderJson(pinned))
             put("trash", folderJson(trash))
             put("folders", JSONArray().apply { folderList.forEach { put(folderJson(it)) } })
@@ -465,6 +497,7 @@ class NotesStore(private val root: File, private val clock: () -> Long = System:
                     put("preview", note.summary.preview)
                     note.summary.image?.let { put("image", it) }
                     note.deleted?.let { put("deleted", it) }
+                    note.synced?.let { put("synced", it) }
                 })
             })
         }

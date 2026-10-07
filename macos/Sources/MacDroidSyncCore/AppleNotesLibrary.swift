@@ -30,6 +30,9 @@ public protocol NotesLibrary: AnyObject {
     /// Into Recently Deleted, where Notes keeps it for thirty days.
     func delete(id: String) async throws
     func ensureFolder(_ name: String) async throws
+    /// Removes a folder with nothing in it; false when it still holds notes or
+    /// folders, or Notes keeps it, as it does the account's default one.
+    func deleteFolder(_ name: String) async throws -> Bool
 }
 
 public enum NotesLibraryError: LocalizedError, Equatable {
@@ -124,6 +127,10 @@ public final class AppleNotesLibrary: NotesLibrary {
 
     public func ensureFolder(_ name: String) async throws {
         _ = try await call("ensureFolder", ["folder": name], as: Bool.self)
+    }
+
+    public func deleteFolder(_ name: String) async throws -> Bool {
+        try await call("deleteFolder", ["folder": name], as: Bool.self)
     }
 
     // MARK: - Running the script
@@ -337,6 +344,13 @@ public final class AppleNotesLibrary: NotesLibrary {
         case 'ensureFolder':
           ensureFolder(Notes, account, req.folder);
           return 'true';
+        case 'deleteFolder': {
+          const found = account.folders().filter(f => f.name() === req.folder);
+          if (!found.length) return 'true';
+          if (found[0].notes().length || found[0].folders().length) return 'false';
+          try { Notes.delete(found[0]); } catch (e) { return 'false'; }
+          return 'true';
+        }
       }
       throw new Error('unknown operation ' + req.op);
     }

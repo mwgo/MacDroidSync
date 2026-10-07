@@ -104,6 +104,10 @@ public enum MessageType {
     public static let notesCopy = "notes-copy"
     public static let notesAssetGet = "notes-asset-get"
     public static let notesAssetPut = "notes-asset-put"
+    /// Removes an empty folder the Mac lost; refused with "not empty" otherwise.
+    public static let notesFolderDelete = "notes-folder-delete"
+    /// After a cycle: the notes the Mac holds as they are on the phone, by hash.
+    public static let notesSynced = "notes-synced"
     /// Phone to Mac: a note changed there.
     public static let notesChanged = "notes-changed"
 }

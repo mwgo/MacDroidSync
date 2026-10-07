@@ -194,6 +194,8 @@
     <string name="tool_numbered">Numbered list</string>
     <string name="tool_checkbox">Checklist</string>
     <string name="tool_quote">Quote</string>
+    <string name="tool_indent">Indent</string>
+    <string name="tool_outdent">Outdent</string>
     <string name="tool_insert">Insert</string>
     <string name="tool_insert_close">Back to formatting</string>
     <string name="tool_image_gallery">Photo from gallery</string>
@@ -207,6 +209,11 @@
     <string name="draw_done">Insert drawing</string>
     <string name="draw_undo">Undo</string>
     <string name="draw_discard">Discard drawing</string>
+    <string name="draw_pen">Pen</string>
+    <string name="draw_line">Line</string>
+    <string name="draw_arrow">Arrow</string>
+    <string name="draw_rectangle">Rectangle</string>
+    <string name="draw_circle">Circle</string>
     <string name="draw_black">Black</string>
     <string name="draw_red">Red</string>
     <string name="draw_orange">Orange</string>

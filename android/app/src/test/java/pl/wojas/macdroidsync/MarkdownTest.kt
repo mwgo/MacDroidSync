@@ -168,4 +168,35 @@ class MarkdownTest {
         assertTrue(MdFile(path, "n").isAudio)
         assertEquals(path, Markdown.parseFile("[n]($path)")?.path)
     }
+
+    @Test
+    fun `nested list items keep their depth and numbers count per level`() {
+        val source = listOf(
+            "# T",
+            "1. a",
+            "    1. b",
+            "    2. c",
+            "        - [ ] d",
+            "2. e",
+            "    - f",
+        ).joinToString("\n")
+        val lines = Markdown.parse(source)
+        assertEquals(listOf(0, 0, 1, 1, 2, 0, 1), lines.map { it.block.depth })
+        assertEquals(BlockType.CHECKBOX, lines[4].block.type)
+        assertEquals(source, Markdown.toMarkdown(lines))
+    }
+
+    @Test
+    fun `any indent deeper than the item above nests one level, and lining up goes back`() {
+        val lines = Markdown.parse("- a\n  - b\n\t\t- c\n  - d\n- e\n\n   - f")
+        assertEquals(listOf(0, 1, 2, 1, 0, 0, 0), lines.map { it.block.depth })
+        assertEquals("f", lines.last().text)
+    }
+
+    @Test
+    fun `an indented paragraph is not a list item`() {
+        val line = Markdown.parse("    tekst").single()
+        assertEquals(BlockType.PARAGRAPH, line.block.type)
+        assertEquals("    tekst", line.text)
+    }
 }

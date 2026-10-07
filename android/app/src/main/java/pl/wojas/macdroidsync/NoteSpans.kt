@@ -47,6 +47,8 @@ class NoteStyle(context: Context) {
     val cellPadding = dp(8f).roundToInt()
     val tableGap = dp(8f).roundToInt()
     val titleGap = dp(10f).roundToInt()
+    val headingBefore = dp(16f).roundToInt()
+    val headingAfter = dp(6f).roundToInt()
 
     val primary = MaterialColors.getColor(context, androidx.appcompat.R.attr.colorPrimary, Color.BLUE)
     val onPrimary = MaterialColors.getColor(context, com.google.android.material.R.attr.colorOnPrimary, Color.WHITE)
@@ -92,15 +94,26 @@ class MarkerSpan(var block: Block) : ReplacementSpan() {
 /** The spans that render a marked line, rebuilt by the editor whenever the lines move. */
 sealed interface LineSpan
 
-/** A heading; the note's title, the one at the very start, also keeps some room below it. */
+/**
+ * A heading, with room above it and a little below; the note's title, the one
+ * at the very start, keeps more room below it and none above.
+ */
 class HeadingLineSpan(private val marker: MarkerSpan, private val style: NoteStyle) : MetricAffectingSpan(), LineHeightSpan, LineSpan {
     override fun updateMeasureState(tp: TextPaint) = apply(tp)
     override fun updateDrawState(tp: TextPaint) = apply(tp)
 
     override fun chooseHeight(text: CharSequence, start: Int, end: Int, spanstartv: Int, lineHeight: Int, fm: Paint.FontMetricsInt) {
-        if (text !is Spanned || text.getSpanStart(this) != 0 || end < text.getSpanEnd(this)) return
-        fm.descent += style.titleGap
-        fm.bottom += style.titleGap
+        if (text !is Spanned) return
+        val spanStart = text.getSpanStart(this)
+        val title = spanStart == 0
+        if (!title && start == spanStart) {
+            fm.ascent -= style.headingBefore
+            fm.top -= style.headingBefore
+        }
+        if (end < text.getSpanEnd(this)) return
+        val after = if (title) style.titleGap else style.headingAfter
+        fm.descent += after
+        fm.bottom += after
     }
 
     private fun apply(tp: TextPaint) {
@@ -201,7 +214,10 @@ class ListLineSpan(private val marker: MarkerSpan, private val style: NoteStyle)
     CharacterStyle(), LeadingMarginSpan, UpdateLayout, LineSpan {
 
     override fun getLeadingMargin(first: Boolean) =
-        if (marker.block.type == BlockType.QUOTE) style.quoteIndent else style.indent
+        if (marker.block.type == BlockType.QUOTE) style.quoteIndent else style.indent * (1 + nesting())
+
+    /** How many indents a nested list item sits further in. */
+    private fun nesting() = if (marker.block.isListItem) marker.block.depth else 0
 
     override fun updateDrawState(tp: TextPaint) {
         when {
@@ -234,13 +250,10 @@ class ListLineSpan(private val marker: MarkerSpan, private val style: NoteStyle)
         val paintStyle = p.style
         val align = p.textAlign
         val stroke = p.strokeWidth
-        val left = x.toFloat()
+        val left = x.toFloat() + style.indent * nesting()
         val cy = baseline + (p.ascent() + p.descent()) / 2
         when (marker.block.type) {
-            BlockType.BULLET -> {
-                p.style = Paint.Style.FILL
-                c.drawCircle(left + style.indent / 2f - style.dp(4f), cy, style.dp(3f), p)
-            }
+            BlockType.BULLET -> drawBullet(c, p, left + style.indent / 2f - style.dp(4f), cy)
             BlockType.NUMBERED -> {
                 p.textAlign = Paint.Align.RIGHT
                 c.drawText("${marker.number}.", left + style.indent - style.dp(8f), baseline.toFloat(), p)
@@ -252,6 +265,26 @@ class ListLineSpan(private val marker: MarkerSpan, private val style: NoteStyle)
         p.style = paintStyle
         p.textAlign = align
         p.strokeWidth = stroke
+    }
+
+    /** A dot, a ring and a square in turn, so each level of a nested list has its own bullet. */
+    private fun drawBullet(c: Canvas, p: Paint, cx: Float, cy: Float) {
+        val r = style.dp(3f)
+        when (nesting() % 3) {
+            0 -> {
+                p.style = Paint.Style.FILL
+                c.drawCircle(cx, cy, r, p)
+            }
+            1 -> {
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = style.dp(1.3f)
+                c.drawCircle(cx, cy, r, p)
+            }
+            else -> {
+                p.style = Paint.Style.FILL
+                c.drawRect(cx - r * 0.85f, cy - r * 0.85f, cx + r * 0.85f, cy + r * 0.85f, p)
+            }
+        }
     }
 
     private fun drawCheckbox(c: Canvas, p: Paint, left: Float, cy: Float) {

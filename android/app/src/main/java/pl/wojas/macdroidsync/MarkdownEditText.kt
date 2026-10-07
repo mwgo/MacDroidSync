@@ -3,6 +3,7 @@ package pl.wojas.macdroidsync
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Rect
 import android.os.Build
 import android.text.TextUtils
 import android.util.AttributeSet
@@ -42,6 +43,22 @@ class MarkdownEditText @JvmOverloads constructor(context: Context, attrs: Attrib
     var onMoveTo: ((y: Float) -> Unit)? = null
     var onMoveEnd: ((commit: Boolean) -> Unit)? = null
     var onSelectLifted: (() -> Unit)? = null
+
+    /**
+     * While set, the field does not scroll its caret into view, so folding or
+     * unfolding a heading far from the caret leaves the note where it is.
+     * It lasts until the field has been drawn with the change.
+     */
+    var scrollHeld = false
+        private set
+
+    fun holdScroll() {
+        scrollHeld = true
+        invalidate()
+    }
+
+    override fun requestRectangleOnScreen(rectangle: Rect, immediate: Boolean): Boolean =
+        !scrollHeld && super.requestRectangleOnScreen(rectangle, immediate)
 
     private var moving = false
     private var moved = false
@@ -120,6 +137,7 @@ class MarkdownEditText @JvmOverloads constructor(context: Context, attrs: Attrib
             val half = 1.5f * density
             canvas.drawRect(totalPaddingLeft.toFloat(), visual[2] - half, (width - totalPaddingRight).toFloat(), visual[2] + half, indicatorPaint)
         }
+        if (scrollHeld) post { scrollHeld = false }
     }
 
     /** Ends the gesture for the field; without it the lifted finger would place the caret and start editing. */
