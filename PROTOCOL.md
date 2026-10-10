@@ -510,20 +510,43 @@ would read as a deletion.
   disagreement between the two is not an error: the file changed in between, the
   transfer is accepted, and the next manifest sees the difference and asks again.
 
-### What the Mac does with it
+### What the Mac does
 
-Nothing, until it is told. The first complete manifest produces a report and
-imports nothing; a batch over the configured threshold parks and waits. So does
-any plan that is not purely additions - a replaced version, a deletion, or an
-item the phone listed but will not send parks the whole plan in the sync window,
-where the operator decides row by row.
+A note on the Mac is `Folder/Title.md` with its attachments in `Folder/Title.assets/`: `images/<u>.<ext>`
+on the phone is `Title.assets/<u>.<ext>` there and `files/<u>/<name>` is `Title.assets/<u>/<name>`; a
+drawing's strokes `images/<u>.json` sit next to its picture likewise. The rest of the Markdown is the
+same on both sides. The Mac works out the hash of a note in the folder with the phone's formula over
+the phone's form of it, so a note unchanged on both sides has the same hash on both.
 
-Deletions are recorded and carried out only when the operator asks, in one batch.
-The single exception is the copy an edit replaced: it exists because the operator
-approved that edit, so it is taken out with it rather than asked about again.
-That is not caution for its own sake: macOS shows a confirmation alert before an
-app removes anything from the Photos library, so a sync that deleted by itself
-would put that alert on screen unasked, twice an hour.
+A cycle runs when the phone connects, when it sends `notes-changed`, when the folder changes - Notes MD
+and iCloud write through `NSFileCoordinator`, which the Mac hears - and when the sync is switched on;
+besides, the Mac looks at the folder every minute. For every pair of notes:
+
+* changed on the phone only: written into the folder, renamed after its title; changed on the Mac only:
+  sent with `notes-put`. A file new to the phone goes before the put; one that replaces a file the phone
+  has at the same path goes after it, so that it does not change the hash the put is checked against;
+* moved to another folder and otherwise unchanged: moved on the other side and not written;
+* changed on both: the Mac keeps its version, the phone's becomes a copy (`notes-copy`, titled
+  `… (Android, Oct 1 12:30)`), and an entry in the conflicts list shows both versions with their
+  pictures;
+* deleted on one side: deleted on the other - into the folder's trash, `.notesmd/trash/<id>/`, on the
+  Mac, into the trash on the phone - unless the other side changed it, in which case it is put back
+  where it was deleted and the conflicts list says so;
+* more than `max(5, pairs / 5)` deletions at once wait in the conflicts list until allowed.
+
+A note on the Mac is known by an id kept in `.notesmd/devices/<writer>.json`, one file per writer -
+Notes MD on each device, MacDroidSync - so that iCloud never has two versions of one to reconcile; for
+each field the newest value of all the files counts. A file renamed or moved outside the apps is
+recognised by the checksum of its text. A file that has gone is taken for deleted only after two
+minutes, and a note whose file is missing meanwhile is left out of the cycle: iCloud may bring the
+metadata of a rename before the rename itself.
+
+Folders go by name. The Mac remembers those both sides had after the last cycle: one of them missing on
+a side now was deleted there, and goes on the other side as well once the notes in it are gone
+(`notes-folder-delete` on the phone, which moves a blank note left in it to its first folder; an empty
+folder only, on the Mac). A folder only the phone has and that the Mac never saw is made on the Mac. At
+the end of a cycle the Mac sends `notes-synced`, and the phone shows a dot before the title of a note it
+edited since.
 
 ## 9. Messages
 
@@ -650,14 +673,14 @@ Settings and when the pairing code is regenerated.
 
 ## 10. Notes
 
-The phone's Markdown notes and the notes of one account of Notes on the Mac are kept the same. As with
-the photos the Mac decides: it keeps which note belongs to which, asks the phone for its notes and
-reads Notes, and works out what to do. The phone describes its notes, hands them out, takes in what it
+The phone's Markdown notes and a folder of Markdown files on the Mac, the one Notes MD keeps on iCloud
+Drive, are kept the same. As with the photos the Mac decides: it keeps which note belongs to which, asks
+the phone for its notes and reads the folder, and works out what to do. The phone describes its notes, hands them out, takes in what it
 is given and says when something changed; it keeps no state of the sync.
 
 ```
   Mac                                           phone
-   |-- notes-config {enabled} ------------------>|  in the handshake, after photo-config
+   |-- notes-config {enabled, sidecars} -------->|  in the handshake, after photo-config
    |-- notes-manifest {requestId} -------------->|  every note: id, folder, title, hash
    |<- notes-manifest {requestId, folders, notes}|
    |-- notes-get {requestId, id} --------------->|  one note: Markdown and its files
@@ -686,6 +709,7 @@ no), `missing`, `deleted`, `changed`, `editing`, `missing asset`, `bad path`, `b
 |-------|----|---------|
 | `requestId` | every request and its answer | correlation, chosen by the Mac |
 | `enabled` | `notes-config` | whether the notes are synced in this session; absent is `false` |
+| `sidecars` | `notes-config` | the Mac also takes the strokes of every drawing; absent is `false` |
 | `folders` | `notes-manifest` answer | the phone's folders |
 | `notes` | `notes-manifest` answer | `{id, folder, title, modified, hash, deleted?}` per note |
 | `note` | `notes-get` answer | `{id, folder, markdown, hash, assets: [{path, size, sha256}]}` |
@@ -699,6 +723,10 @@ no), `missing`, `deleted`, `changed`, `editing`, `missing asset`, `bad path`, `b
 
 * `hash` is the SHA-256 of the Markdown followed by `\n<path>:<sha256>` for every picture and file it
   refers to, in order: a turned picture keeps its path, so the text alone would not show the change.
+* With `sidecars`, a drawing's strokes, `images/<uuid>.json` next to its `images/<uuid>.png`, are an
+  asset of the note right after the picture - in `assets`, in the hash, and accepted by
+  `notes-asset-put` - although the Markdown names only the picture. Without it they are left out, so a
+  Mac that does not know of them sees the same hashes as before.
 * A note in the phone's trash is listed with `deleted: true`; that is how a deletion on the phone is
   learnt. A note missing from the manifest altogether reads as deleted too. A note with nothing in it
   is not listed: there is nothing to give the Mac yet.

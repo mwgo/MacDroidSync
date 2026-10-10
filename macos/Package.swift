@@ -4,8 +4,11 @@ import PackageDescription
 let package = Package(
     name: "MacDroidSync",
     platforms: [.macOS(.v14)],
+    dependencies: [
+        .package(path: "../notesmd/NotesMDKit"),
+    ],
     targets: [
-        .target(name: "MacDroidSyncCore"),
+        .target(name: "MacDroidSyncCore", dependencies: ["NotesMDKit"]),
         .executableTarget(name: "MacDroidSync", dependencies: ["MacDroidSyncCore"]),
         // The Share extension binary is started by _NSExtensionMain instead of
         // main(), which is what the linker flag below installs. build.sh wraps it

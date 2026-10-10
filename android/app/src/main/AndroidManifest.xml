@@ -91,7 +91,8 @@
         <activity
             android:name=".NotesListActivity"
             android:exported="true"
-            android:icon="@drawable/ic_notes"
+            android:icon="@mipmap/ic_notes_app"
+            android:roundIcon="@mipmap/ic_notes_app_round"
             android:label="@string/notes_app_name"
             android:taskAffinity="${applicationId}.notes"
             android:windowSoftInputMode="stateAlwaysHidden|adjustResize">
@@ -114,7 +115,8 @@
             android:name=".NoteShareActivity"
             android:excludeFromRecents="true"
             android:exported="true"
-            android:icon="@drawable/ic_notes"
+            android:icon="@mipmap/ic_notes_app"
+            android:roundIcon="@mipmap/ic_notes_app_round"
             android:label="@string/note_share_label"
             android:noHistory="true"
             android:taskAffinity=""

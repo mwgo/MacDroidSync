@@ -1,5 +1,6 @@
 import AppKit
 import MacDroidSyncCore
+import NotesMDKit
 
 /// Owns the status item, its menu and the wiring between the pasteboard, the
 /// server and the offline queue.
@@ -66,6 +67,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let photoSyncNowMenuItem = NSMenuItem(title: "Sync photos now", action: #selector(syncPhotosNow), keyEquivalent: "")
     private let messagesMenuItem = NSMenuItem(title: "Messages…", action: #selector(showMessages(_:)), keyEquivalent: "m")
     private let noteConflictsMenuItem = NSMenuItem(title: "Note conflicts…", action: #selector(showNoteConflicts(_:)), keyEquivalent: "")
+    private let openNotesMenuItem = NSMenuItem(title: "Open Notes MD", action: #selector(openNotesMD(_:)), keyEquivalent: "n")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
     private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
 
@@ -81,13 +83,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private var messagesWindow: MessagesWindowController?
     private var noteConflictsWindow: NotesConflictsWindowController?
     private lazy var notesStore = NotesSyncStore()
-    private lazy var notesLibrary = AppleNotesLibrary(
-        scratch: notesStore.directory.appendingPathComponent("bridge", isDirectory: true),
-        accountName: { Settings.shared.notesAccount }
-    )
-    private lazy var notes = NotesCoordinator(store: notesStore, library: notesLibrary) { [weak self] type, payload, data in
-        self?.server.requestNotes(type: type, payload: payload, data: data) ?? false
-    }
+    private lazy var notes: NotesCoordinator = {
+        let root = Settings.shared.notesFolder
+        notesStore.use(root: root.path)
+        return NotesCoordinator(store: notesStore, library: FolderNotesLibrary(root: root, writer: Settings.shared.notesWriter)) { [weak self] type, payload, data in
+            self?.server.requestNotes(type: type, payload: payload, data: data) ?? false
+        }
+    }()
+    /// Hears of changes in the folder of notes, from Notes MD and from iCloud.
+    private var notesMonitor: FolderMonitor?
     /// Banners waiting a moment for the sender's photo, by photo id.
     private var bannersAwaitingPhoto: [String: (SmsThread, [SmsMessage])] = [:]
     private lazy var sms = SmsCoordinator(store: SmsStore()) { [weak self] type, payload, image in
@@ -193,7 +197,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in [
             pingMenuItem, sendMenuItem, sendFilesMenuItem, downloadsMenuItem,
             autoLockMenuItem, snoozeMenuItem, settingsMenuItem, quitMenuItem,
-            photoWindowMenuItem, photoSyncNowMenuItem, messagesMenuItem, noteConflictsMenuItem,
+            photoWindowMenuItem, photoSyncNowMenuItem, messagesMenuItem, noteConflictsMenuItem, openNotesMenuItem,
         ] {
             item.target = self
         }
@@ -222,6 +226,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(photoSyncNowMenuItem)
         menu.addItem(.separator())
         menu.addItem(messagesMenuItem)
+        menu.addItem(openNotesMenuItem)
         menu.addItem(noteConflictsMenuItem)
         menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
@@ -1085,6 +1090,36 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         notes.onConflict = { [weak self] conflict in self?.notifier.noteConflict(conflict) }
         notifier.onOpenNoteConflicts = { [weak self] in self?.showNoteConflicts(nil) }
         notes.setEnabled(settings.notesSyncEnabled)
+        watchNotesFolder()
+    }
+
+    /// Watches the folder of notes while the sync is on.
+    private func watchNotesFolder() {
+        notesMonitor?.stop()
+        notesMonitor = nil
+        guard settings.notesSyncEnabled else { return }
+        notesMonitor = FolderMonitor(root: settings.notesFolder, interval: 30) { [weak self] in
+            Task { @MainActor in self?.notes.folderChanged() }
+        }
+    }
+
+    /// Another folder of notes was chosen: the sync starts afresh with it.
+    private func notesFolderChanged() {
+        let root = settings.notesFolder
+        notes.setLibrary(FolderNotesLibrary(root: root, writer: settings.notesWriter), root: root.path)
+        watchNotesFolder()
+        Log.info("Notes folder: \(root.path)")
+    }
+
+    @objc private func openNotesMD(_ sender: Any?) {
+        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: NotesMD.bundleIdentifier) else {
+            let alert = NSAlert()
+            alert.messageText = "Notes MD is not installed"
+            alert.informativeText = "Build it from notesmd/NotesMD.xcodeproj and put it in Applications."
+            alert.runModal()
+            return
+        }
+        NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
     }
 
     @objc private func showNoteConflicts(_ sender: Any?) {
@@ -1097,32 +1132,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             ))
         }
         noteConflictsWindow?.present()
-    }
-
-    /// Asks macOS to let this app control Notes, from the click that switched
-    /// the sync on, so the system's question appears while the user is looking.
-    private func askForNotesAccess() {
-        NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let accounts = try await self.notesLibrary.accounts()
-                Log.info("Notes accounts: \(accounts.map(\.name).joined(separator: ", "))")
-            } catch NotesLibraryError.notAuthorized {
-                let alert = NSAlert()
-                alert.messageText = "MacDroidSync may not control Notes"
-                alert.informativeText = "Allow it in System Settings → Privacy & Security → Automation, under MacDroidSync."
-                alert.addButton(withTitle: "Open System Settings")
-                alert.addButton(withTitle: "Cancel")
-                if alert.runModal() == .alertFirstButtonReturn,
-                   let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
-                    NSWorkspace.shared.open(url)
-                }
-            } catch {
-                Log.error("Could not reach Notes: \(error.localizedDescription)")
-            }
-            self.settingsWindow?.refresh()
-        }
     }
 
     /// The notes line of the settings window.
@@ -1255,11 +1264,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 let enabled = self.settings.notesSyncEnabled
                 // The phone holds the setting for the session only, so it is told now.
                 self.server.sendNotesConfig(enabled: enabled)
-                if enabled { self.askForNotesAccess() }
                 self.notes.setEnabled(enabled)
+                self.watchNotesFolder()
             },
             syncNotesNow: { [weak self] in self?.notes.requestSync() },
-            openNoteConflicts: { [weak self] in self?.showNoteConflicts(nil) }
+            openNoteConflicts: { [weak self] in self?.showNoteConflicts(nil) },
+            notesFolderChanged: { [weak self] in self?.notesFolderChanged() }
         )
     }
 

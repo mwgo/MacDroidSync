@@ -97,10 +97,13 @@ data class NotesPayload(
     val offset: Long? = null,
     val total: Long? = null,
     val sha256: String? = null,
+    /** In notes-config: the Mac also wants the strokes of every drawing, `images/<uuid>.json`. */
+    val sidecars: Boolean? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         requestId?.let { put("requestId", it) }
         enabled?.let { put("enabled", it) }
+        sidecars?.let { put("sidecars", it) }
         folders?.let { put("folders", JSONArray(it)) }
         notes?.let { list -> put("notes", JSONArray().apply { list.forEach { put(it.toJson()) } }) }
         note?.let { put("note", it.toJson()) }
@@ -133,6 +136,7 @@ data class NotesPayload(
             offset = if (json.has("offset")) json.optLong("offset") else null,
             total = if (json.has("total")) json.optLong("total") else null,
             sha256 = json.text("sha256"),
+            sidecars = if (json.has("sidecars")) json.optBoolean("sidecars") else null,
         )
 
         private fun JSONObject.text(key: String): String? = if (has(key) && !isNull(key)) optString(key) else null
@@ -154,6 +158,10 @@ object NotesRules {
      * Whether [path] is where the notes keep a picture or a file. A path from
      * the Mac is untrusted: anything else, `..` included, is refused.
      */
+    /** Where the strokes of a drawing are kept next to its picture, or null for a path that is no picture. */
+    fun strokesPath(path: String): String? =
+        if (path.startsWith("images/") && !path.endsWith(".json")) path.substringBeforeLast('.') + ".json" else null
+
     fun isAssetPath(path: String): Boolean =
         !path.contains("..") && (imagePath.matches(path) || filePath.matches(path))
 
@@ -203,6 +211,14 @@ class NotesHost(private val store: NotesStore) {
     private data class Known(val size: Long, val time: Long, val sha256: String)
 
     private val checksums = HashMap<String, Known>()
+
+    /**
+     * Whether the Mac of this session takes the strokes of a drawing along with
+     * its picture, so that the drawing can be edited again there. A Mac that
+     * does not say so never gets them, nor counts them in a note's hash.
+     */
+    @Volatile
+    var sidecars = false
 
     fun manifest(): NotesPayload {
         val live = store.notes.mapNotNull { note ->
@@ -331,10 +347,14 @@ class NotesHost(private val store: NotesStore) {
 
     private fun hashOf(markdown: String) = NotesRules.hash(markdown, assetsOf(markdown))
 
-    private fun assetsOf(markdown: String): List<NoteAsset> = store.assetsOf(markdown).mapNotNull { path ->
+    private fun assetsOf(markdown: String): List<NoteAsset> = store.assetsOf(markdown).flatMap { path ->
         val file = store.assetFile(path)
-        if (!file.isFile) return@mapNotNull null
-        NoteAsset(path, file.length(), checksum(path, file))
+        if (!file.isFile) return@flatMap emptyList()
+        val asset = NoteAsset(path, file.length(), checksum(path, file))
+        val strokes = NotesRules.strokesPath(path)?.takeIf { sidecars }
+        val strokesFile = strokes?.let { store.assetFile(it) }?.takeIf { it.isFile }
+        if (strokes == null || strokesFile == null) listOf(asset)
+        else listOf(asset, NoteAsset(strokes, strokesFile.length(), checksum(strokes, strokesFile)))
     }
 
     private fun checksum(path: String, file: File): String = synchronized(checksums) {

@@ -448,7 +448,7 @@ public final class SyncServer {
 
     /// Tells the connected phone whether the notes are synced now.
     public func sendNotesConfig(enabled: Bool) {
-        _ = requestNotes(type: MessageType.notesConfig, payload: NotesPayload(enabled: enabled))
+        _ = requestNotes(type: MessageType.notesConfig, payload: NotesPayload(enabled: enabled, sidecars: enabled ? true : nil))
     }
 
     /// Whether a transfer to the phone is currently in flight.

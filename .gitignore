@@ -32,3 +32,7 @@ android/keystore.properties
 .idea/
 .junie/
 *.iml
+notesmd/build/
+notesmd/NotesMDKit/.build/
+notesmd/NotesMDKit/.swiftpm/
+xcuserdata/

@@ -190,4 +190,20 @@ class NotesSyncTest {
         assertTrue(store.isUnsynced(store.note(a.id)!!))
         assertTrue(NotesStore(temp.root) { now }.isUnsynced(store.note(a.id)!!))
     }
+
+    @Test
+    fun `the strokes of a drawing go along only to a Mac that asks for them`() {
+        val picture = store.addImage("png") { it.writeBytes(byteArrayOf(1, 2)) }
+        val strokes = picture.substringBeforeLast('.') + ".json"
+        store.assetFile(strokes).writeText("{\"strokes\":[]}")
+        val note = store.create("Dom", "# Rysunek\n![drawing]($picture)")
+        assertEquals(listOf(picture), host.get(note.id).assets.map { it.path })
+        val without = host.manifest().notes!!.single().hash
+        host.sidecars = true
+        assertEquals(listOf(picture, strokes), host.get(note.id).assets.map { it.path })
+        assertNotEquals(without, host.manifest().notes!!.single().hash)
+        assertTrue(NotesRules.isAssetPath(strokes))
+        val payload = NotesPayload(enabled = true, sidecars = true)
+        assertEquals(payload, Message.parse(Message(type = MessageType.NOTES_CONFIG, notes = payload).toBytes()).notes)
+    }
 }

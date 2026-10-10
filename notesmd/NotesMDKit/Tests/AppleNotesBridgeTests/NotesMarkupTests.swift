@@ -1,5 +1,5 @@
 import XCTest
-@testable import MacDroidSyncCore
+@testable import AppleNotesBridge
 
 /// The two directions of the conversion, against HTML as Notes really wrote it.
 final class NotesMarkupTests: XCTestCase {

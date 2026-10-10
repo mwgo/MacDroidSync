@@ -1,12 +1,12 @@
 import XCTest
+import NotesMDKit
 @testable import MacDroidSyncCore
 
 /// The plan alone: which step each combination of changes leads to.
 final class NotesSyncPlanTests: XCTestCase {
 
-    private func pair(_ n: Int, hash: String = "h", modified: Int64 = 1) -> NotesPair {
-        NotesPair(androidId: "a\(n)", macId: "m\(n)", androidHash: hash, androidFolder: "Notes",
-                  macModified: modified, macFolder: "Notes", macMarkdown: "")
+    private func pair(_ n: Int, hash: String = "h") -> NotesPair {
+        NotesPair(androidId: "a\(n)", macId: "m\(n)", androidHash: hash, androidFolder: "Notes", macHash: "1", macFolder: "Notes")
     }
 
     private func entry(_ n: Int, hash: String = "h", deleted: Bool? = nil) -> NoteEntry {
@@ -14,7 +14,7 @@ final class NotesSyncPlanTests: XCTestCase {
     }
 
     private func mac(_ n: Int, modified: Int64 = 1, folder: String = "Notes") -> MacNoteInfo {
-        MacNoteInfo(id: "m\(n)", name: "t\(n)", folder: folder, modified: modified)
+        MacNoteInfo(id: "m\(n)", name: "t\(n)", folder: folder, modified: modified, hash: "\(modified)")
     }
 
     func testEachSideChangingLeadsToItsOwnStep() {
@@ -73,103 +73,7 @@ final class NotesSyncPlanTests: XCTestCase {
     }
 }
 
-// MARK: - The whole cycle, against a phone and a Notes in memory
-
-/// Notes in memory. Like the real one it rewrites nothing; what matters here
-/// is the sync's own bookkeeping, the conversion has tests of its own.
-private final class FakeNotes: NotesLibrary {
-    struct Note {
-        var info: MacNoteInfo
-        var html: String
-    }
-
-    var notes: [String: Note] = [:]
-    var deleted: [String] = []
-    private var counter = 0
-    private var tick: Int64 = 100
-
-    func add(name: String, folder: String = "Notes", html: String) -> String {
-        counter += 1
-        tick += 1
-        let id = "mac-\(counter)"
-        notes[id] = Note(info: MacNoteInfo(id: id, name: name, folder: folder, modified: tick), html: html)
-        return id
-    }
-
-    func edit(_ id: String, html: String) {
-        tick += 1
-        notes[id]?.html = html
-        notes[id]?.info.modified = tick
-    }
-
-    func list() async throws -> [MacNoteInfo] { notes.values.map(\.info).sorted { $0.id < $1.id } }
-    /// Folders without a note in them; those with one come from the notes.
-    var emptyFolders: Set<String> = []
-    var deletedFolders: [String] = []
-
-    func folders() async throws -> [String] { Array(Set(notes.values.map(\.info.folder)).union(emptyFolders)) }
-
-    func read(id: String, into folder: URL) async throws -> MacNoteContent {
-        guard let note = notes[id] else { throw NotesLibraryError.failed("no note \(id)") }
-        return MacNoteContent(info: note.info, html: note.html, attachments: [])
-    }
-
-    /// As Notes does with a file the body refers to: a picture shows in its
-    /// place with its data, anything else leaves an empty line there.
-    private func stored(_ html: String, _ files: [URL]) -> String {
-        var html = html
-        for file in files {
-            let reference = "<div><img src=\"\(file.absoluteString)\"></div>"
-            if ["jpg", "png"].contains(file.pathExtension), let data = try? Data(contentsOf: file) {
-                html = html.replacingOccurrences(of: reference, with: "<div><img src=\"data:image/jpeg;base64,\(data.base64EncodedString())\"/></div>")
-            } else {
-                html = html.replacingOccurrences(of: reference, with: "<div><br><br></div>")
-            }
-        }
-        return html
-    }
-
-    func create(folder: String, html: String, files: [URL]) async throws -> MacNoteInfo {
-        let html = stored(html, files)
-        let name = NotesMarkup.markdown(fromHTML: html, title: "").markdown.components(separatedBy: "\n").first.map {
-            $0.hasPrefix("# ") ? String($0.dropFirst(2)) : $0
-        } ?? ""
-        let id = add(name: name, folder: folder, html: html)
-        return notes[id]!.info
-    }
-
-    func update(id: String, folder: String, html: String, files: [URL]) async throws -> MacNoteInfo {
-        writes += 1
-        edit(id, html: stored(html, files))
-        notes[id]?.info.folder = folder
-        return notes[id]!.info
-    }
-
-    var writes = 0
-
-    func move(id: String, folder: String) async throws -> MacNoteInfo {
-        tick += 1
-        notes[id]?.info.folder = folder
-        notes[id]?.info.modified = tick
-        return notes[id]!.info
-    }
-
-    func delete(id: String) async throws {
-        notes[id] = nil
-        deleted.append(id)
-    }
-
-    func ensureFolder(_ name: String) async throws {
-        if !notes.values.contains(where: { $0.info.folder == name }) { emptyFolders.insert(name) }
-    }
-
-    func deleteFolder(_ name: String) async throws -> Bool {
-        if notes.values.contains(where: { $0.info.folder == name }) { return false }
-        emptyFolders.remove(name)
-        deletedFolders.append(name)
-        return true
-    }
-}
+// MARK: - The whole cycle, against a phone in memory and a folder of notes
 
 /// The phone's side, as NotesHost on Android does it.
 @MainActor
@@ -188,13 +92,29 @@ private final class FakePhone {
     /// What the last notes-synced said Notes holds as it is.
     var synced: [String: String] = [:]
     var assets: [String: Data] = [:]
+    private var partial: [String: Data] = [:]
     var writes = 0
     var writtenFolders = 0
     var editing: Set<String> = []
     weak var coordinator: NotesCoordinator?
     private var counter = 0
 
-    func hash(_ markdown: String) -> String { notesSHA256(Data(markdown.utf8)) }
+    /// As the phone does with `sidecars`: every picture and file, a drawing's strokes after its picture.
+    func assetList(_ markdown: String) -> [NoteAsset] {
+        Markdown.assetPaths(markdown).flatMap { path -> [NoteAsset] in
+            guard let data = assets[path] else { return [] }
+            var list = [NoteAsset(path: path, size: Int64(data.count), sha256: notesSHA256(data))]
+            let strokes = WireForm.strokesPath(path)
+            if path.hasPrefix("images/"), let more = assets[strokes] {
+                list.append(NoteAsset(path: strokes, size: Int64(more.count), sha256: notesSHA256(more)))
+            }
+            return list
+        }
+    }
+
+    func hash(_ markdown: String) -> String {
+        NoteHash.hash(markdown: markdown, assets: assetList(markdown).map { ($0.path, $0.sha256) })
+    }
 
     @discardableResult
     func add(_ markdown: String, folder: String = "Notes") -> String {
@@ -217,8 +137,7 @@ private final class FakePhone {
             }
         case MessageType.notesGet:
             if let id = request.id, let note = notes[id], !note.deleted {
-                let used = note.markdown.components(separatedBy: "\n").compactMap { NotesMarkup.imageLine($0)?.path ?? NotesMarkup.fileLine($0)?.path }
-                let list = used.compactMap { path in assets[path].map { NoteAsset(path: path, size: Int64($0.count), sha256: notesSHA256($0)) } }
+                let list = assetList(note.markdown)
                 reply.note = NoteDoc(id: id, folder: note.folder, markdown: note.markdown, hash: hash(note.markdown), assets: list)
             } else {
                 ok = false
@@ -231,6 +150,9 @@ private final class FakePhone {
             } else if let id = request.id, let base = request.baseHash, let note = notes[id], hash(note.markdown) != base {
                 ok = false
                 reason = "changed"
+            } else if let markdown = request.markdown, Markdown.assetPaths(markdown).contains(where: { assets[$0] == nil }) {
+                ok = false
+                reason = "missing asset"
             } else if let id = request.id, request.markdown == nil {
                 writtenFolders += 1
                 notes[id]?.folder = request.folder ?? "Notes"
@@ -241,6 +163,15 @@ private final class FakePhone {
                 notes[id] = Note(folder: request.folder ?? "Notes", markdown: request.markdown ?? "")
                 reply.id = id
                 reply.hash = hash(request.markdown ?? "")
+            }
+        case MessageType.notesAssetPut:
+            if let path = request.path, let data {
+                let start = Int(request.offset ?? 0)
+                var current = start == 0 ? Data() : (partial[path] ?? Data())
+                current.append(data)
+                partial[path] = current
+                if Int64(current.count) >= request.total ?? 0 { assets[path] = current }
+                reply.offset = Int64(current.count)
             }
         case MessageType.notesAssetGet:
             let data = assets[request.path ?? ""] ?? Data()
@@ -280,18 +211,27 @@ private final class FakePhone {
 final class NotesCoordinatorTests: XCTestCase {
 
     private var directory: URL!
+    private var root: URL!
     private var phone: FakePhone!
-    private var mac: FakeNotes!
+    private var library: FolderNotesLibrary!
     private var coordinator: NotesCoordinator!
+    private let clock = TestClock()
+
+    final class TestClock: @unchecked Sendable {
+        var now = Date()
+    }
 
     override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("notes-sync-\(UUID().uuidString)")
+        root = directory.appendingPathComponent("iCloud", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         phone = FakePhone()
-        mac = FakeNotes()
+        let clock = clock
+        library = FolderNotesLibrary(root: root, writer: "mac-test-sync", clock: { clock.now })
         let phone = phone!
         coordinator = NotesCoordinator(
-            store: NotesSyncStore(directory: directory),
-            library: mac,
+            store: NotesSyncStore(directory: directory.appendingPathComponent("state")),
+            library: library,
             timeout: 5,
             pollInterval: 3600,
             transport: { phone.transport($0, $1, $2) }
@@ -306,88 +246,96 @@ final class NotesCoordinatorTests: XCTestCase {
     private func sync() async {
         coordinator.setEnabled(true)
         if !coordinator.isConnected { coordinator.connected() } else { coordinator.requestSync() }
-        for _ in 0..<500 where coordinator.isRunning { try? await Task.sleep(nanoseconds: 5_000_000) }
+        for _ in 0..<1000 where coordinator.isRunning { try? await Task.sleep(nanoseconds: 5_000_000) }
         XCTAssertFalse(coordinator.isRunning)
         XCTAssertNil(coordinator.lastError)
     }
 
-    private func macNote(named name: String) -> FakeNotes.Note? {
-        mac.notes.values.first { $0.info.name == name }
+    private func file(_ path: String) -> String? {
+        try? String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
     }
 
-    func testTheFirstSyncCopiesBothWaysAndKeepsWhatIsAlreadyTheSame() async {
+    private func write(_ path: String, _ text: String) throws {
+        let url = root.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: url)
+    }
+
+    func testTheFirstSyncCopiesBothWaysAndKeepsWhatIsAlreadyTheSame() async throws {
         phone.add("# Z telefonu\ntekst", folder: "Dom")
         phone.add("# Wspólna\nto samo")
-        _ = mac.add(name: "Z Maca", html: "<div><h1>Z Maca</h1></div><div>z Notatek</div>")
-        _ = mac.add(name: "Wspólna", html: "<div><h1>Wspólna</h1></div><div>to samo</div>")
+        try write("Notes/Z Maca.md", "# Z Maca\nz folderu")
+        try write("Notes/Wspólna.md", "# Wspólna\nto samo")
         await sync()
-        XCTAssertEqual(macNote(named: "Z telefonu")?.info.folder, "Dom")
-        XCTAssertTrue(phone.notes.values.contains { $0.markdown == "# Z Maca\nz Notatek" })
-        XCTAssertEqual(mac.notes.count, 3)
+        XCTAssertEqual(file("Dom/Z telefonu.md"), "# Z telefonu\ntekst")
+        XCTAssertTrue(phone.notes.values.contains { $0.markdown == "# Z Maca\nz folderu" })
         XCTAssertEqual(phone.notes.count, 3)
         XCTAssertEqual(coordinator.store.pairs.count, 3)
+        XCTAssertNil(file("Notes/Wspólna 2.md"))
     }
 
-    func testAnEditOnEitherSideReachesTheOther() async {
+    func testAnEditOnEitherSideReachesTheOther() async throws {
         let id = phone.add("# Lista\nmleko")
         await sync()
         phone.notes[id]?.markdown = "# Lista\nmleko\nchleb"
         await sync()
-        XCTAssertTrue(macNote(named: "Lista")!.html.contains("chleb"))
+        XCTAssertEqual(file("Notes/Lista.md"), "# Lista\nmleko\nchleb")
 
-        let macId = coordinator.store.pair(androidId: id)!.macId
-        mac.edit(macId, html: "<div><h1>Lista</h1></div><div>tylko woda</div>")
+        try write("Notes/Lista.md", "# Lista\ntylko woda")
         await sync()
         XCTAssertEqual(phone.notes[id]?.markdown, "# Lista\ntylko woda")
         XCTAssertTrue(coordinator.store.conflicts.isEmpty)
     }
 
-    func testANewerDateInNotesWithTheSameTextIsNoEdit() async {
-        let id = phone.add("# Lista\nmleko")
+    func testANewTitleOnThePhoneRenamesTheFile() async throws {
+        let id = phone.add("# Stary")
         await sync()
-        let macId = coordinator.store.pair(androidId: id)!.macId
-        mac.edit(macId, html: mac.notes[macId]!.html)
-        phone.notes[id]?.markdown = "# Lista\nmleko i miód"
+        phone.notes[id]?.markdown = "# Nowy\ntekst"
         await sync()
-        XCTAssertTrue(coordinator.store.conflicts.isEmpty)
-        XCTAssertTrue(mac.notes[macId]!.html.contains("miód"))
+        XCTAssertNil(file("Notes/Stary.md"))
+        XCTAssertEqual(file("Notes/Nowy.md"), "# Nowy\ntekst")
+        XCTAssertEqual(coordinator.store.pairs.count, 1)
     }
 
-    func testAnEditOnBothSidesKeepsTheMacsVersionAndCopiesThePhones() async {
+    func testAnEditOnBothSidesKeepsTheMacsVersionAndCopiesThePhones() async throws {
         let id = phone.add("# Plan\nwersja bazowa")
         await sync()
-        let macId = coordinator.store.pair(androidId: id)!.macId
         phone.notes[id]?.markdown = "# Plan\nwersja z telefonu"
-        mac.edit(macId, html: "<div><h1>Plan</h1></div><div>wersja z Maca</div>")
+        try write("Notes/Plan.md", "# Plan\nwersja z Maca")
         await sync()
         XCTAssertEqual(phone.notes[id]?.markdown, "# Plan\nwersja z Maca")
         let copy = phone.notes.values.first { $0.markdown.hasPrefix("# Plan (Android, ") }
         XCTAssertEqual(copy?.markdown.components(separatedBy: "\n").last, "wersja z telefonu")
-        XCTAssertNotNil(mac.notes.values.first { $0.info.name.hasPrefix("Plan (Android, ") })
+        let names = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Notes").path)
+        XCTAssertTrue(names.contains { $0.hasPrefix("Plan (Android, ") }, "\(names)")
         let conflict = coordinator.store.conflicts.first
         XCTAssertEqual(conflict?.kind, NotesConflict.Kind.edited)
         XCTAssertEqual(conflict?.phoneMarkdown, "# Plan\nwersja z telefonu")
         XCTAssertEqual(conflict?.macMarkdown, "# Plan\nwersja z Maca")
     }
 
-    func testDeletionsCarryOverBothWays() async {
+    func testDeletionsCarryOverBothWays() async throws {
         let first = phone.add("# Pierwsza")
         let second = phone.add("# Druga")
         await sync()
         phone.notes[first]?.deleted = true
-        let secondMac = coordinator.store.pair(androidId: second)!.macId
-        try? await mac.delete(id: secondMac)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("Notes/Druga.md"))
         await sync()
-        XCTAssertNil(macNote(named: "Pierwsza"))
+        XCTAssertEqual(phone.notes[second]?.deleted, false, "a file gone a moment ago may be a rename iCloud has not finished")
+        // Gone for good once iCloud would have settled; a look at the folder alone starts the cycle that says so.
+        clock.now = clock.now.addingTimeInterval(300)
+        coordinator.folderChanged()
+        for _ in 0..<200 where phone.notes[second]?.deleted != true { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertNil(file("Notes/Pierwsza.md"))
         XCTAssertEqual(phone.notes[second]?.deleted, true)
-        XCTAssertTrue(coordinator.store.pairs.isEmpty)
+        let snapshot = await library.store.current()
+        XCTAssertEqual(snapshot.trash.map(\.title), ["Pierwsza"])
     }
 
-    func testANoteBeingEditedOnThePhoneWaitsForTheNextCycle() async {
+    func testANoteBeingEditedOnThePhoneWaitsForTheNextCycle() async throws {
         let id = phone.add("# Lista\nmleko")
         await sync()
-        let macId = coordinator.store.pair(androidId: id)!.macId
-        mac.edit(macId, html: "<div><h1>Lista</h1></div><div>z Maca</div>")
+        try write("Notes/Lista.md", "# Lista\nz Maca")
         phone.editing = [id]
         await sync()
         XCTAssertEqual(phone.notes[id]?.markdown, "# Lista\nmleko")
@@ -397,108 +345,74 @@ final class NotesCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.store.conflicts.isEmpty)
     }
 
-    func testPicturesStandInTheirPlaceInNotesAndKeepTheirPathOnThePhone() async {
-        let path = "images/00000000-0000-0000-0000-000000000009.jpg"
-        phone.assets[path] = Data([0xFF, 0xD8, 0xFF, 0x01])
-        let id = phone.add("# Morze\n![](\(path))\ntekst")
+    func testPicturesFilesAndStrokesGoBothWays() async throws {
+        let picture = "images/00000000-0000-0000-0000-000000000009.png"
+        let strokes = "images/00000000-0000-0000-0000-000000000009.json"
+        let file = "files/00000000-0000-0000-0000-00000000000a/nagranie.m4a"
+        phone.assets[picture] = Data([0x89, 0x50, 0x4E, 0x47])
+        phone.assets[strokes] = Data("{\"strokes\":[]}".utf8)
+        phone.assets[file] = Data([1, 2, 3])
+        let id = phone.add("# Morze\n![drawing](\(picture))\n[nagranie.m4a](\(file))\ntekst")
         await sync()
-        let macId = coordinator.store.pair(androidId: id)!.macId
-        XCTAssertTrue(mac.notes[macId]!.html.contains("<img"))
-        mac.edit(macId, html: mac.notes[macId]!.html.replacingOccurrences(of: "tekst", with: "tekst z Maca"))
+        let written = try XCTUnwrap(self.file("Notes/Morze.md"))
+        XCTAssertEqual(written, "# Morze\n![drawing](Morze.assets/00000000-0000-0000-0000-000000000009.png)\n[nagranie.m4a](Morze.assets/00000000-0000-0000-0000-00000000000a/nagranie.m4a)\ntekst")
+        XCTAssertEqual(self.file("Notes/Morze.assets/00000000-0000-0000-0000-000000000009.json"), "{\"strokes\":[]}")
+
+        try write("Notes/Morze.assets/00000000-0000-0000-0000-000000000009.json", "{\"strokes\":[1]}")
+        try write("Notes/Morze.md", written.replacingOccurrences(of: "tekst", with: "tekst z Maca"))
         await sync()
-        XCTAssertEqual(phone.notes[id]?.markdown, "# Morze\n![](\(path))\ntekst z Maca")
+        XCTAssertEqual(phone.notes[id]?.markdown, "# Morze\n![drawing](\(picture))\n[nagranie.m4a](\(file))\ntekst z Maca")
+        XCTAssertEqual(phone.assets[strokes], Data("{\"strokes\":[1]}".utf8))
+        XCTAssertTrue(coordinator.store.conflicts.isEmpty)
     }
 
-    func testAFileNotesWillNotHandBackStaysOnThePhone() async {
-        let path = "files/00000000-0000-0000-0000-000000000009/nagranie.m4a"
-        let id = phone.add("# Dyktafon\n[nagranie.m4a](\(path))\ntekst")
-        phone.assets[path] = Data([1, 2, 3])
+    func testAMoveOnEitherSideMovesTheNoteAndWritesNothing() async throws {
+        let id = phone.add("# Plan\npunkt")
         await sync()
-        let macId = coordinator.store.pair(androidId: id)!.macId
-        XCTAssertTrue(mac.notes[macId]!.html.contains("<br><br>"))
-        mac.edit(macId, html: mac.notes[macId]!.html.replacingOccurrences(of: "tekst", with: "tekst z Maca"))
-        await sync()
-        XCTAssertEqual(phone.notes[id]?.markdown, "# Dyktafon\n[nagranie.m4a](\(path))\ntekst z Maca")
-    }
-
-    func testAMoveOnEitherSideMovesTheNoteAndWritesNothing() async {
-        let id = phone.add("* lista\n# Tytuł")
-        phone.notes[id]?.markdown = "# Plan\n* punkt z gwiazdką\n![](images/00000000-0000-0000-0000-00000000000a.jpg)"
-        phone.assets["images/00000000-0000-0000-0000-00000000000a.jpg"] = Data([0xFF, 0xD8, 0xFF])
-        await sync()
-        let macId = coordinator.store.pair(androidId: id)!.macId
-        let macWrites = mac.writes
         let phoneWrites = phone.writes
-
         phone.notes[id]?.folder = "Praca"
         await sync()
-        XCTAssertEqual(mac.notes[macId]?.info.folder, "Praca")
-        XCTAssertEqual(mac.writes, macWrites)
+        XCTAssertEqual(file("Praca/Plan.md"), "# Plan\npunkt")
+        XCTAssertNil(file("Notes/Plan.md"))
 
-        _ = try? await mac.move(id: macId, folder: "Dom")
+        let pair = try XCTUnwrap(coordinator.store.pair(androidId: id))
+        _ = try await library.move(id: pair.macId, folder: "Dom")
         await sync()
         XCTAssertEqual(phone.notes[id]?.folder, "Dom")
-        XCTAssertEqual(phone.notes[id]?.markdown, "# Plan\n* punkt z gwiazdką\n![](images/00000000-0000-0000-0000-00000000000a.jpg)")
         XCTAssertEqual(phone.writes, phoneWrites)
         XCTAssertTrue(coordinator.store.conflicts.isEmpty)
     }
 
-    func testTooManyDeletionsWaitForTheOperator() async {
+    func testTooManyDeletionsWaitForTheOperator() async throws {
         let ids = (1...8).map { phone.add("# Notatka \($0)") }
         await sync()
         ids.forEach { phone.notes[$0]?.deleted = true }
         await sync()
-        XCTAssertEqual(mac.notes.count, 8)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Notes").path).count, 8)
         XCTAssertEqual(coordinator.store.conflicts.first?.kind, NotesConflict.Kind.deletions)
         coordinator.allowHeldDeletions()
-        for _ in 0..<500 where coordinator.isRunning { try? await Task.sleep(nanoseconds: 5_000_000) }
-        XCTAssertEqual(mac.notes.count, 0)
+        for _ in 0..<1000 where coordinator.isRunning { try? await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Notes").path).count, 0)
     }
 
-    // MARK: - Folders and what is synced
-
-    func testAnEmptyFolderDeletedInNotesGoesFromThePhoneAndStaysGone() async {
+    func testFoldersFollowBothWays() async throws {
         phone.folders.insert("Pusty")
         phone.add("# Notatka\ntekst")
         await sync()
-        XCTAssertTrue(mac.emptyFolders.contains("Pusty"))
-        mac.emptyFolders.remove("Pusty")
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Pusty").path, isDirectory: &isDirectory))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("Pusty"))
         await sync()
         XCTAssertFalse(phone.folders.contains("Pusty"))
-        await sync()
-        XCTAssertFalse(mac.emptyFolders.contains("Pusty"))
-    }
-
-    func testAFolderDeletedOnThePhoneGoesFromNotes() async {
-        phone.folders.insert("Pusty")
-        await sync()
-        phone.folders.remove("Pusty")
-        await sync()
-        XCTAssertEqual(mac.deletedFolders, ["Pusty"])
-    }
-
-    func testAFolderDeletedInNotesWithItsNotesGoesOnThePhoneWithThem() async {
-        let id = phone.add("# W domu\ntekst", folder: "Dom")
-        await sync()
-        let macId = coordinator.store.pair(androidId: id)!.macId
-        // Deleting a folder in Notes puts its notes in Recently Deleted.
-        try? await mac.delete(id: macId)
-        mac.emptyFolders.remove("Dom")
-        await sync()
-        XCTAssertTrue(phone.notes[id]!.deleted)
-        XCTAssertFalse(phone.folders.contains("Dom"))
-    }
-
-    func testANewFolderOnThePhoneIsMadeInNotesNotDeleted() async {
-        phone.add("# A\nb")
-        await sync()
         phone.folders.insert("Nowy")
         await sync()
-        XCTAssertTrue(mac.emptyFolders.contains("Nowy"))
-        XCTAssertTrue(phone.folders.contains("Nowy"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Nowy").path))
+        phone.folders.remove("Nowy")
+        await sync()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Nowy").path))
     }
 
-    func testThePhoneLearnsWhichNotesNotesHoldsAsTheyAre() async {
+    func testThePhoneLearnsWhichNotesTheMacHoldsAsTheyAre() async {
         let a = phone.add("# A\nraz")
         let b = phone.add("# B\ndwa")
         await sync()

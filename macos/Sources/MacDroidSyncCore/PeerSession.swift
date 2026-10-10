@@ -342,7 +342,7 @@ public final class PeerSession {
                 try send(Message(
                     seq: codec.nextSequence(),
                     type: MessageType.notesConfig,
-                    notes: NotesPayload(enabled: notes)
+                    notes: NotesPayload(enabled: notes, sidecars: notes ? true : nil)
                 ))
             }
             Log.info("Authenticated with \(remoteDeviceName!) (\(remoteDescription))")

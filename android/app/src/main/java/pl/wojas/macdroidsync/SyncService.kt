@@ -284,6 +284,7 @@ class SyncService : Service() {
             // longer here, and possibly no longer issues them at all.
             photoConfig = null
             notesEnabled = false
+            notesHost.sidecars = false
             notesChangedJob?.cancel()
             stopWatchingSms()
             pendingAcks.values.forEach { it.complete(FileVerdict(ok = false, detail = null, delivered = false)) }
@@ -373,9 +374,10 @@ class SyncService : Service() {
             scope.launch { answerSms(type, request, image) }
         }
 
-        override fun onNotesConfig(enabled: Boolean) {
-            Log.i(TAG, "Notes sync with the Mac is ${if (enabled) "on" else "off"}")
+        override fun onNotesConfig(enabled: Boolean, sidecars: Boolean) {
+            Log.i(TAG, "Notes sync with the Mac is ${if (enabled) "on" else "off"}${if (sidecars) ", drawing strokes included" else ""}")
             notesEnabled = enabled
+            notesHost.sidecars = sidecars
         }
 
         override fun onNotesRequest(type: String, request: NotesPayload, data: ByteArray?) {

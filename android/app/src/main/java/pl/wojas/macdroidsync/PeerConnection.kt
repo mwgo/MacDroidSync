@@ -62,7 +62,7 @@ class PeerConnection(
         fun onSmsRequest(type: String, request: SmsPayload, image: ByteArray?)
 
         /** Whether and how the Mac syncs the notes, for this session; inside the handshake. */
-        fun onNotesConfig(enabled: Boolean)
+        fun onNotesConfig(enabled: Boolean, sidecars: Boolean)
 
         /**
          * A request about notes, see PROTOCOL.md section 10. [data] is a piece of
@@ -434,7 +434,7 @@ class PeerConnection(
                 message.sms ?: SmsPayload(),
                 message.data?.let { runCatching { Base64.decode(it, Base64.DEFAULT) }.getOrNull() },
             )
-            MessageType.NOTES_CONFIG -> listener.onNotesConfig(message.notes?.enabled == true)
+            MessageType.NOTES_CONFIG -> listener.onNotesConfig(message.notes?.enabled == true, message.notes?.sidecars == true)
             MessageType.NOTES_MANIFEST,
             MessageType.NOTES_GET,
             MessageType.NOTES_PUT,

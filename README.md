@@ -19,8 +19,9 @@ Clipboard sharing between macOS and Android over Wi-Fi, in the spirit of KDE Con
 * **Text messages on the Mac.** A *Messages* window lists the phone's conversations, shows them with
   MMS pictures, and sends replies through the phone. A new message raises a notification on the Mac.
   See *Messages* below.
-* **Notes on both sides.** The phone's *MD Notes* app and Notes on the Mac hold the same notes, kept the
-  same within seconds either way, pictures and files included. See *Notes* below.
+* **Notes everywhere.** The phone's *MD Notes* app and *Notes MD* on the Mac, iPad and iPhone hold the
+  same notes, Markdown files in a folder on iCloud Drive, pictures, drawings and files included. See
+  *Notes* below.
 * **The status bar icon on Android only exists while a Mac is connected.** No connection, no icon.
 * **Ping** the phone straight from the Mac menu and get the round trip time.
 
@@ -288,33 +289,63 @@ section 9 of [PROTOCOL.md](PROTOCOL.md).
 
 ## Notes
 
-The phone's *MD Notes* app and the iCloud account of Notes on the Mac hold the same notes. Switch it on
-in *Settings › General › Notes*; the first time, macOS asks whether MacDroidSync may control Notes.
+Notes live in a folder on iCloud Drive as plain Markdown files, one folder per notebook. **Notes MD**,
+an app for the Mac, iPad and iPhone in [notesmd/](notesmd), reads and writes that folder and looks and
+works like Notes. MacDroidSync keeps the phone's *MD Notes* app and the same folder the same. Switch it on
+in *Settings › General › Notes* and pick the folder there, or let it take the one Notes MD uses. *Open
+Notes MD* in the menu bar opens the app.
 
-* **Within seconds either way.** The phone saves a note a moment after typing stops and tells the Mac,
-  which writes it into Notes; the Mac looks at Notes every ten seconds and sends what changed to the
-  phone. While the two are apart nothing is synced, and every note is compared again when they meet.
+```
+iCloud Drive/Notes MD/
+├── Praca/
+│   ├── Import.md
+│   ├── Pomysły AI.md
+│   └── Pomysły AI.assets/          pictures, drawings and files of that note
+│       ├── 3f2a….jpg
+│       ├── 9c1b….png + 9c1b….json  a drawing and its strokes
+│       └── a7d0…/Raport.pdf
+├── Notes/
+│   └── Skills.md
+└── .notesmd/                        what Markdown cannot hold
+    ├── devices/<writer>.json         lasting ids, pinning, folder order; one file per device
+    └── trash/<id>/                   Recently Deleted, for thirty days
+```
+
+* **The files are the notes.** A note is named after its title and renamed with it; its pictures and
+  files sit next to it in `Title.assets/`, linked relatively, so the folder opens as it is in any
+  Markdown editor. The Markdown is the phone's: one line per block, nested lists, checklists, tables,
+  pictures and files on lines of their own.
+* **Within seconds either way.** The phone saves a note a moment after typing stops and tells the Mac;
+  the Mac hears of a change in the folder from Notes MD and from iCloud, and looks at it every minute
+  besides. While the two are apart nothing is synced, and every note is compared again when they meet.
 * **Everything is copied the first time.** Notes on one side only are added to the other; a note that is
-  already on both - same folder, same title, same words - is taken as one. Folders match by name and
-  the missing ones are made.
-* **A note changed on both sides** keeps the version in Notes, and the phone's version becomes a copy
-  titled *… (Android, Oct 1 12:30)* on both sides. Nothing is lost; the entry in *Note conflicts…* shows
-  the two versions side by side, pictures included, until it is dismissed.
-* **Deletions follow.** A note deleted on the phone goes to *Recently Deleted* in Notes, one deleted in
-  Notes to *Recently Deleted* at the end of the phone's list, for thirty days, where it can be restored.
-  A note deleted on one side and changed on the other comes back instead, and more than a fifth of the
-  notes (at least five) deleted at once wait in *Note conflicts…* to be allowed.
-* **What the two can hold differs.** Headings, bold, italic, underline, monospace, lists, tables,
-  pictures, files and recordings carry over as they are, each in its place, and so do nested lists;
-  tasks and quotes travel as ☐/☑ and │ at the start of the line, since Notes lets no script make or read
-  a checklist. A folder deleted on one side goes on the other once its notes are gone. A dot before a
-  note's title on the phone marks one the Mac does not have as it is yet. Pinning, folder renames and
-  password protected notes are not synced, and a note open with unsaved changes on the phone waits until
-  it is saved.
+  already on both - the same text, or the same folder, title and words - is taken as one.
+* **A note changed on both sides** keeps the Mac's version, and the phone's version becomes a copy
+  titled *… (Android, Oct 1 12:30)* on both sides; *Note conflicts…* shows both. Two Apple devices
+  writing one note before iCloud has carried either change over leave a copy *… (conflict …)* instead.
+* **Deletions follow.** A note deleted on the phone goes to *Recently Deleted* in Notes MD, one deleted
+  there to the trash on the phone. A file deleted outside the app counts as deleted only once it has been
+  gone for two minutes, since iCloud may be in the middle of a rename. More than a fifth of the notes (at
+  least five) deleted at once wait in *Note conflicts…* to be allowed.
+* **Drawings stay drawings.** The strokes of a drawing travel with its picture, so it can be drawn on
+  again on the phone, the Mac, the iPad or the iPhone. Pinning is kept per side.
 
-The Mac keeps which notes belong together, the conflicts and a copy of the pictures in
-`~/Library/Application Support/MacDroidSync/Notes`. The protocol is section 10 of
+The Mac keeps which notes belong together and the conflicts in
+`~/Library/Application Support/MacDroidSync/NotesFolder`. The protocol is section 10 of
 [PROTOCOL.md](PROTOCOL.md).
+
+### Notes MD
+
+```bash
+cd notesmd
+./build.sh
+```
+
+`build.sh` builds the Mac app into `build/Notes MD.app` and copies it to `/Applications`. For the iPad
+and iPhone, open `notesmd/NotesMD.xcodeproj` in Xcode, pick the device and run; the app is signed with
+your own development team. On first launch choose the folder of notes on iCloud Drive - the same one on
+every device. On the Mac, *File › Import from Notes…* and *Export to Notes…* copy notes between Notes and
+the folder.
 
 ## Photo sync
 

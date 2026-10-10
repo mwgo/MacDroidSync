@@ -1,5 +1,22 @@
+#if os(macOS)
 import AppKit
 import Foundation
+
+/// A note in Notes on this Mac, as the list of the account shows it.
+public struct AppleNoteInfo: Codable, Equatable {
+    public var id: String
+    public var name: String
+    public var folder: String
+    /// Milliseconds.
+    public var modified: Int64
+
+    public init(id: String, name: String, folder: String, modified: Int64) {
+        self.id = id
+        self.name = name
+        self.folder = folder
+        self.modified = modified
+    }
+}
 
 /// A note read from Notes: its body, and its attachments saved to files.
 public struct MacNoteContent {
@@ -9,7 +26,7 @@ public struct MacNoteContent {
         public var file: String
     }
 
-    public var info: MacNoteInfo
+    public var info: AppleNoteInfo
     public var html: String
     public var attachments: [Attachment]
 }
@@ -17,16 +34,16 @@ public struct MacNoteContent {
 /// What the sync needs of Notes. `AppleNotesLibrary` is the real one; the
 /// tests use one in memory.
 public protocol NotesLibrary: AnyObject {
-    func list() async throws -> [MacNoteInfo]
+    func list() async throws -> [AppleNoteInfo]
     func folders() async throws -> [String]
     /// The note's attachments are saved into `folder`.
     func read(id: String, into folder: URL) async throws -> MacNoteContent
-    func create(folder: String, html: String, files: [URL]) async throws -> MacNoteInfo
+    func create(folder: String, html: String, files: [URL]) async throws -> AppleNoteInfo
     /// Replaces the body, which drops the old attachments, attaches `files`
     /// again, and moves the note into `folder` when it is elsewhere.
-    func update(id: String, folder: String, html: String, files: [URL]) async throws -> MacNoteInfo
+    func update(id: String, folder: String, html: String, files: [URL]) async throws -> AppleNoteInfo
     /// Into another folder, the note itself untouched.
-    func move(id: String, folder: String) async throws -> MacNoteInfo
+    func move(id: String, folder: String) async throws -> AppleNoteInfo
     /// Into Recently Deleted, where Notes keeps it for thirty days.
     func delete(id: String) async throws
     func ensureFolder(_ name: String) async throws
@@ -43,7 +60,7 @@ public enum NotesLibraryError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .notAuthorized:
-            return "MacDroidSync may not control Notes. Allow it in System Settings → Privacy & Security → Automation."
+            return "Notes MD may not control Notes. Allow it in System Settings → Privacy & Security → Automation."
         case .failed(let detail):
             return "Notes: \(detail)"
         }
@@ -62,7 +79,7 @@ public final class AppleNotesLibrary: NotesLibrary {
     public var accountName: () -> String?
     private let scratch: URL
     private let timeout: TimeInterval
-    private let queue = DispatchQueue(label: "pl.wojas.MacDroidSync.notes-bridge")
+    private let queue = DispatchQueue(label: "pl.wojas.NotesMD.notes-bridge")
 
     public init(scratch: URL, timeout: TimeInterval = 120, accountName: @escaping () -> String? = { nil }) {
         self.scratch = scratch
@@ -80,8 +97,8 @@ public final class AppleNotesLibrary: NotesLibrary {
         try await call("accounts", [:], as: [Account].self)
     }
 
-    public func list() async throws -> [MacNoteInfo] {
-        try await call("list", [:], as: [MacNoteInfo].self)
+    public func list() async throws -> [AppleNoteInfo] {
+        try await call("list", [:], as: [AppleNoteInfo].self)
     }
 
     public func folders() async throws -> [String] {
@@ -99,26 +116,26 @@ public final class AppleNotesLibrary: NotesLibrary {
         }
         let answer = try await call("read", ["id": id, "dir": folder.path], as: Answer.self)
         return MacNoteContent(
-            info: MacNoteInfo(id: answer.id, name: answer.name, folder: answer.folder, modified: answer.modified),
+            info: AppleNoteInfo(id: answer.id, name: answer.name, folder: answer.folder, modified: answer.modified),
             html: answer.html,
             attachments: answer.attachments
         )
     }
 
-    public func create(folder: String, html: String, files: [URL]) async throws -> MacNoteInfo {
-        try await call("create", ["folder": folder, "htmlFile": try write(html), "files": files.map(\.path)], as: MacNoteInfo.self)
+    public func create(folder: String, html: String, files: [URL]) async throws -> AppleNoteInfo {
+        try await call("create", ["folder": folder, "htmlFile": try write(html), "files": files.map(\.path)], as: AppleNoteInfo.self)
     }
 
-    public func update(id: String, folder: String, html: String, files: [URL]) async throws -> MacNoteInfo {
+    public func update(id: String, folder: String, html: String, files: [URL]) async throws -> AppleNoteInfo {
         try await call(
             "update",
             ["id": id, "folder": folder, "htmlFile": try write(html), "files": files.map(\.path)],
-            as: MacNoteInfo.self
+            as: AppleNoteInfo.self
         )
     }
 
-    public func move(id: String, folder: String) async throws -> MacNoteInfo {
-        try await call("move", ["id": id, "folder": folder], as: MacNoteInfo.self)
+    public func move(id: String, folder: String) async throws -> AppleNoteInfo {
+        try await call("move", ["id": id, "folder": folder], as: AppleNoteInfo.self)
     }
 
     public func delete(id: String) async throws {
@@ -356,3 +373,5 @@ public final class AppleNotesLibrary: NotesLibrary {
     }
     """#
 }
+
+#endif

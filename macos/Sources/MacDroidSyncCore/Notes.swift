@@ -72,6 +72,8 @@ public struct NotesPayload: Codable, Equatable {
     public var offset: Int64?
     public var total: Int64?
     public var sha256: String?
+    /// In notes-config: the strokes of a drawing come along with its picture.
+    public var sidecars: Bool?
 
     public init(
         requestId: String? = nil,
@@ -88,7 +90,8 @@ public struct NotesPayload: Codable, Equatable {
         path: String? = nil,
         offset: Int64? = nil,
         total: Int64? = nil,
-        sha256: String? = nil
+        sha256: String? = nil,
+        sidecars: Bool? = nil
     ) {
         self.requestId = requestId
         self.enabled = enabled
@@ -105,6 +108,7 @@ public struct NotesPayload: Codable, Equatable {
         self.offset = offset
         self.total = total
         self.sha256 = sha256
+        self.sidecars = sidecars
     }
 }
 

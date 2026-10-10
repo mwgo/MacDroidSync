@@ -38,7 +38,8 @@ public final class Settings: SyncConfiguration {
         static let pendingUpdateNotice = "pendingUpdateNotice"
         static let messageNotificationsEnabled = "messageNotificationsEnabled"
         static let notesSyncEnabled = "notesSyncEnabled"
-        static let notesAccount = "notesAccount"
+        static let notesFolder = "notesFolder"
+        static let notesWriter = "notesWriter"
     }
 
     private let defaults = UserDefaults.standard
@@ -192,17 +193,35 @@ public final class Settings: SyncConfiguration {
         set { defaults.set(newValue, forKey: Keys.messageNotificationsEnabled) }
     }
 
-    /// Keeping the phone's notes and Notes the same. Off until switched on:
-    /// the first sync copies every note of each side to the other.
+    /// Keeping the phone's notes and the folder of Notes MD the same. Off until
+    /// switched on: the first sync copies every note of each side to the other.
     public var notesSyncEnabled: Bool {
         get { defaults.bool(forKey: Keys.notesSyncEnabled) }
         set { defaults.set(newValue, forKey: Keys.notesSyncEnabled) }
     }
 
-    /// The Notes account synced; nil means iCloud, or the default account without one.
-    public var notesAccount: String? {
-        get { defaults.string(forKey: Keys.notesAccount) }
-        set { defaults.set(newValue, forKey: Keys.notesAccount) }
+    /// The folder of notes the phone's notes are kept the same as: the one
+    /// chosen here, or else the one Notes MD uses, or else `Notes MD` on iCloud Drive.
+    public var notesFolder: URL {
+        get {
+            if let path = defaults.string(forKey: Keys.notesFolder) { return URL(fileURLWithPath: path, isDirectory: true) }
+            if let path = UserDefaults(suiteName: NotesMD.bundleIdentifier)?.string(forKey: NotesMD.folderKey) {
+                return URL(fileURLWithPath: path, isDirectory: true)
+            }
+            return NotesMD.defaultFolder
+        }
+        set { defaults.set(newValue.path, forKey: Keys.notesFolder) }
+    }
+
+    /// Whether the folder was chosen here rather than taken from Notes MD.
+    public var notesFolderChosen: Bool { defaults.string(forKey: Keys.notesFolder) != nil }
+
+    /// This Mac's name as a writer of the folder's `.notesmd`, made once.
+    public var notesWriter: String {
+        if let writer = defaults.string(forKey: Keys.notesWriter) { return writer }
+        let writer = "mac-" + UUID().uuidString.prefix(8).lowercased() + "-sync"
+        defaults.set(writer, forKey: Keys.notesWriter)
+        return writer
     }
 
     public var autoUpdateEnabled: Bool {
@@ -471,5 +490,18 @@ struct KeychainStore {
             return update == errSecSuccess
         }
         return false
+    }
+}
+
+/// The notes app of this Mac, whose folder the phone's notes go into.
+public enum NotesMD {
+    public static let bundleIdentifier = "pl.wojas.NotesMD"
+    /// Where Notes MD keeps the path of its folder in its defaults.
+    public static let folderKey = "folderPath"
+
+    public static var defaultFolder: URL {
+        AppPaths.homeDirectory
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+            .appendingPathComponent("Notes MD", isDirectory: true)
     }
 }

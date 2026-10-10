@@ -6,64 +6,55 @@ public func notesSHA256(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
-/// A note in Notes on this Mac, as the list of the account shows it.
+/// A note on this Mac, in the folder of notes.
 public struct MacNoteInfo: Codable, Equatable {
     public var id: String
     public var name: String
     public var folder: String
     /// Milliseconds.
     public var modified: Int64
+    /// The note's text in the phone's form and its pictures and files, hashed
+    /// together as the phone does; what tells a change.
+    public var hash: String
 
-    public init(id: String, name: String, folder: String, modified: Int64) {
+    public init(id: String, name: String, folder: String, modified: Int64, hash: String = "") {
         self.id = id
         self.name = name
         self.folder = folder
         self.modified = modified
+        self.hash = hash
     }
 }
 
-/// One note on the phone and the one in Notes it is kept the same as, with
+/// One note on the phone and the one on the Mac it is kept the same as, with
 /// what each looked like when they were last the same.
 public struct NotesPair: Codable, Equatable {
     public var androidId: String
     public var macId: String
     public var androidHash: String
     public var androidFolder: String
-    public var macModified: Int64
+    public var macHash: String
     public var macFolder: String
-    /// The note as this Mac read it from Notes at the last sync. Notes moves a
-    /// note's date on for reasons of its own, so a newer date alone is not an
-    /// edit; a different text is.
-    public var macMarkdown: String
-    /// The pictures and files the phone has for this note, by checksum, so a
-    /// picture coming back from Notes keeps its place on the phone.
-    public var assets: [String: String]
-    /// The phone's lines for the attachments Notes keeps out of the body, in
-    /// their order there. Notes will not always hand such an attachment back -
-    /// a picture set into the body by script has no name and cannot be saved -
-    /// and then these keep the phone's own picture in its place.
-    public var macAttachments: [String]?
+    /// The pictures and files the phone held for the note, path to checksum,
+    /// so that only what changed is sent again.
+    public var phoneAssets: [String: String]
 
     public init(
         androidId: String,
         macId: String,
         androidHash: String,
         androidFolder: String,
-        macModified: Int64,
+        macHash: String,
         macFolder: String,
-        macMarkdown: String,
-        assets: [String: String] = [:],
-        macAttachments: [String]? = nil
+        phoneAssets: [String: String] = [:]
     ) {
         self.androidId = androidId
         self.macId = macId
         self.androidHash = androidHash
         self.androidFolder = androidFolder
-        self.macModified = macModified
+        self.macHash = macHash
         self.macFolder = macFolder
-        self.macMarkdown = macMarkdown
-        self.assets = assets
-        self.macAttachments = macAttachments
+        self.phoneAssets = phoneAssets
     }
 }
 
@@ -114,25 +105,23 @@ public struct NotesConflict: Codable, Equatable, Identifiable {
     }
 }
 
-/// What one sync cycle does, worked out from the pairs and the two lists
-/// alone. Reading a note is left to the cycle: whether a newer date in Notes
-/// is an edit is only known once its text is read.
+/// What one sync cycle does, worked out from the pairs and the two lists alone.
 public enum NotesSyncPlan {
 
     public enum Step: Equatable {
-        /// The phone's note changed: it replaces the one in Notes.
+        /// The phone's note changed: it replaces the one on the Mac.
         case pushToMac(androidId: String)
-        /// The date in Notes moved; an edit if its text differs.
+        /// The note on the Mac changed.
         case pullFromMac(macId: String)
-        /// Both moved: a conflict, unless the Notes text turns out unchanged.
+        /// Both changed, if only one in its folder: a conflict when both texts did.
         case both(androidId: String)
         case createOnMac(androidId: String)
         case createOnPhone(macId: String)
         case deleteOnMac(macId: String)
         case deleteOnPhone(androidId: String)
-        /// Deleted on the phone but changed in Notes: it goes back to the phone.
+        /// Deleted on the phone but changed on the Mac: it goes back to the phone.
         case restoreOnPhone(macId: String)
-        /// Deleted in Notes but changed on the phone: it goes back into Notes.
+        /// Deleted on the Mac but changed on the phone: it goes back to the Mac.
         case restoreOnMac(androidId: String)
         /// Gone on both sides.
         case forget(androidId: String)
@@ -191,7 +180,7 @@ public enum NotesSyncPlan {
             let entry = phoneById[pair.androidId].flatMap { $0.isDeleted ? nil : $0 }
             let note = macById[pair.macId]
             let phoneChanged = entry.map { $0.hash != pair.androidHash || $0.folder != pair.androidFolder } ?? false
-            let macChanged = note.map { $0.modified != pair.macModified || $0.folder != pair.macFolder } ?? false
+            let macChanged = note.map { $0.hash != pair.macHash || $0.folder != pair.macFolder } ?? false
             switch (entry, note) {
             case (nil, nil):
                 steps.append(.forget(androidId: pair.androidId))
@@ -232,21 +221,22 @@ public enum NotesSyncPlan {
 }
 
 /// The pairs and conflicts on disk, and the pictures and files the sync has
-/// seen, kept by checksum. `~/Library/Application Support/MacDroidSync/Notes`,
-/// folder 0700 and files 0600 like the messages.
+/// seen, kept by checksum. `~/Library/Application Support/MacDroidSync/NotesFolder`,
+/// folder 0700 and files 0600 like the messages. Its own directory, apart from
+/// the one of the sync with Notes this replaced, so that it starts afresh.
 public final class NotesSyncStore {
 
     public struct State: Codable, Equatable {
         public var pairs: [NotesPair] = []
         public var conflicts: [NotesConflict] = []
-        /// 2 since pictures go to Notes as attached files, 3 since they stand
-        /// in place there; absent is 1.
         public var version: Int?
         /// The folders both sides had after the last cycle, or a deletion on one
         /// side not yet carried out on the other; nil before the first cycle.
         public var folders: [String]?
+        /// The folder of notes the pairs belong to; another one starts afresh.
+        public var root: String?
 
-        public init(version: Int? = nil) {
+        public init(version: Int? = 4) {
             self.version = version
         }
     }
@@ -256,31 +246,14 @@ public final class NotesSyncStore {
 
     private var stateURL: URL { directory.appendingPathComponent("state.json") }
     public var assetDirectory: URL { directory.appendingPathComponent("assets", isDirectory: true) }
-    /// Scratch space for one note at a time: files named for Notes, attachments read back.
+    /// Scratch space for the files of one note at a time.
     public var workDirectory: URL { directory.appendingPathComponent("work", isDirectory: true) }
 
-    public init(directory: URL = AppPaths.supportDirectory.appendingPathComponent("Notes", isDirectory: true)) {
+    public init(directory: URL = AppPaths.supportDirectory.appendingPathComponent("NotesFolder", isDirectory: true)) {
         self.directory = directory
         let stored = (try? Data(contentsOf: directory.appendingPathComponent("state.json")))
             .flatMap { try? JSONDecoder().decode(State.self, from: $0) }
-        state = stored ?? State(version: 2)
-        upgrade()
-    }
-
-    /// Version 1 set the phone's pictures into the body as data, which Notes
-    /// keeps as broken "File" attachments. Those notes are written again: their
-    /// phone side counts as changed, so the next cycle sends them anew.
-    private func upgrade() {
-        guard (state.version ?? 1) < 2 else { return }
-        for index in state.pairs.indices {
-            let pair = state.pairs[index]
-            let hasPictures = pair.assets.values.contains { $0.hasPrefix("images/") }
-            if hasPictures && pair.macMarkdown.contains(NotesMarkup.attachmentPlaceholder) {
-                state.pairs[index].androidHash = ""
-            }
-        }
-        state.version = 2
-        save()
+        state = stored ?? State()
     }
 
     public var pairs: [NotesPair] { state.pairs }
@@ -300,6 +273,30 @@ public final class NotesSyncStore {
         save()
     }
 
+    /// The Mac's ids of the pairs, after notes found to be one were merged.
+    public func remapMacIds(_ canonical: (String) -> String) {
+        var changed = false
+        for index in state.pairs.indices {
+            let id = canonical(state.pairs[index].macId)
+            if id != state.pairs[index].macId {
+                state.pairs[index].macId = id
+                changed = true
+            }
+        }
+        if changed { save() }
+    }
+
+    /// Pairs made against another folder of notes mean nothing for this one.
+    public func use(root: String) {
+        guard state.root != root else { return }
+        if state.root != nil {
+            state.pairs = []
+            state.folders = nil
+        }
+        state.root = root
+        save()
+    }
+
     public func setFolders(_ folders: Set<String>) {
         state.folders = folders.sorted()
         save()
@@ -313,16 +310,6 @@ public final class NotesSyncStore {
 
     public func dismissConflict(id: String) {
         state.conflicts.removeAll { $0.id == id }
-        save()
-    }
-
-    /// Everything goes, pairs included: the next sync starts from scratch.
-    /// Marks the pairs whose phone side is to be written into Notes again.
-    public func rewrite(androidIds: Set<String>, version: Int) {
-        for index in state.pairs.indices where androidIds.contains(state.pairs[index].androidId) {
-            state.pairs[index].androidHash = ""
-        }
-        state.version = version
         save()
     }
 
@@ -354,6 +341,16 @@ public final class NotesSyncStore {
 
     public func asset(sha256: String) -> Data? {
         assetURL(sha256: sha256).flatMap { try? Data(contentsOf: $0) }
+    }
+
+    /// The copies of pictures and files no conflict shows any more.
+    public func pruneAssets() {
+        let shown = Set(state.conflicts.flatMap { [$0.phoneMarkdown, $0.macMarkdown].compactMap { $0 } }
+            .flatMap { $0.components(separatedBy: "asset:").dropFirst().map { String($0.prefix(64)) } })
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: assetDirectory.path)) ?? []
+        for name in files where !shown.contains(name) {
+            try? FileManager.default.removeItem(at: assetDirectory.appendingPathComponent(name))
+        }
     }
 
     /// An empty folder of its own for the work on one note.

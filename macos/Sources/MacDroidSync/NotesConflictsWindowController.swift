@@ -1,5 +1,6 @@
 import AppKit
 import MacDroidSyncCore
+import NotesMDKit
 
 /// Everything the conflicts window may do, as closures, like `PhotoSyncHooks`.
 struct NotesConflictsHooks {
@@ -263,7 +264,7 @@ final class NotesConflictsWindowController: NSWindowController, NSWindowDelegate
         }
         let body: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor]
         for line in markdown.components(separatedBy: "\n") {
-            if let image = NotesMarkup.imageLine(line) {
+            if let image = Markdown.parseImage(line) {
                 let sha = image.path.hasPrefix("asset:") ? String(image.path.dropFirst(6)) : ""
                 if let data = hooks.asset(sha), let picture = NSImage(data: data) {
                     let attachment = NSTextAttachment()
@@ -289,7 +290,7 @@ final class NotesConflictsWindowController: NSWindowController, NSWindowDelegate
             } else if line.hasPrefix("- ") {
                 text = "• " + line.dropFirst(2)
             }
-            out.append(NSAttributedString(string: NotesMarkup.inlineText(text) + "\n", attributes: attributes))
+            out.append(NSAttributedString(string: Markdown.inlineText(text) + "\n", attributes: attributes))
         }
         return out
     }

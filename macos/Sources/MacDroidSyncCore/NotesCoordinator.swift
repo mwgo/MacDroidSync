@@ -1,12 +1,14 @@
 import Foundation
+import NotesMDKit
 
-/// Keeps the phone's notes and Notes on this Mac the same, see PROTOCOL.md
-/// section 10. The Mac decides: it asks the phone for its notes, reads Notes,
-/// works out a `NotesSyncPlan` and carries it out one note at a time.
+/// Keeps the phone's notes and the folder of notes on this Mac the same, see
+/// PROTOCOL.md section 10. The Mac decides: it asks the phone for its notes,
+/// lists the folder, works out a `NotesSyncPlan` and carries it out one note
+/// at a time.
 ///
 /// Main actor only. A cycle runs when the phone connects, when it says a note
-/// changed, when Notes shows a change, and when the sync is switched on; a
-/// cycle asked for while one runs follows it.
+/// changed, when the folder shows a change, and when the sync is switched on;
+/// a cycle asked for while one runs follows it.
 @MainActor
 public final class NotesCoordinator {
 
@@ -27,7 +29,7 @@ public final class NotesCoordinator {
     }
 
     public let store: NotesSyncStore
-    private let library: NotesLibrary
+    public private(set) var library: NoteLibrary
     private let transport: (String, NotesPayload, Data?) -> Bool
     private let timeout: TimeInterval
     private let pollInterval: TimeInterval
@@ -49,14 +51,14 @@ public final class NotesCoordinator {
     private var again = false
     private var allowDeletionsOnce = false
     private var pollTimer: Timer?
-    /// What Notes looked like after the last cycle, so a poll can tell a change.
+    /// What the folder looked like after the last cycle, so a look can tell a change.
     private var macSignature: [String: String] = [:]
 
     public init(
         store: NotesSyncStore,
-        library: NotesLibrary,
+        library: NoteLibrary,
         timeout: TimeInterval = 30,
-        pollInterval: TimeInterval = 10,
+        pollInterval: TimeInterval = 60,
         clock: @escaping () -> Date = Date.init,
         transport: @escaping (String, NotesPayload, Data?) -> Bool
     ) {
@@ -76,6 +78,14 @@ public final class NotesCoordinator {
         updatePolling()
         if enabled { requestSync() }
         onChange?()
+    }
+
+    /// Another folder of notes: the pairs of the old one mean nothing here.
+    public func setLibrary(_ library: NoteLibrary, root: String) {
+        self.library = library
+        store.use(root: root)
+        macSignature = [:]
+        requestSync()
     }
 
     public func connected() {
@@ -103,6 +113,7 @@ public final class NotesCoordinator {
 
     public func dismissConflict(id: String) {
         store.dismissConflict(id: id)
+        store.pruneAssets()
         onChange?()
     }
 
@@ -135,6 +146,11 @@ public final class NotesCoordinator {
         }
     }
 
+    /// Something in the folder may have changed: a cycle follows if it did.
+    public func folderChanged() {
+        Task { @MainActor in await self.poll() }
+    }
+
     private func updatePolling() {
         pollTimer?.invalidate()
         pollTimer = nil
@@ -144,15 +160,18 @@ public final class NotesCoordinator {
         }
     }
 
-    /// Notes says nothing when a note changes, so its list is looked at now and then.
     private func poll() async {
         guard isEnabled, isConnected, !isRunning else { return }
-        guard let notes = try? await library.list() else { return }
-        if signature(notes) != macSignature { requestSync() }
+        guard let list = try? await library.list() else { return }
+        if signature(list) != macSignature { requestSync() }
     }
 
-    private func signature(_ notes: [MacNoteInfo]) -> [String: String] {
-        Dictionary(notes.map { ($0.id, "\($0.modified)|\($0.folder)") }, uniquingKeysWith: { a, _ in a })
+    /// What the folder looks like to the sync: a note settling counts too, so
+    /// that the cycle after it settles - gone for good, or back - is not missed.
+    private func signature(_ list: LibraryList) -> [String: String] {
+        var signature = Dictionary(list.notes.map { ($0.id, "\($0.hash)|\($0.folder)") }, uniquingKeysWith: { a, _ in a })
+        for id in list.pending { signature[id] = "pending" }
+        return signature
     }
 
     // MARK: - One cycle
@@ -160,23 +179,31 @@ public final class NotesCoordinator {
     private func cycle() async {
         do {
             let manifest = try await ask(MessageType.notesManifest, NotesPayload())
-            let phone = manifest.payload.notes ?? []
+            var phone = manifest.payload.notes ?? []
             let phoneFolders = manifest.payload.folders ?? []
-            var mac = try await library.list()
+            var list = try await library.list()
+            store.remapMacIds { list.merged[$0] ?? $0 }
             let folders = NotesSyncPlan.folders(
                 known: store.state.folders.map(Set.init),
                 phone: phoneFolders,
                 mac: try await library.folders()
             )
             for folder in folders.createOnMac { try await library.ensureFolder(folder) }
-            if (store.state.version ?? 1) < 3 { try await putPicturesInPlace(phone: phone) }
-            try await pairTheSame(phone: phone, mac: mac)
+            try await pairTheSame(phone: phone, mac: list.notes)
 
-            let plan = NotesSyncPlan.plan(pairs: store.pairs, phone: phone, mac: mac, allowDeletions: allowDeletionsOnce)
+            // A note iCloud is still moving is left alone until it settles.
+            let unsettled = store.pairs.filter { list.pending.contains($0.macId) }
+            let skipPhone = Set(unsettled.map(\.androidId))
+            let skipMac = Set(unsettled.map(\.macId))
+            phone.removeAll { skipPhone.contains($0.id) }
+            list.notes.removeAll { skipMac.contains($0.id) }
+            let pairs = store.pairs.filter { !skipPhone.contains($0.androidId) }
+
+            let plan = NotesSyncPlan.plan(pairs: pairs, phone: phone, mac: list.notes, allowDeletions: allowDeletionsOnce)
             allowDeletionsOnce = false
             if !plan.steps.isEmpty { Log.info("Notes sync: \(plan.steps.count) step(s)") }
             let phoneById = Dictionary(phone.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            let macById = Dictionary(mac.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let macById = Dictionary(list.notes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             var failed: String?
             for step in plan.steps {
                 guard isConnected, isEnabled else { break }
@@ -184,8 +211,6 @@ public final class NotesCoordinator {
                     try await perform(step, phone: phoneById, mac: macById)
                 } catch SyncError.disconnected {
                     throw SyncError.disconnected
-                } catch NotesLibraryError.notAuthorized {
-                    throw NotesLibraryError.notAuthorized
                 } catch {
                     failed = error.localizedDescription
                     Log.error("Notes sync step \(step) failed: \(error.localizedDescription)")
@@ -194,8 +219,7 @@ public final class NotesCoordinator {
             if plan.heldDeletions > 0 { holdDeletions(plan.heldDeletions) }
             let waiting = try await deleteFolders(folders)
             try await finish(waiting: waiting)
-            mac = try await library.list()
-            macSignature = signature(mac)
+            macSignature = signature(try await library.list())
             store.clearWork()
             lastSync = clock()
             lastError = failed
@@ -217,66 +241,56 @@ public final class NotesCoordinator {
         case .createOnMac(let androidId):
             try await push(androidId: androidId, into: nil, keeping: nil)
         case .pullFromMac(let macId):
-            guard let pair = store.pair(macId: macId), let entry = phone[pair.androidId] else { return }
-            let content = try await readMac(macId)
-            if key(content) == pair.macMarkdown {
-                // Notes moved the date on, or the note to another folder; the
-                // text is as it was, so the phone's note is not written again.
-                if content.info.folder == pair.macFolder {
-                    remember(content, in: pair)
-                } else {
-                    try await moveOnPhone(pair, content: content)
-                }
-                return
+            guard let pair = store.pair(macId: macId), let entry = phone[pair.androidId], let note = mac[macId] else { return }
+            if note.hash == pair.macHash {
+                try await moveOnPhone(pair, to: note)
+            } else {
+                try await pull(macId, into: pair.androidId, baseHash: entry.hash, keeping: pair)
             }
-            try await pull(content, into: pair.androidId, baseHash: entry.hash, keeping: pair)
         case .both(let androidId):
-            guard let pair = store.pair(androidId: androidId), let entry = phone[androidId] else { return }
-            let content = try await readMac(pair.macId)
+            guard let pair = store.pair(androidId: androidId), let entry = phone[androidId], let note = mac[pair.macId] else { return }
             let phoneEdited = entry.hash != pair.androidHash
-            let macEdited = key(content) != pair.macMarkdown
+            let macEdited = note.hash != pair.macHash
             switch (phoneEdited, macEdited) {
             case (true, true):
-                try await conflict(pair: pair, entry: entry, mac: content)
-            case (_, false):
-                // Only the phone's text changed, or a folder on one side.
-                if phoneEdited {
-                    try await push(androidId: androidId, into: pair.macId, keeping: pair)
-                } else if entry.folder != pair.androidFolder {
-                    try await moveOnMac(pair, to: entry.folder)
-                } else {
-                    try await moveOnPhone(pair, content: content)
+                try await conflict(pair: pair, entry: entry, mac: note)
+            case (true, false):
+                // The phone's text changed, and a folder on the Mac: the text goes into the Mac's folder.
+                try await push(androidId: androidId, into: pair.macId, keeping: pair, folder: note.folder == pair.macFolder ? nil : note.folder)
+                if note.folder != pair.macFolder, let moved = store.pair(androidId: androidId) {
+                    try await moveOnPhone(moved, to: try await library.read(id: moved.macId).info)
                 }
             case (false, true):
-                // Edited in Notes, moved on the phone: the text comes, the phone's folder stays.
-                try await pull(content, into: androidId, baseHash: entry.hash, keeping: pair, folder: entry.folder)
+                // Edited on the Mac, moved on the phone: the text comes, the phone's folder stays.
+                try await pull(pair.macId, into: androidId, baseHash: entry.hash, keeping: pair, folder: entry.folder)
                 if let moved = store.pair(androidId: androidId) { try await moveOnMac(moved, to: entry.folder) }
+            case (false, false):
+                // Moved on both sides: the Mac's folder wins.
+                try await moveOnPhone(pair, to: note)
             }
         case .createOnPhone(let macId):
-            let content = try await readMac(macId)
-            try await pull(content, into: nil, baseHash: nil, keeping: nil)
+            try await pull(macId, into: nil, baseHash: nil, keeping: nil)
         case .deleteOnMac(let macId):
             guard let pair = store.pair(macId: macId) else { return }
             try await library.delete(id: macId)
             store.removePair(androidId: pair.androidId)
-            Log.info("Deleted \"\(mac[macId]?.name ?? macId)\" in Notes, as on the phone")
+            Log.info("Deleted \"\(mac[macId]?.name ?? macId)\" on the Mac, as on the phone")
         case .deleteOnPhone(let androidId):
             guard let pair = store.pair(androidId: androidId) else { return }
             let answer = try await ask(MessageType.notesDelete, NotesPayload(id: androidId, baseHash: pair.androidHash), refusalIsAnswer: true)
             if answer.ok {
                 store.removePair(androidId: androidId)
-                Log.info("Deleted \"\(phone[androidId]?.title ?? androidId)\" on the phone, as in Notes")
+                Log.info("Deleted \"\(phone[androidId]?.title ?? androidId)\" on the phone, as on the Mac")
             }
         case .restoreOnPhone(let macId):
             guard let pair = store.pair(macId: macId) else { return }
-            let content = try await readMac(macId)
             store.removePair(androidId: pair.androidId)
-            let markdown = try await pull(content, into: nil, baseHash: nil, keeping: nil)
+            let note = try await pull(macId, into: nil, baseHash: nil, keeping: nil)
             report(NotesConflict(
                 at: now(),
                 kind: NotesConflict.Kind.deletedOnPhone,
-                title: content.info.name,
-                macMarkdown: markdown.flatMap { forDisplay($0, assets: [:]) }
+                title: mac[macId]?.name ?? "",
+                macMarkdown: note.map(forDisplay)
             ))
         case .restoreOnMac(let androidId):
             guard let pair = store.pair(androidId: androidId) else { return }
@@ -293,203 +307,101 @@ public final class NotesCoordinator {
         }
     }
 
-    // MARK: - Phone to Notes
+    // MARK: - Phone to Mac
 
-    /// Writes the phone's note into Notes, a new one when `macId` is nil, and
-    /// records the pair as it now stands. Returns the note as the phone sent it.
+    /// Writes the phone's note into the folder, a new one when `macId` is nil,
+    /// and records the pair as it now stands. Returns the note as the phone sent it.
     @discardableResult
-    private func push(androidId: String, into macId: String?, keeping pair: NotesPair?) async throws -> NoteDoc? {
+    private func push(androidId: String, into macId: String?, keeping pair: NotesPair?, folder chosen: String? = nil) async throws -> NoteDoc? {
         let answer = try await ask(MessageType.notesGet, NotesPayload(id: androidId), refusalIsAnswer: true)
         guard answer.ok, let doc = answer.payload.note else { return nil }
-        for asset in doc.assets where !store.hasAsset(sha256: asset.sha256) {
-            try await download(asset)
-        }
-        let byPath = assetMap(doc)
-        // Every picture and file gets a copy under its own name, which Notes
-        // shows; the body refers to these copies where each one stands.
-        let work = store.freshWorkFolder()
-        var copies: [String: URL] = [:]
-        for (path, name) in NotesMarkup.html(fromMarkdown: doc.markdown).files where copies[path] == nil {
-            guard let sha = byPath[path], let source = store.assetURL(sha256: sha) else { continue }
-            let target = work.appendingPathComponent(UUID().uuidString, isDirectory: true)
-                .appendingPathComponent(Self.safeFileName(name))
-            try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if (try? FileManager.default.copyItem(at: source, to: target)) != nil { copies[path] = target }
-        }
-        let outgoing = NotesMarkup.html(fromMarkdown: doc.markdown) { copies[$0] }
-        let files = outgoing.files.compactMap { copies[$0.path] }
-        let folder = doc.folder.isEmpty ? "Notes" : doc.folder
-        let written: MacNoteInfo
-        if let macId {
-            written = try await library.update(id: macId, folder: folder, html: outgoing.html, files: files)
+        // Only what the Mac does not have as it is comes over.
+        let have: [String: String]
+        if let macId, let local = try? await library.read(id: macId) {
+            have = Dictionary(local.assets.map { ($0.path, $0.sha256) }, uniquingKeysWith: { a, _ in a })
         } else {
-            written = try await library.create(folder: folder, html: outgoing.html, files: files)
+            have = [:]
         }
-        // Read back for what Notes made of it: the text to compare later edits to.
-        let content = try await readMac(written.id)
-        // Pictures come back in the body; the other files are the attachments
-        // Notes keeps out of it, each leaving an empty line where it stands.
-        let attachedLines = outgoing.files.filter { !$0.path.hasPrefix("images/") }.map { "[\($0.name)](\($0.path))" }
-        var assets = pair?.assets ?? [:]
-        doc.assets.forEach { assets[$0.sha256] = $0.path }
+        var files: [String: URL] = [:]
+        for asset in doc.assets where have[asset.path] != asset.sha256 {
+            if !store.hasAsset(sha256: asset.sha256) { try await download(asset) }
+            if let url = store.assetURL(sha256: asset.sha256) { files[asset.path] = url }
+        }
+        let folder = chosen ?? (doc.folder.isEmpty ? "Notes" : doc.folder)
+        let written: MacNoteInfo
+        do {
+            written = try await library.write(id: macId, folder: folder, markdown: doc.markdown, assets: files, baseHash: pair?.macHash)
+        } catch let error as FolderStoreErrorConvertible where error.isChanged {
+            Log.info("Notes sync: the note on the Mac changed meanwhile; next cycle")
+            again = true
+            return nil
+        }
         store.setPair(NotesPair(
             androidId: doc.id,
             macId: written.id,
             androidHash: doc.hash,
             androidFolder: doc.folder,
-            macModified: content.info.modified,
-            macFolder: content.info.folder,
-            macMarkdown: key(content),
-            assets: assets,
-            macAttachments: attachedLines
+            macHash: written.hash,
+            macFolder: written.folder,
+            phoneAssets: assetMap(doc)
         ))
-        Log.info("Notes sync: \"\(written.name)\" \(macId == nil ? "added to" : "updated in") Notes")
+        Log.info("Notes sync: \"\(written.name)\" \(macId == nil ? "added to" : "updated on") the Mac")
         return doc
     }
 
-    // MARK: - Notes to phone
+    // MARK: - Mac to phone
 
-    /// Writes a note of Notes onto the phone, a new one when `androidId` is
-    /// nil. Returns the Markdown it was sent as, or nil when the phone left it
-    /// for later: it changed there in between, or it is open being edited.
+    /// Writes a note of the Mac onto the phone, a new one when `androidId` is
+    /// nil. Returns the note as sent, or nil when the phone left it for later:
+    /// it changed there in between, or it is open being edited.
     @discardableResult
     private func pull(
-        _ content: MacNoteContent,
+        _ macId: String,
         into androidId: String?,
         baseHash: String?,
         keeping pair: NotesPair?,
         folder chosen: String? = nil
-    ) async throws -> String? {
-        var recorded = pair?.macAttachments
-        if recorded == nil, let androidId {
-            // A pair from before the lines were recorded: the phone's note has them.
-            let answer = try await ask(MessageType.notesGet, NotesPayload(id: androidId), refusalIsAnswer: true)
-            recorded = answer.payload.note.map { doc in
-                let lines = doc.markdown.components(separatedBy: "\n")
-                return lines.filter { NotesMarkup.imageLine($0) != nil } + lines.filter { NotesMarkup.fileLine($0) != nil }
-            }
+    ) async throws -> LocalNote? {
+        let note = try await library.read(id: macId)
+        let folder = chosen ?? note.info.folder
+        let known = pair?.phoneAssets ?? [:]
+        var put = NotesPayload(id: androidId, folder: folder, markdown: note.markdown, baseHash: baseHash)
+        // A file new to the phone goes first, as the note needs it. One that
+        // replaces a file the phone has at the same path goes after: before,
+        // it would change the phone's hash under the `baseHash` of the put.
+        let replaced = note.assets.filter { known[$0.path] != nil && known[$0.path] != $0.sha256 }
+        for asset in note.assets where known[asset.path] == nil {
+            try await upload(asset.url, path: asset.path, sha: asset.sha256)
         }
-        let resolved = resolve(content, known: pair?.assets ?? [:], recorded: recorded)
-        let folder = chosen ?? content.info.folder
-        var put = NotesPayload(id: androidId, folder: folder, markdown: resolved.markdown, baseHash: baseHash)
-        for (path, sha) in resolved.uploads { try await upload(sha: sha, path: path) }
         var answer = try await ask(MessageType.notesPut, put, refusalIsAnswer: true)
         if !answer.ok, answer.reason == "missing asset" {
             // The phone lost a picture it once had; send every one this note uses.
-            for (path, sha) in resolved.all where !resolved.uploads.contains(where: { $0.path == path }) {
-                try await upload(sha: sha, path: path)
+            for asset in note.assets where known[asset.path] == asset.sha256 {
+                try await upload(asset.url, path: asset.path, sha: asset.sha256)
             }
             answer = try await ask(MessageType.notesPut, put, refusalIsAnswer: true)
         }
-        guard answer.ok, let id = answer.payload.id, let hash = answer.payload.hash else {
-            Log.info("Notes sync: the phone left \"\(content.info.name)\" for later (\(answer.reason ?? "no reason"))")
+        guard answer.ok, let id = answer.payload.id, var hash = answer.payload.hash else {
+            Log.info("Notes sync: the phone left \"\(note.info.name)\" for later (\(answer.reason ?? "no reason"))")
             return nil
         }
         put.id = id
-        var assets = pair?.assets ?? [:]
-        resolved.all.forEach { assets[$0.sha] = $0.path }
+        if !replaced.isEmpty {
+            for asset in replaced { try await upload(asset.url, path: asset.path, sha: asset.sha256) }
+            // What the phone's hash is now, worked out as it does.
+            hash = NoteHash.hash(markdown: note.markdown, assets: note.assets.map { ($0.path, $0.sha256) })
+        }
         store.setPair(NotesPair(
             androidId: id,
-            macId: content.info.id,
+            macId: macId,
             androidHash: hash,
             androidFolder: folder,
-            macModified: content.info.modified,
-            macFolder: folder,
-            macMarkdown: key(content),
-            assets: assets,
-            macAttachments: resolved.attachmentLines
+            macHash: note.info.hash,
+            macFolder: note.info.folder,
+            phoneAssets: Dictionary(note.assets.map { ($0.path, $0.sha256) }, uniquingKeysWith: { a, _ in a })
         ))
-        Log.info("Notes sync: \"\(content.info.name)\" \(androidId == nil ? "added to" : "updated on") the phone")
-        return resolved.markdown
-    }
-
-    private struct Resolved {
-        var markdown: String
-        /// Pictures and files the phone does not have yet, as path and checksum.
-        var uploads: [(path: String, sha: String)]
-        var all: [(path: String, sha: String)]
-        /// What took the places of the attachments Notes keeps out of the body.
-        var attachmentLines: [String]
-    }
-
-    /// The note in the phone's Markdown, every picture and file at a path on
-    /// the phone: the one it already has for that checksum, or a new one.
-    private func resolve(_ content: MacNoteContent, known: [String: String], recorded: [String]?) -> Resolved {
-        let incoming = NotesMarkup.markdown(fromHTML: content.html, title: content.info.name)
-        var markdown = incoming.markdown
-        var uploads: [(String, String)] = []
-        var all: [(String, String)] = []
-        func place(sha: String, path: () -> String) -> String {
-            if let existing = known[sha] ?? all.first(where: { $0.1 == sha })?.0 {
-                if !all.contains(where: { $0.0 == existing }) { all.append((existing, sha)) }
-                return existing
-            }
-            let fresh = path()
-            uploads.append((fresh, sha))
-            all.append((fresh, sha))
-            return fresh
-        }
-        var inlineShas = Set<String>()
-        for (index, image) in incoming.images.enumerated() {
-            let sha = store.storeAsset(image.data)
-            inlineShas.insert(sha)
-            let path = place(sha: sha) { "images/\(UUID().uuidString.lowercased()).\(Self.fileExtension(forMime: image.mime))" }
-            markdown = markdown.replacingOccurrences(of: "(\(NotesMarkup.imagePlaceholder(index)))", with: "(\(path))")
-        }
-        // The attachments Notes does not draw into the body take the places it
-        // left for them, in order; any left over go at the end.
-        var extra: [String] = []
-        for attachment in content.attachments {
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: attachment.file)) else { continue }
-            let sha = store.storeAsset(data)
-            guard !inlineShas.contains(sha) else { continue }
-            inlineShas.insert(sha)
-            let name = attachment.name ?? "attachment"
-            if let ext = Self.imageExtension(data) {
-                let path = place(sha: sha) { "images/\(UUID().uuidString.lowercased()).\(ext)" }
-                extra.append("![](\(path))")
-            } else {
-                let path = place(sha: sha) { Self.phoneFilePath(name) }
-                extra.append("[\(name.replacingOccurrences(of: "[", with: "(").replacingOccurrences(of: "]", with: ")"))](\(path))")
-            }
-        }
-        var lines = markdown.components(separatedBy: "\n")
-        let places = lines.indices.filter { lines[$0] == NotesMarkup.attachmentPlaceholder }
-        // Fewer attachments came back than there are places for them: Notes
-        // kept some to itself. What the phone had there stays, as long as the
-        // places still match what was written.
-        if extra.count < places.count, let recorded, recorded.count == places.count {
-            for (place, line) in zip(places, recorded) {
-                lines[place] = line
-                for path in [NotesMarkup.imageLine(line)?.path, NotesMarkup.fileLine(line)?.path].compactMap({ $0 }) {
-                    if let sha = known.first(where: { $0.value == path })?.key, !all.contains(where: { $0.0 == path }) {
-                        all.append((path, sha))
-                    }
-                }
-            }
-            extra = []
-        }
-        var filled: [String] = []
-        for place in places where lines[place] == NotesMarkup.attachmentPlaceholder {
-            lines[place] = extra.isEmpty ? "" : extra.removeFirst()
-        }
-        for place in places where !lines[place].isEmpty { filled.append(lines[place]) }
-        filled += extra
-        markdown = (lines + extra).joined(separator: "\n")
-        while markdown.hasSuffix("\n") { markdown.removeLast() }
-        return Resolved(markdown: markdown, uploads: uploads, all: all, attachmentLines: filled)
-    }
-
-    /// What a note of Notes is compared by between cycles: its Markdown, the
-    /// pictures in it by checksum and the places of its other attachments.
-    /// Not the attachments' bytes, which Notes cannot always hand over at once.
-    private func key(_ content: MacNoteContent) -> String {
-        let incoming = NotesMarkup.markdown(fromHTML: content.html, title: content.info.name)
-        var markdown = incoming.markdown
-        for (index, image) in incoming.images.enumerated() {
-            markdown = markdown.replacingOccurrences(of: NotesMarkup.imagePlaceholder(index), with: "@sha:" + notesSHA256(image.data))
-        }
-        return markdown
+        Log.info("Notes sync: \"\(note.info.name)\" \(androidId == nil ? "added to" : "updated on") the phone")
+        return note
     }
 
     /// The phone moved the note to another folder and changed nothing else.
@@ -498,59 +410,43 @@ public final class NotesCoordinator {
         var pair = pair
         pair.androidFolder = folder
         pair.macFolder = moved.folder
-        pair.macModified = moved.modified
+        pair.macHash = moved.hash
         store.setPair(pair)
-        Log.info("Notes sync: \"\(moved.name)\" moved to \(folder) in Notes")
+        Log.info("Notes sync: \"\(moved.name)\" moved to \(folder) on the Mac")
     }
 
-    /// Notes moved the note to another folder and changed nothing else.
-    private func moveOnPhone(_ pair: NotesPair, content: MacNoteContent) async throws {
-        let answer = try await ask(
-            MessageType.notesPut,
-            NotesPayload(id: pair.androidId, folder: content.info.folder),
-            refusalIsAnswer: true
-        )
+    /// The note was moved on the Mac and nothing else changed.
+    private func moveOnPhone(_ pair: NotesPair, to note: MacNoteInfo) async throws {
+        let answer = try await ask(MessageType.notesPut, NotesPayload(id: pair.androidId, folder: note.folder), refusalIsAnswer: true)
         guard answer.ok else { return }
         var pair = pair
-        pair.androidFolder = content.info.folder
-        pair.macFolder = content.info.folder
-        pair.macModified = content.info.modified
+        pair.androidFolder = note.folder
+        pair.macFolder = note.folder
+        pair.macHash = note.hash
         if let hash = answer.payload.hash { pair.androidHash = hash }
         store.setPair(pair)
-        Log.info("Notes sync: \"\(content.info.name)\" moved to \(content.info.folder) on the phone")
-    }
-
-    /// Notes moved the date on but nothing in the note changed.
-    private func remember(_ content: MacNoteContent, in pair: NotesPair) {
-        var pair = pair
-        pair.macModified = content.info.modified
-        store.setPair(pair)
-    }
-
-    private func readMac(_ id: String) async throws -> MacNoteContent {
-        try await library.read(id: id, into: store.freshWorkFolder())
+        Log.info("Notes sync: \"\(note.name)\" moved to \(note.folder) on the phone")
     }
 
     // MARK: - Conflicts
 
-    /// Changed on both sides. As agreed: the version in Notes stays the note,
+    /// Changed on both sides. As agreed: the version on the Mac stays the note,
     /// and the phone's becomes a copy with a word added to its title, on both
-    /// sides once the next cycle has taken the copy into Notes.
-    private func conflict(pair: NotesPair, entry: NoteEntry, mac content: MacNoteContent) async throws {
+    /// sides once the next cycle has taken the copy to the Mac.
+    private func conflict(pair: NotesPair, entry: NoteEntry, mac note: MacNoteInfo) async throws {
         let original = try await ask(MessageType.notesGet, NotesPayload(id: pair.androidId))
         guard let doc = original.payload.note else { return }
         for asset in doc.assets where !store.hasAsset(sha256: asset.sha256) { try await download(asset) }
         let suffix = " (Android, \(Self.stamp.string(from: clock())))"
         let copy = try await ask(MessageType.notesCopy, NotesPayload(id: pair.androidId, titleSuffix: suffix))
         guard copy.payload.id != nil else { return }
-        let markdown = try await pull(content, into: pair.androidId, baseHash: doc.hash, keeping: pair)
-        let title = content.info.name
+        let written = try await pull(note.id, into: pair.androidId, baseHash: doc.hash, keeping: pair)
         report(NotesConflict(
             at: now(),
             kind: NotesConflict.Kind.edited,
-            title: title,
+            title: note.name,
             phoneMarkdown: forDisplay(doc.markdown, assets: assetMap(doc)),
-            macMarkdown: markdown.map { forDisplay($0, assets: [:]) } ?? key(content),
+            macMarkdown: written.map(forDisplay),
             copyTitle: Self.title(of: doc.markdown) + suffix
         ))
         again = true
@@ -570,52 +466,29 @@ public final class NotesCoordinator {
 
     /// A version for the conflicts window: pictures point at the store's copies.
     private func forDisplay(_ markdown: String, assets: [String: String]) -> String {
-        var known = assets
-        for pair in store.pairs { pair.assets.forEach { known[$0.value] = $0.key } }
-        return markdown.components(separatedBy: "\n").map { line in
-            guard let image = NotesMarkup.imageLine(line), let sha = known[image.path] else { return line }
+        markdown.components(separatedBy: "\n").map { line in
+            guard let image = Markdown.parseImage(line), let sha = assets[image.path] else { return line }
             return "![](asset:\(sha))"
         }.joined(separator: "\n")
+    }
+
+    private func forDisplay(_ note: LocalNote) -> String {
+        var assets: [String: String] = [:]
+        for asset in note.assets where asset.path.hasPrefix("images/") {
+            if let data = try? Data(contentsOf: asset.url) { assets[asset.path] = store.storeAsset(data) }
+        }
+        return forDisplay(note.markdown, assets: assets)
     }
 
     private func assetMap(_ doc: NoteDoc) -> [String: String] {
         Dictionary(doc.assets.map { ($0.path, $0.sha256) }, uniquingKeysWith: { a, _ in a })
     }
 
-    /// Before version 3 the phone's pictures and files went to the end of the
-    /// note in Notes. A note the phone gave Notes that way - its pictures in the
-    /// text on the phone, all at the end in Notes - is written again, now with
-    /// each one in its place. A note that came from Notes is left alone: its
-    /// pictures are where they were, and writing it would lose what only Notes
-    /// can hold, such as fonts and links.
-    private func putPicturesInPlace(phone: [NoteEntry]) async throws {
-        let live = Set(phone.filter { !$0.isDeleted }.map(\.id))
-        var rewrite: Set<String> = []
-        for pair in store.pairs where live.contains(pair.androidId) && !pair.assets.isEmpty {
-            guard Self.attachmentsAtEnd(pair.macMarkdown) else { continue }
-            let answer = try await ask(MessageType.notesGet, NotesPayload(id: pair.androidId), refusalIsAnswer: true)
-            guard let doc = answer.payload.note, !Self.attachmentsAtEnd(doc.markdown) else { continue }
-            rewrite.insert(pair.androidId)
-        }
-        if !rewrite.isEmpty { Log.info("Notes sync: putting the pictures of \(rewrite.count) note(s) in their place") }
-        store.rewrite(androidIds: rewrite, version: 3)
-    }
-
-    /// Whether every picture and file of a note comes after all of its text.
-    static func attachmentsAtEnd(_ markdown: String) -> Bool {
-        let lines = markdown.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        func isAttachment(_ line: String) -> Bool {
-            line == NotesMarkup.attachmentPlaceholder || NotesMarkup.imageLine(line) != nil || NotesMarkup.fileLine(line) != nil
-        }
-        guard let first = lines.firstIndex(where: isAttachment) else { return false }
-        return lines[first...].allSatisfy(isAttachment)
-    }
-
     // MARK: - Folders and the first sync
 
     /// A folder deleted on one side goes on the other once the notes in it are
     /// gone, which the steps before saw to. Returns those still waiting, a
-    /// folder that has notes left in it, on the phone and in Notes.
+    /// folder that has notes left in it, on the phone and on the Mac.
     private func deleteFolders(_ folders: NotesSyncPlan.Folders) async throws -> (phone: Set<String>, mac: Set<String>) {
         var phone = Set<String>()
         var mac = Set<String>()
@@ -629,7 +502,7 @@ public final class NotesCoordinator {
         }
         for folder in folders.deleteOnMac {
             if try await library.deleteFolder(folder) {
-                Log.info("Notes sync: folder \"\(folder)\" deleted in Notes")
+                Log.info("Notes sync: folder \"\(folder)\" deleted on the Mac")
             } else {
                 mac.insert(folder)
             }
@@ -638,7 +511,7 @@ public final class NotesCoordinator {
     }
 
     /// Remembers the folders both sides have now, with the deletions still to
-    /// carry out, and tells the phone which of its notes Notes holds as they are.
+    /// carry out, and tells the phone which of its notes the Mac holds as they are.
     private func finish(waiting: (phone: Set<String>, mac: Set<String>)) async throws {
         let manifest = try await ask(MessageType.notesManifest, NotesPayload())
         let phone = Set(manifest.payload.folders ?? [])
@@ -653,33 +526,34 @@ public final class NotesCoordinator {
         _ = try await ask(MessageType.notesSynced, NotesPayload(notes: synced), refusalIsAnswer: true)
     }
 
-    /// The same note on both sides before they were ever synced - same folder,
-    /// same title, same words - becomes a pair instead of two copies of each.
+    /// The same note on both sides before they were ever synced becomes a pair
+    /// instead of two copies of each: the same hash, or the same folder, title
+    /// and words.
     private func pairTheSame(phone: [NoteEntry], mac: [MacNoteInfo]) async throws {
         let pairedPhone = Set(store.pairs.map(\.androidId))
-        let pairedMac = Set(store.pairs.map(\.macId))
-        let freeMac = mac.filter { !pairedMac.contains($0.id) }
+        var freeMac = mac.filter { store.pair(macId: $0.id) == nil }
         guard !freeMac.isEmpty else { return }
         for entry in phone where !entry.isDeleted && !pairedPhone.contains(entry.id) {
-            guard let candidate = freeMac.first(where: {
-                $0.folder == entry.folder && NotesMarkup.plain($0.name) == NotesMarkup.plain(entry.title) && store.pair(macId: $0.id) == nil
-            }) else { continue }
-            let answer = try await ask(MessageType.notesGet, NotesPayload(id: entry.id), refusalIsAnswer: true)
-            guard let doc = answer.payload.note else { continue }
-            let content = try await readMac(candidate.id)
-            let theirs = NotesMarkup.markdown(fromHTML: content.html, title: content.info.name).markdown
-            guard NotesMarkup.contentKey(theirs) == NotesMarkup.contentKey(doc.markdown) else { continue }
-            var assets: [String: String] = [:]
-            doc.assets.forEach { assets[$0.sha256] = $0.path }
+            var match = freeMac.first { $0.hash == entry.hash }
+            if match == nil, let candidate = freeMac.first(where: {
+                $0.folder == entry.folder && Markdown.plain($0.name) == Markdown.plain(entry.title)
+            }) {
+                let answer = try await ask(MessageType.notesGet, NotesPayload(id: entry.id), refusalIsAnswer: true)
+                let local = try await library.read(id: candidate.id)
+                if let doc = answer.payload.note, Markdown.contentKey(doc.markdown) == Markdown.contentKey(local.markdown) {
+                    match = candidate
+                }
+            }
+            guard let match else { continue }
+            freeMac.removeAll { $0.id == match.id }
+            // Paired as they are: what differs counts as changed on the phone, so the phone's version goes to the Mac.
             store.setPair(NotesPair(
-                androidId: doc.id,
-                macId: candidate.id,
-                androidHash: doc.hash,
-                androidFolder: doc.folder,
-                macModified: content.info.modified,
-                macFolder: content.info.folder,
-                macMarkdown: key(content),
-                assets: assets
+                androidId: entry.id,
+                macId: match.id,
+                androidHash: match.hash == entry.hash ? entry.hash : "",
+                androidFolder: entry.folder,
+                macHash: match.hash,
+                macFolder: match.folder
             ))
             Log.info("Notes sync: \"\(entry.title)\" was already on both sides")
         }
@@ -704,15 +578,15 @@ public final class NotesCoordinator {
         if sha != asset.sha256 { Log.info("Notes sync: \(asset.path) changed while it was read") }
     }
 
-    private func upload(sha: String, path: String) async throws {
-        guard let data = store.asset(sha256: sha) else { return }
+    private func upload(_ url: URL, path: String, sha: String) async throws {
+        guard let data = try? Data(contentsOf: url) else { return }
         let chunk = Self.assetChunk
         var offset = 0
         repeat {
             let end = min(offset + chunk, data.count)
             _ = try await ask(
                 MessageType.notesAssetPut,
-                NotesPayload(path: path, offset: Int64(offset), total: Int64(data.count), sha256: sha),
+                NotesPayload(path: path, offset: Int64(offset), total: Int64(data.count), sha256: notesSHA256(data)),
                 data: data.subdata(in: offset..<end)
             )
             offset = end
@@ -747,8 +621,6 @@ public final class NotesCoordinator {
 
     private func now() -> Int64 { Int64(clock().timeIntervalSince1970 * 1000) }
 
-    // MARK: - Names and types
-
     /// Raw bytes per notes-asset piece; as on the phone.
     static let assetChunk = 1024 * 1024
 
@@ -763,48 +635,9 @@ public final class NotesCoordinator {
         let first = markdown.components(separatedBy: "\n").first ?? ""
         return first.hasPrefix("# ") ? String(first.dropFirst(2)) : first
     }
+}
 
-    static func mime(forPath path: String) -> String {
-        switch (path as NSString).pathExtension.lowercased() {
-        case "png": return "image/png"
-        case "gif": return "image/gif"
-        case "heic": return "image/heic"
-        case "webp": return "image/webp"
-        default: return "image/jpeg"
-        }
-    }
-
-    static func fileExtension(forMime mime: String) -> String {
-        switch mime.lowercased() {
-        case "image/png": return "png"
-        case "image/gif": return "gif"
-        case "image/heic": return "heic"
-        case "image/webp": return "webp"
-        case "image/tiff": return "tiff"
-        default: return "jpg"
-        }
-    }
-
-    /// The type of a picture by its first bytes; nil for anything that is not one.
-    static func imageExtension(_ data: Data) -> String? {
-        let head = [UInt8](data.prefix(12))
-        if head.starts(with: [0xFF, 0xD8, 0xFF]) { return "jpg" }
-        if head.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
-        if head.starts(with: [0x47, 0x49, 0x46]) { return "gif" }
-        if head.count >= 12, head[4...7] == [0x66, 0x74, 0x79, 0x70], [UInt8](head[8...11]) == Array("heic".utf8) { return "heic" }
-        return nil
-    }
-
-    /// Where the phone keeps a file called `name`: a folder of its own, the
-    /// name without what a Markdown link cannot hold, as `MdFile.pathFor` does.
-    static func phoneFilePath(_ name: String) -> String {
-        let safe = name.replacingOccurrences(of: "[\\s()\\[\\]/\\\\:*?\"<>|]+", with: "_", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-        return "files/\(UUID().uuidString.lowercased())/\(safe.isEmpty ? "file" : String(safe.prefix(200)))"
-    }
-
-    static func safeFileName(_ name: String) -> String {
-        let safe = name.replacingOccurrences(of: "[/:\\u0000-\\u001f]", with: "_", options: .regularExpression)
-        return safe.isEmpty ? "file" : String(safe.prefix(200))
-    }
+/// A library's refusal to write over a change the sync has not seen.
+public protocol FolderStoreErrorConvertible: Error {
+    var isChanged: Bool { get }
 }
