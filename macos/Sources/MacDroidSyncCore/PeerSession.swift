@@ -57,16 +57,16 @@ public final class PeerSession {
     public var onPhotoPreview: ((String, Data?, String?) -> Void)?
     /// Anything the phone says about messages, see PROTOCOL.md section 9.
     public var onSms: ((SmsReply) -> Void)?
-    /// Anything the phone says about notes, see PROTOCOL.md section 10.
-    public var onNotes: ((NotesReply) -> Void)?
+    /// Anything the phone says about the synced folders, see PROTOCOL.md section 10.
+    public var onFolder: ((FolderReply) -> Void)?
 
     /// Where incoming files are written; without a sink they are refused.
     public var fileSink: FileSink?
     /// Asked for the photo configuration to send during the handshake. Read at
     /// that moment rather than held, so it is always the current settings.
     public var photoConfigProvider: (() -> PhotoPayload?)?
-    /// Asked whether the notes are synced, for the handshake, read at that moment.
-    public var notesConfigProvider: (() -> Bool)?
+    /// Asked for the pairs of folders, for the handshake, read at that moment.
+    public var folderConfigProvider: (() -> FolderPayload?)?
 
     public private(set) var remoteDeviceName: String?
     public private(set) var isAuthenticated = false
@@ -338,11 +338,11 @@ public final class PeerSession {
                     photo: config
                 ))
             }
-            if let notes = notesConfigProvider?() {
+            if let folders = folderConfigProvider?() {
                 try send(Message(
                     seq: codec.nextSequence(),
-                    type: MessageType.notesConfig,
-                    notes: NotesPayload(enabled: notes, sidecars: notes ? true : nil)
+                    type: MessageType.foldersConfig,
+                    folder: folders
                 ))
             }
             Log.info("Authenticated with \(remoteDeviceName!) (\(remoteDescription))")
@@ -407,13 +407,12 @@ public final class PeerSession {
                 reason: message.reason,
                 image: ok ? message.data.flatMap { Data(base64Encoded: $0) } : nil
             ))
-        case MessageType.notesManifest, MessageType.notesGet, MessageType.notesPut, MessageType.notesDelete,
-             MessageType.notesCopy, MessageType.notesAssetGet, MessageType.notesAssetPut, MessageType.notesChanged,
-             MessageType.notesFolderDelete, MessageType.notesSynced:
+        case MessageType.foldersConfig, MessageType.folderManifest, MessageType.folderGet, MessageType.folderPut,
+             MessageType.folderMove, MessageType.folderDelete, MessageType.folderChanged:
             let ok = message.ok ?? true
-            onNotes?(NotesReply(
+            onFolder?(FolderReply(
                 type: message.type,
-                payload: message.notes ?? NotesPayload(),
+                payload: message.folder ?? FolderPayload(),
                 ok: ok,
                 reason: message.reason,
                 data: ok ? message.data.flatMap { Data(base64Encoded: $0) } : nil
@@ -480,17 +479,17 @@ public final class PeerSession {
         ))
     }
 
-    // MARK: - Notes
+    // MARK: - Folders
 
-    /// One request about notes; the answer comes back through `onNotes`.
-    /// `data` is a piece of a picture or file for `notes-asset-put`.
-    public func sendNotesRequest(type: String, payload: NotesPayload, data: Data? = nil) throws {
+    /// One request about the synced folders; the answer comes back through
+    /// `onFolder`. `data` is a piece of a file for `folder-put`.
+    public func sendFolderRequest(type: String, payload: FolderPayload, data: Data? = nil) throws {
         guard isAuthenticated else { return }
         try send(Message(
             seq: codec.nextSequence(),
             type: type,
             data: data?.base64EncodedString(),
-            notes: payload
+            folder: payload
         ))
     }
 

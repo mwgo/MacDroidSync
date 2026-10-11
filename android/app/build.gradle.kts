@@ -34,11 +34,11 @@ val canSignRelease = releaseStore != null &&
     releaseKeyPassword != null
 
 android {
-    namespace = "pl.wojas.macdroidsync"
+    namespace = "pl.mwgo.macdroidsync"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "pl.wojas.macdroidsync"
+        applicationId = "pl.mwgo.macdroidsync"
         minSdk = 28
         targetSdk = 36
         versionCode = 2

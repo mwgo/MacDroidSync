@@ -46,12 +46,8 @@ struct SettingsHooks {
     /// Deletes this Mac's copy of the phone's messages.
     var clearMessages: () -> Void = {}
 
-    /// Notes sync: how it stands, in words, and what can be done about it.
-    var notesStatus: () -> String = { "" }
-    var notesEnabledChanged: () -> Void = {}
-    var syncNotesNow: () -> Void = {}
-    var openNoteConflicts: () -> Void = {}
-    var notesFolderChanged: () -> Void = {}
+    /// Folder sync: the pairs, how each stands, and what can be done about it.
+    var folders = FoldersHooks()
 }
 
 /// The settings window: everything that is configured once and then left alone.
@@ -72,9 +68,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let launchAtLoginBox = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
     private let autoUpdateBox = NSButton(checkboxWithTitle: "Install updates automatically", target: nil, action: nil)
     private let messageNotificationsBox = NSButton(checkboxWithTitle: "Notify about new text messages", target: nil, action: nil)
-    private let notesBox = NSButton(checkboxWithTitle: "Keep the phone's notes and the folder of Notes MD the same", target: nil, action: nil)
-    private let notesFolderLabel = NSTextField(labelWithString: "")
-    private let notesStatusLabel = NSTextField(labelWithString: "")
     private let updateStatusLabel = NSTextField(labelWithString: "")
     private let downloadsLabel = NSTextField(labelWithString: "")
 
@@ -138,10 +131,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         Page(id: .init("autoLock"), title: "Auto lock", symbols: ["lock.laptopcomputer", "lock"]),
         Page(id: .init("safeNetworks"), title: "Safe networks", symbols: ["wifi"]),
         Page(id: .init("photos"), title: "Photos", symbols: ["photo.on.rectangle", "photo"]),
+        Page(id: .init("folders"), title: "Folders", symbols: ["folder.badge.gearshape", "folder"]),
         Page(id: .init("about"), title: "About", symbols: ["info.circle"]),
     ]
 
     private var tabs: NSTabView?
+    private lazy var foldersPage = FoldersPage(hooks: hooks.folders) { [weak self] in
+        guard let self, let item = self.tabs?.selectedTabViewItem else { return }
+        self.fitWindow(to: item, animated: false)
+    }
     /// Width of the roomiest tab, so the window never jumps sideways.
     private var bodyWidth: CGFloat = 0
 
@@ -171,6 +169,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     required init?(coder: NSCoder) { fatalError("not used") }
 
     // MARK: - Showing
+
+    /// Opens on the page of the synced folders.
+    func presentFolders() {
+        present()
+        tabs?.selectTabViewItem(withIdentifier: "folders")
+    }
 
     func present() {
         // An accessory app has no Dock icon to click, so it has to ask for the
@@ -284,9 +288,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         launchAtLoginBox.state = settings.launchAtLoginEnabled ? .on : .off
         autoUpdateBox.state = settings.autoUpdateEnabled ? .on : .off
         messageNotificationsBox.state = settings.messageNotificationsEnabled ? .on : .off
-        notesBox.state = settings.notesSyncEnabled ? .on : .off
-        notesStatusLabel.stringValue = hooks.notesStatus()
-        notesFolderLabel.stringValue = settings.notesFolder.path.replacingOccurrences(of: AppPaths.homeDirectory.path, with: "~")
         updateStatusLabel.stringValue = hooks.updateStatus()
         downloadsLabel.stringValue = hooks.downloadsPath()
 
@@ -321,6 +322,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         refreshNetworks()
         refreshPhotos()
+        foldersPage.refresh()
     }
 
     /// Refresh after a change made **here**. The field editor is dismissed
@@ -515,34 +517,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         settings.messageNotificationsEnabled = messageNotificationsBox.state == .on
     }
 
-    @objc private func toggleNotes() {
-        settings.notesSyncEnabled = notesBox.state == .on
-        hooks.notesEnabledChanged()
-        refreshAfterChange()
-    }
-
-    @objc private func chooseNotesFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Choose"
-        panel.message = "The folder of notes on iCloud Drive, the one Notes MD uses."
-        panel.directoryURL = settings.notesFolder
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        settings.notesFolder = url
-        hooks.notesFolderChanged()
-        refreshAfterChange()
-    }
-
-    @objc private func syncNotesNow() {
-        hooks.syncNotesNow()
-    }
-
-    @objc private func openNoteConflicts() {
-        hooks.openNoteConflicts()
-    }
-
     @objc private func clearMessages() {
         guard let window else { return }
         let alert = NSAlert()
@@ -616,7 +590,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         let bodies = [
             pad(buildGeneralTab()), pad(buildAutoLockTab()), pad(buildSafeNetworksTab()),
-            pad(buildPhotosTab()), pad(buildAboutTab()),
+            pad(buildPhotosTab()), pad(foldersPage.build()), pad(buildAboutTab()),
         ]
 
         // No strip of tab buttons and no border: the toolbar does the switching,
@@ -661,14 +635,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         autoUpdateBox.action = #selector(toggleAutoUpdate)
         messageNotificationsBox.target = self
         messageNotificationsBox.action = #selector(toggleMessageNotifications)
-        notesBox.target = self
-        notesBox.action = #selector(toggleNotes)
-        notesStatusLabel.font = .systemFont(ofSize: 11)
-        notesStatusLabel.textColor = .secondaryLabelColor
-        notesStatusLabel.lineBreakMode = .byTruncatingTail
-        notesFolderLabel.font = .systemFont(ofSize: 11)
-        notesFolderLabel.textColor = .secondaryLabelColor
-        notesFolderLabel.lineBreakMode = .byTruncatingMiddle
         updateStatusLabel.font = .systemFont(ofSize: 11)
         updateStatusLabel.textColor = .secondaryLabelColor
         updateStatusLabel.lineBreakMode = .byTruncatingTail
@@ -696,14 +662,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             [label("Messages:"), messageNotificationsBox],
             [NSGridCell.emptyContentView, row([button("Delete Stored Messages…", #selector(clearMessages))])],
             [NSGridCell.emptyContentView, hint("A copy of the phone's messages is kept on this Mac so the window opens at once. The phone stays the original.")],
-            [label("Notes:"), notesBox],
-            [NSGridCell.emptyContentView, row([notesFolderLabel, button("Choose…", #selector(chooseNotesFolder))])],
-            [NSGridCell.emptyContentView, row([
-                notesStatusLabel,
-                button("Sync now", #selector(syncNotesNow)),
-                button("Conflicts…", #selector(openNoteConflicts)),
-            ])],
-            [NSGridCell.emptyContentView, hint("A folder of Markdown files on iCloud Drive, the one Notes MD on the Mac, iPad and iPhone uses, and the notes of the phone's MD Notes app, folders matched by name. A note deleted on one side goes to the trash on the other; a note changed on both sides keeps the Mac's version and the phone's becomes a copy.")],
         ])
         return configure(grid)
     }

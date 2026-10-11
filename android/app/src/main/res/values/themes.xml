@@ -22,23 +22,6 @@
         <item name="android:textColor">?attr/colorPrimary</item>
     </style>
 
-    <!-- Buttons of the notes editor toolbar: letters for the inline styles,
-         icons for the blocks. -->
-    <style name="NoteTool" parent="">
-        <item name="android:layout_width">44dp</item>
-        <item name="android:layout_height">44dp</item>
-        <item name="android:layout_marginHorizontal">2dp</item>
-        <item name="android:background">@drawable/bg_note_tool</item>
-        <item name="android:gravity">center</item>
-        <item name="android:textSize">18sp</item>
-        <item name="android:textColor">?attr/colorOnSurface</item>
-    </style>
-
-    <style name="NoteTool.Icon">
-        <item name="android:padding">10dp</item>
-        <item name="android:scaleType">fitCenter</item>
-        <item name="tint">?attr/colorOnSurface</item>
-    </style>
 
     <!-- ShareActivity has no UI of its own: it stages the shared files and shows
          a toast, so its window stays invisible. -->

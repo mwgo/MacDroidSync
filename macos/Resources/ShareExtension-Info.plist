@@ -9,7 +9,7 @@
     <key>CFBundleExecutable</key>
     <string>ShareExtension</string>
     <key>CFBundleIdentifier</key>
-    <string>pl.wojas.MacDroidSync.ShareExtension</string>
+    <string>pl.mwgo.MacDroidSync.ShareExtension</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

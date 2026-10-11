@@ -7,22 +7,4 @@
     <color name="brand_on_primary_container">#001B3E</color>
     <color name="brand_secondary_container">#DCE2F9</color>
     <color name="brand_on_secondary_container">#151B2C</color>
-    <!-- Navy: when a note was last edited, on the notes list. -->
-    <color name="note_edited">#1F3A8A</color>
-    <!-- The dot before the title of a note not yet synced with the Mac. -->
-    <color name="note_unsynced">#E8710A</color>
-    <!-- The icons of the groups on the notes list, the amber of Notes MD on the Mac. -->
-    <color name="note_group_icon">#C7610F</color>
-    <!-- A note, as Notes MD shows it on the Mac: the lowest headings and the date under the title. -->
-    <color name="note_muted">#8A8A8E</color>
-    <color name="note_chevron">#AEAEB2</color>
-    <!-- The line under the title, and the bar of a quote. -->
-    <color name="note_rule">#ECE6DE</color>
-    <color name="note_quote_bar">#E2DDD6</color>
-    <!-- Code within a line of text. -->
-    <color name="note_code_background">#F7EFE6</color>
-    <color name="note_code_text">#8A3B06</color>
-    <!-- The ring of a box not ticked, and the tick on the amber of one ticked. -->
-    <color name="note_box">#C7C7CC</color>
-    <color name="note_tick">#FFFFFF</color>
 </resources>

@@ -4,7 +4,7 @@ import os
 /// Thin wrapper over os.Logger. Set MDS_VERBOSE=1 to also mirror the messages
 /// on stdout, which is handy when the app is started from a terminal.
 public enum Log {
-    public static let subsystem = "pl.wojas.MacDroidSync"
+    public static let subsystem = "pl.mwgo.MacDroidSync"
 
     private static let mirrorToStdout = ProcessInfo.processInfo.environment["MDS_VERBOSE"] == "1"
     private static let sync = Logger(subsystem: subsystem, category: "sync")

@@ -93,23 +93,18 @@ public enum MessageType {
     public static let smsNew = "sms-new"
     /// Phone to Mac: something else changed; this Mac's copy is out of date.
     public static let smsChanged = "sms-changed"
-    /// Notes, see PROTOCOL.md section 10. Mac to phone inside the handshake:
-    /// whether the notes are synced in this session.
-    public static let notesConfig = "notes-config"
-    /// Requests from the Mac, answered with the same type and `notes.requestId`.
-    public static let notesManifest = "notes-manifest"
-    public static let notesGet = "notes-get"
-    public static let notesPut = "notes-put"
-    public static let notesDelete = "notes-delete"
-    public static let notesCopy = "notes-copy"
-    public static let notesAssetGet = "notes-asset-get"
-    public static let notesAssetPut = "notes-asset-put"
-    /// Removes an empty folder the Mac lost; refused with "not empty" otherwise.
-    public static let notesFolderDelete = "notes-folder-delete"
-    /// After a cycle: the notes the Mac holds as they are on the phone, by hash.
-    public static let notesSynced = "notes-synced"
-    /// Phone to Mac: a note changed there.
-    public static let notesChanged = "notes-changed"
+    /// Folder sync, see PROTOCOL.md section 10. Mac to phone inside the
+    /// handshake and after a change: the pairs of folders. The phone answers
+    /// with the same type, saying of each whether it can use the folder.
+    public static let foldersConfig = "folders-config"
+    /// Requests from the Mac, answered with the same type and `folder.requestId`.
+    public static let folderManifest = "folder-manifest"
+    public static let folderGet = "folder-get"
+    public static let folderPut = "folder-put"
+    public static let folderMove = "folder-move"
+    public static let folderDelete = "folder-delete"
+    /// Phone to Mac: something in a folder changed there.
+    public static let folderChanged = "folder-changed"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.
@@ -143,8 +138,8 @@ public struct Message: Codable {
     public var photo: PhotoPayload?
     /// Messages, see PROTOCOL.md section 9.
     public var sms: SmsPayload?
-    /// Notes, see PROTOCOL.md section 10.
-    public var notes: NotesPayload?
+    /// Folder sync, see PROTOCOL.md section 10.
+    public var folder: FolderPayload?
 
     public init(
         v: Int = Wire.version,
@@ -168,7 +163,7 @@ public struct Message: Codable {
         beacon: Bool? = nil,
         photo: PhotoPayload? = nil,
         sms: SmsPayload? = nil,
-        notes: NotesPayload? = nil
+        folder: FolderPayload? = nil
     ) {
         self.v = v
         self.seq = seq
@@ -191,7 +186,7 @@ public struct Message: Codable {
         self.beacon = beacon
         self.photo = photo
         self.sms = sms
-        self.notes = notes
+        self.folder = folder
     }
 
     public static func now() -> Int64 {

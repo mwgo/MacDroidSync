@@ -1,6 +1,5 @@
 import AppKit
 import MacDroidSyncCore
-import NotesMDKit
 
 /// Owns the status item, its menu and the wiring between the pasteboard, the
 /// server and the offline queue.
@@ -66,8 +65,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let photoWindowMenuItem = NSMenuItem(title: "Photo sync…", action: #selector(showPhotoSync(_:)), keyEquivalent: "")
     private let photoSyncNowMenuItem = NSMenuItem(title: "Sync photos now", action: #selector(syncPhotosNow), keyEquivalent: "")
     private let messagesMenuItem = NSMenuItem(title: "Messages…", action: #selector(showMessages(_:)), keyEquivalent: "m")
-    private let noteConflictsMenuItem = NSMenuItem(title: "Note conflicts…", action: #selector(showNoteConflicts(_:)), keyEquivalent: "")
-    private let openNotesMenuItem = NSMenuItem(title: "Open Notes MD", action: #selector(openNotesMD(_:)), keyEquivalent: "n")
+    private let foldersMenuItem = NSMenuItem(title: "Synced folders…", action: #selector(showFolders(_:)), keyEquivalent: "")
+    private let syncFoldersMenuItem = NSMenuItem(title: "Sync folders now", action: #selector(syncFoldersNow), keyEquivalent: "")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
     private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
 
@@ -81,17 +80,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// operator asks for it from the menu or from a notification.
     private var photoSyncWindow: PhotoSyncWindowController?
     private var messagesWindow: MessagesWindowController?
-    private var noteConflictsWindow: NotesConflictsWindowController?
-    private lazy var notesStore = NotesSyncStore()
-    private lazy var notes: NotesCoordinator = {
-        let root = Settings.shared.notesFolder
-        notesStore.use(root: root.path)
-        return NotesCoordinator(store: notesStore, library: FolderNotesLibrary(root: root, writer: Settings.shared.notesWriter)) { [weak self] type, payload, data in
-            self?.server.requestNotes(type: type, payload: payload, data: data) ?? false
-        }
-    }()
-    /// Hears of changes in the folder of notes, from Notes MD and from iCloud.
-    private var notesMonitor: FolderMonitor?
+    private lazy var folders = FolderSyncCoordinator { [weak self] type, payload, data in
+        self?.server.requestFolder(type: type, payload: payload, data: data) ?? false
+    }
+    /// Hear of changes in the Mac folders of the pairs, from the apps and from iCloud.
+    private var folderMonitors: [String: FolderMonitor] = [:]
     /// Banners waiting a moment for the sender's photo, by photo id.
     private var bannersAwaitingPhoto: [String: (SmsThread, [SmsMessage])] = [:]
     private lazy var sms = SmsCoordinator(store: SmsStore()) { [weak self] type, payload, image in
@@ -151,7 +144,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         notifier.requestAuthorization()
         wireUpdater()
         wireMessages()
-        wireNotes()
+        wireFolders()
         updater.start()
 
         // Says in the log where the auto lock stands before anything else has
@@ -197,7 +190,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in [
             pingMenuItem, sendMenuItem, sendFilesMenuItem, downloadsMenuItem,
             autoLockMenuItem, snoozeMenuItem, settingsMenuItem, quitMenuItem,
-            photoWindowMenuItem, photoSyncNowMenuItem, messagesMenuItem, noteConflictsMenuItem, openNotesMenuItem,
+            photoWindowMenuItem, photoSyncNowMenuItem, messagesMenuItem, foldersMenuItem, syncFoldersMenuItem,
         ] {
             item.target = self
         }
@@ -226,8 +219,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(photoSyncNowMenuItem)
         menu.addItem(.separator())
         menu.addItem(messagesMenuItem)
-        menu.addItem(openNotesMenuItem)
-        menu.addItem(noteConflictsMenuItem)
+        menu.addItem(.separator())
+        menu.addItem(foldersMenuItem)
+        menu.addItem(syncFoldersMenuItem)
         menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
         menu.addItem(.separator())
@@ -279,10 +273,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // Always open: the stored copy is worth reading without the phone.
         let unread = sms.unreadCount
         messagesMenuItem.title = unread == 0 ? "Messages…" : "Messages — \(unread) unread…"
-        // Like the photo window: always there, greyed out while nothing waits.
-        let conflicts = notesStore.conflicts.count
-        noteConflictsMenuItem.title = conflicts == 0 ? "Note conflicts…" : "Note conflicts — \(conflicts)…"
-        noteConflictsMenuItem.isEnabled = conflicts > 0 || noteConflictsWindow?.window?.isVisible == true
+        let conflicts = folders.pairs.reduce(0) { $0 + folders.store(for: $1).state.conflicts.count }
+        foldersMenuItem.title = conflicts == 0 ? "Synced folders…" : "Synced folders — \(conflicts) conflicts…"
+        syncFoldersMenuItem.isEnabled = connected && folders.pairs.contains(where: \.enabled)
 
         downloadsMenuItem.title = "Open \(server.destinationDirectory.lastPathComponent) folder"
         // Nothing worth opening until the phone has actually delivered a file.
@@ -394,10 +387,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 // on the wire.
                 self.photoScheduler.connected()
                 self.sms.connected()
-                self.notes.connected()
+                self.folders.connected()
             } else if state != .transferring {
                 self.sms.disconnected()
-                self.notes.disconnected()
+                self.folders.disconnected()
             }
             self.messagesWindow?.connectionChanged()
         }
@@ -1078,72 +1071,76 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         notifier.onOpenMessages = { [weak self] threadId in self?.openMessages(threadId: threadId) }
     }
 
-    // MARK: - Notes
+    // MARK: - Folders
 
-    private func wireNotes() {
-        server.notesEnabled = { Settings.shared.notesSyncEnabled }
-        server.onNotes = { [weak self] reply in self?.notes.handle(reply) }
-        notes.onChange = { [weak self] in
-            self?.noteConflictsWindow?.refresh()
+    private func wireFolders() {
+        server.folderConfig = { [weak self] in self?.folders.config() }
+        server.onFolder = { [weak self] reply in self?.folders.handle(reply) }
+        folders.onChange = { [weak self] in
+            self?.settingsWindow?.refresh()
             self?.refreshMenuTitles()
         }
-        notes.onConflict = { [weak self] conflict in self?.notifier.noteConflict(conflict) }
-        notifier.onOpenNoteConflicts = { [weak self] in self?.showNoteConflicts(nil) }
-        notes.setEnabled(settings.notesSyncEnabled)
-        watchNotesFolder()
+        folders.onConflict = { [weak self] pair, conflict in self?.notifier.folderConflict(pair, conflict) }
+        folders.onMacWrote = { pair, paths in
+            // Notes MD, and any other app showing the folder, rereads what changed.
+            DistributedNotificationCenter.default().postNotificationName(
+                FolderEvents.filesChanged, object: pair.macURL.standardizedFileURL.path, userInfo: nil, deliverImmediately: true
+            )
+        }
+        notifier.onOpenFolderConflicts = { [weak self] in self?.showFolders(nil) }
+        DistributedNotificationCenter.default().addObserver(
+            forName: FolderEvents.folderChanged, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let path = note.object as? String else { return }
+            MainActor.assumeIsolated { self?.folders.macChanged(path: path) }
+        }
+        folders.setPairs(settings.folderPairs)
+        watchFolders()
     }
 
-    /// Watches the folder of notes while the sync is on.
-    private func watchNotesFolder() {
-        notesMonitor?.stop()
-        notesMonitor = nil
-        guard settings.notesSyncEnabled else { return }
-        notesMonitor = FolderMonitor(root: settings.notesFolder, interval: 30) { [weak self] in
-            Task { @MainActor in self?.notes.folderChanged() }
+    /// Watches the Mac folder of each pair being synced.
+    private func watchFolders() {
+        folderMonitors.values.forEach { $0.stop() }
+        folderMonitors = [:]
+        for pair in folders.pairs where pair.enabled {
+            let id = pair.id
+            folderMonitors[id] = FolderMonitor(root: pair.macURL, interval: 30) { [weak self] in
+                Task { @MainActor in self?.folders.macChanged(pairId: id) }
+            }
         }
     }
 
-    /// Another folder of notes was chosen: the sync starts afresh with it.
-    private func notesFolderChanged() {
-        let root = settings.notesFolder
-        notes.setLibrary(FolderNotesLibrary(root: root, writer: settings.notesWriter), root: root.path)
-        watchNotesFolder()
-        Log.info("Notes folder: \(root.path)")
+    private func setFolderPairs(_ pairs: [FolderPair]) {
+        settings.folderPairs = pairs
+        folders.setPairs(pairs)
+        watchFolders()
+        folders.requestSync()
     }
 
-    @objc private func openNotesMD(_ sender: Any?) {
-        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: NotesMD.bundleIdentifier) else {
-            let alert = NSAlert()
-            alert.messageText = "Notes MD is not installed"
-            alert.informativeText = "Build it from notesmd/NotesMD.xcodeproj and put it in Applications."
-            alert.runModal()
-            return
+    @objc private func showFolders(_ sender: Any?) {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(hooks: makeSettingsHooks())
         }
-        NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
+        settingsWindow?.presentFolders()
     }
 
-    @objc private func showNoteConflicts(_ sender: Any?) {
-        if noteConflictsWindow == nil {
-            noteConflictsWindow = NotesConflictsWindowController(hooks: NotesConflictsHooks(
-                conflicts: { [weak self] in self?.notesStore.conflicts ?? [] },
-                asset: { [weak self] sha in self?.notesStore.asset(sha256: sha) },
-                dismiss: { [weak self] id in self?.notes.dismissConflict(id: id) },
-                allowDeletions: { [weak self] in self?.notes.allowHeldDeletions() }
-            ))
-        }
-        noteConflictsWindow?.present()
+    @objc private func syncFoldersNow() {
+        folders.requestSync()
     }
 
-    /// The notes line of the settings window.
-    private var notesStatus: String {
-        guard settings.notesSyncEnabled else { return "Off" }
+    /// How a pair stands, for the settings window.
+    private func folderStatus(_ pair: FolderPair) -> String {
+        guard pair.enabled else { return "Off" }
         guard server.isConnected else { return "Waiting for the phone" }
-        if notes.isRunning { return "Syncing…" }
-        if let error = notes.lastError { return error }
-        guard let last = notes.lastSync else { return "Not synced yet" }
+        let status = folders.status(of: pair)
+        if status.isRunning { return "Syncing…" }
+        if let phone = status.phone, phone.ok == false { return "The phone cannot use it: \(phone.reason ?? "no reason")" }
+        if let error = status.lastError { return error }
+        guard let last = status.lastSync else { return "Not synced yet" }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
-        return "Synced at \(formatter.string(from: last)), \(notesStore.pairs.count) notes"
+        let files = folders.store(for: pair).state.base.values.filter { !$0.isDirectory }.count
+        return "Synced at \(formatter.string(from: last)), \(files) files"
     }
 
     private func postBanner(photo: String, data: Data?) {
@@ -1258,18 +1255,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 self?.messagesWindow?.close()
                 self?.refreshMenuTitles()
             },
-            notesStatus: { [weak self] in self?.notesStatus ?? "" },
-            notesEnabledChanged: { [weak self] in
-                guard let self else { return }
-                let enabled = self.settings.notesSyncEnabled
-                // The phone holds the setting for the session only, so it is told now.
-                self.server.sendNotesConfig(enabled: enabled)
-                self.notes.setEnabled(enabled)
-                self.watchNotesFolder()
-            },
-            syncNotesNow: { [weak self] in self?.notes.requestSync() },
-            openNoteConflicts: { [weak self] in self?.showNoteConflicts(nil) },
-            notesFolderChanged: { [weak self] in self?.notesFolderChanged() }
+            folders: FoldersHooks(
+                pairs: { [weak self] in self?.folders.pairs ?? [] },
+                setPairs: { [weak self] pairs in self?.setFolderPairs(pairs) },
+                status: { [weak self] pair in self?.folderStatus(pair) ?? "" },
+                conflicts: { [weak self] pair in self?.folders.store(for: pair).state.conflicts ?? [] },
+                syncNow: { [weak self] pair in self?.folders.requestSync(pairId: pair.id) },
+                allowDeletions: { [weak self] pair in self?.folders.allowHeldDeletions(pair) },
+                dismissConflict: { [weak self] pair, id in self?.folders.dismissConflict(pair, id: id) }
+            )
         )
     }
 

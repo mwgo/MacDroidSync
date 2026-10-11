@@ -39,7 +39,7 @@ public final class Settings: SyncConfiguration {
         static let messageNotificationsEnabled = "messageNotificationsEnabled"
         static let notesSyncEnabled = "notesSyncEnabled"
         static let notesFolder = "notesFolder"
-        static let notesWriter = "notesWriter"
+        static let folderPairs = "folderPairs"
     }
 
     private let defaults = UserDefaults.standard
@@ -55,7 +55,24 @@ public final class Settings: SyncConfiguration {
     private var cachedPairingCode: String?
     private let cacheLock = NSLock()
 
-    private init() {}
+    private init() {
+        Self.adoptFormerSettings()
+    }
+
+    /// The identifier this app had before, whose settings and pairing code it takes over once.
+    static let formerIdentifier = "pl.wojas.MacDroidSync"
+
+    /// Settings written under the former identifier, taken over the first time:
+    /// a new identifier is a new defaults domain to macOS.
+    private static func adoptFormerSettings() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Keys.deviceId) == nil,
+              let former = defaults.persistentDomain(forName: formerIdentifier), !former.isEmpty else { return }
+        for (key, value) in former where defaults.object(forKey: key) == nil {
+            defaults.set(value, forKey: key)
+        }
+        Log.info("Took over the settings of \(formerIdentifier)")
+    }
 
     public var port: UInt16 {
         get {
@@ -90,7 +107,13 @@ public final class Settings: SyncConfiguration {
             defer { pairingLock.unlock() }
             if let known = knownPairingCode { return known }
 
-            switch Self.resolve(keychain.read(), fallback: readFallback()) {
+            var stored = keychain.read()
+            if stored == .absent, case .found(let former) = KeychainStore(service: Self.formerIdentifier, account: keychain.account).read() {
+                // The code kept under the former identifier, so the phone stays paired.
+                persist(pairingCode: former)
+                stored = .found(former)
+            }
+            switch Self.resolve(stored, fallback: readFallback()) {
             case .use(let code):
                 remember(pairingCode: code)
                 return code
@@ -193,35 +216,23 @@ public final class Settings: SyncConfiguration {
         set { defaults.set(newValue, forKey: Keys.messageNotificationsEnabled) }
     }
 
-    /// Keeping the phone's notes and the folder of Notes MD the same. Off until
-    /// switched on: the first sync copies every note of each side to the other.
-    public var notesSyncEnabled: Bool {
-        get { defaults.bool(forKey: Keys.notesSyncEnabled) }
-        set { defaults.set(newValue, forKey: Keys.notesSyncEnabled) }
-    }
-
-    /// The folder of notes the phone's notes are kept the same as: the one
-    /// chosen here, or else the one Notes MD uses, or else `Notes MD` on iCloud Drive.
-    public var notesFolder: URL {
+    /// The folders on the phone kept the same as folders on this Mac. The
+    /// first time, a sync of notes switched on in an older build becomes the
+    /// pair of the folder of Notes MD.
+    public var folderPairs: [FolderPair] {
         get {
-            if let path = defaults.string(forKey: Keys.notesFolder) { return URL(fileURLWithPath: path, isDirectory: true) }
-            if let path = UserDefaults(suiteName: NotesMD.bundleIdentifier)?.string(forKey: NotesMD.folderKey) {
-                return URL(fileURLWithPath: path, isDirectory: true)
+            if let data = defaults.data(forKey: Keys.folderPairs) {
+                return (try? JSONDecoder().decode([FolderPair].self, from: data)) ?? []
             }
-            return NotesMD.defaultFolder
+            guard defaults.bool(forKey: Keys.notesSyncEnabled) else { return [] }
+            let mac = defaults.string(forKey: Keys.notesFolder).map { URL(fileURLWithPath: $0, isDirectory: true) } ?? NotesMD.folder
+            let pairs = [NotesMD.pair(macPath: mac.path)]
+            defaults.set(try? JSONEncoder().encode(pairs), forKey: Keys.folderPairs)
+            return pairs
         }
-        set { defaults.set(newValue.path, forKey: Keys.notesFolder) }
-    }
-
-    /// Whether the folder was chosen here rather than taken from Notes MD.
-    public var notesFolderChosen: Bool { defaults.string(forKey: Keys.notesFolder) != nil }
-
-    /// This Mac's name as a writer of the folder's `.notesmd`, made once.
-    public var notesWriter: String {
-        if let writer = defaults.string(forKey: Keys.notesWriter) { return writer }
-        let writer = "mac-" + UUID().uuidString.prefix(8).lowercased() + "-sync"
-        defaults.set(writer, forKey: Keys.notesWriter)
-        return writer
+        set {
+            defaults.set(try? JSONEncoder().encode(newValue), forKey: Keys.folderPairs)
+        }
     }
 
     public var autoUpdateEnabled: Bool {
@@ -493,15 +504,32 @@ struct KeychainStore {
     }
 }
 
-/// The notes app of this Mac, whose folder the phone's notes go into.
+/// The notes app of this Mac, whose folder is the one pair offered from the start.
 public enum NotesMD {
-    public static let bundleIdentifier = "pl.wojas.NotesMD"
+    public static let bundleIdentifier = "pl.mwgo.NotesMD"
+    static let formerBundleIdentifier = "pl.wojas.NotesMD"
     /// Where Notes MD keeps the path of its folder in its defaults.
     public static let folderKey = "folderPath"
+    /// Where MD Notes keeps the notes on the phone.
+    public static let phonePath = "Documents/Notes MD"
 
     public static var defaultFolder: URL {
         AppPaths.homeDirectory
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
             .appendingPathComponent("Notes MD", isDirectory: true)
+    }
+
+    /// The folder Notes MD uses, or else `Notes MD` on iCloud Drive.
+    public static var folder: URL {
+        for id in [bundleIdentifier, formerBundleIdentifier] {
+            if let path = UserDefaults.standard.persistentDomain(forName: id)?[folderKey] as? String {
+                return URL(fileURLWithPath: path, isDirectory: true)
+            }
+        }
+        return defaultFolder
+    }
+
+    public static func pair(macPath: String = folder.path) -> FolderPair {
+        FolderPair(name: "Notes MD", phonePath: phonePath, macPath: macPath)
     }
 }
