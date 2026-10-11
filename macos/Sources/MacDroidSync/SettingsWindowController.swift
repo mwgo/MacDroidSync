@@ -16,6 +16,8 @@ struct SettingsHooks {
     var toggleSnooze: () -> Void = {}
     /// The live `Phone: -58 dBm (near)` line, computed by the menu controller.
     var liveReading: () -> String = { "" }
+    /// A phone turned away for a pairing code that does not match, or nil.
+    var pairingProblem: () -> String? = { nil }
     var downloadsPath: () -> String = { "" }
     var revealDownloads: () -> Void = {}
 
@@ -64,6 +66,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     // General
     private let pairingField = NSTextField(labelWithString: "")
+    private let pairingProblemLabel = NSTextField(labelWithString: "")
     private let portField = NSTextField(string: "")
     private let launchAtLoginBox = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
     private let autoUpdateBox = NSButton(checkboxWithTitle: "Install updates automatically", target: nil, action: nil)
@@ -285,6 +288,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         // bug as a switch that quietly saves a text field.
         write(String(settings.port), into: portField)
         pairingField.stringValue = settings.knownPairingCode ?? "Loading…"
+        let problem = hooks.pairingProblem()
+        pairingProblemLabel.stringValue = problem.map { "\($0). Enter this code on the phone." } ?? ""
+        pairingProblemLabel.isHidden = problem == nil
         launchAtLoginBox.state = settings.launchAtLoginEnabled ? .on : .off
         autoUpdateBox.state = settings.autoUpdateEnabled ? .on : .off
         messageNotificationsBox.state = settings.messageNotificationsEnabled ? .on : .off
@@ -640,6 +646,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         updateStatusLabel.lineBreakMode = .byTruncatingTail
 
         pairingField.isSelectable = true
+        pairingProblemLabel.font = .systemFont(ofSize: 11)
+        pairingProblemLabel.textColor = .systemRed
+        pairingProblemLabel.isHidden = true
         pairingField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         downloadsLabel.font = .systemFont(ofSize: 11)
         downloadsLabel.textColor = .secondaryLabelColor
@@ -651,6 +660,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                 button("Copy", #selector(copyPairingCode)),
                 button("Regenerate…", #selector(regeneratePairingCode)),
             ])],
+            [NSGridCell.emptyContentView, pairingProblemLabel],
             [NSGridCell.emptyContentView, hint("The shared secret both apps derive their keys from. Enter the same code in the Android app.")],
             [label("Port:"), row([sized(portField, width: 90), button("Apply", #selector(applyPort))])],
             [NSGridCell.emptyContentView, hint("Both apps must use the same port. Default is \(Wire.defaultPort).")],

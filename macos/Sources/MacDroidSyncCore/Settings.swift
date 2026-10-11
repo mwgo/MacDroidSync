@@ -510,7 +510,7 @@ public enum NotesMD {
     static let formerBundleIdentifier = "pl.wojas.NotesMD"
     /// Where Notes MD keeps the path of its folder in its defaults.
     public static let folderKey = "folderPath"
-    /// Where MD Notes keeps the notes on the phone.
+    /// Where Notes MD keeps the notes on the phone.
     public static let phonePath = "Documents/Notes MD"
 
     public static var defaultFolder: URL {

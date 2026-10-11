@@ -12,6 +12,9 @@ public final class SyncServer {
     public var onFailure: ((String) -> Void)?
     /// Fired with the port once the listener is up and advertising itself.
     public var onListening: ((UInt16) -> Void)?
+    /// A phone reached the Mac but was turned away, in words for the menu: a
+    /// pairing code that does not match. Nil once a phone gets through.
+    public var onRejected: ((String?) -> Void)?
     /// Name, bytes received so far and the announced total of an incoming file.
     public var onFileProgress: ((String, Int64, Int64) -> Void)?
     /// A file arrived complete and is now sitting at this location.
@@ -274,6 +277,7 @@ public final class SyncServer {
             self.connectedDeviceName = deviceName
             self.settings.pairedDeviceName = deviceName
             self.state = .connected
+            DispatchQueue.main.async { self.onRejected?(nil) }
         }
         session.onClipboard = { [weak self] text in
             DispatchQueue.main.async { self?.onClipboardReceived?(text) }
@@ -326,7 +330,12 @@ public final class SyncServer {
         session.onLockRequested = { [weak self] in
             DispatchQueue.main.async { self?.onLockRequested?() }
         }
-        session.onEnd = { [weak self, weak session] _ in
+        session.onEnd = { [weak self, weak session] error in
+            if case .authenticationFailed? = error as? ProtocolError {
+                DispatchQueue.main.async {
+                    self?.onRejected?("A phone tried to connect with another pairing code")
+                }
+            }
             guard let self, self.session === session else { return }
             self.session = nil
             self.connectedDeviceName = nil

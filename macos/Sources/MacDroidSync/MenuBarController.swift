@@ -104,6 +104,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private var displayState: PeerState = .disconnected
     private var failureMessage: String?
+    /// Why the last phone that reached the Mac was turned away, until one gets through.
+    private var rejection: String?
     private var suspendReason: String?
     private var lastReceivedFile: URL?
     /// A file arrived and nobody has looked at the menu since.
@@ -246,7 +248,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         case .connecting:
             statusMenuItem.title = "Connecting…"
         case .disconnected:
-            statusMenuItem.title = "Listening on port \(settings.port)"
+            statusMenuItem.title = rejection.map { "\($0) - check the code on the phone" } ?? "Listening on port \(settings.port)"
         case .suspended:
             statusMenuItem.title = "Suspended, \(suspendReason ?? "the Mac is away")"
         case .error:
@@ -445,6 +447,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         server.onFileSendFailed = { [weak self] name, reason in
             self?.handleSendFailure(name: name, reason: reason)
+        }
+        server.onRejected = { [weak self] reason in
+            guard let self, self.rejection != reason else { return }
+            self.rejection = reason
+            self.refreshMenuTitles()
+            self.settingsWindow?.refresh()
         }
         server.onListening = { [weak self] _ in
             self?.failureMessage = nil
@@ -1194,6 +1202,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             autoLockChanged: { [weak self] in self?.updatePresenceScanning() },
             toggleSnooze: { [weak self] in self?.toggleSnooze() },
             liveReading: { [weak self] in self?.autoLockSummary ?? "" },
+            pairingProblem: { [weak self] in self?.rejection },
             downloadsPath: { [weak self] in self?.server.destinationDirectory.path ?? "" },
             revealDownloads: { [weak self] in
                 guard let self else { return }
