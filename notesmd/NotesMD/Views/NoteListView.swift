@@ -45,11 +45,17 @@ struct NoteListView: View {
                 ToolbarItem(placement: .bottomBar) { newNoteButton }
             }
             #else
-            ToolbarItem { foldAllButton }
-            ToolbarItem { viewMenu }
+            // Over the list, where its folders are; a new note at the start of the note's bar, as in Notes.
+            ToolbarItemGroup(placement: .navigation) {
+                foldAllButton
+                viewMenu
+            }
             ToolbarItem { newNoteButton }
             #endif
         }
+        #if os(macOS)
+        .modifier(NoToolbarTitle())
+        #endif
         .sheet(item: Binding(get: { moving.map(IdBox.init) }, set: { moving = $0?.id })) { box in
             MoveSheet(noteId: box.id)
         }
@@ -468,3 +474,17 @@ struct MoveSheet: View {
         .frame(minWidth: 320, minHeight: 360)
     }
 }
+
+#if os(macOS)
+/// The folder's name stays the window's title, not text in the toolbar,
+/// which leaves the room over the list to its buttons.
+private struct NoToolbarTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.toolbar(removing: .title)
+        } else {
+            content
+        }
+    }
+}
+#endif

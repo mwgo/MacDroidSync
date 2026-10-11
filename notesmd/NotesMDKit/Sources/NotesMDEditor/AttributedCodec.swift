@@ -133,18 +133,27 @@ public enum Restyler {
             let italic = (attributes[.mdItalic] as? Bool) == true
             let underline = (attributes[.mdUnderline] as? Bool) == true
             let code = (attributes[.mdCode] as? Bool) == true
+            let inlineCode = code && block.type != .code
             var set: [NSAttributedString.Key: Any] = [
                 .font: style.font(for: block, isTitle: isTitle, bold: bold, italic: italic, code: code),
-                .foregroundColor: done ? style.secondaryColor : style.textColor,
+                .foregroundColor: Restyler.color(block: block, isTitle: isTitle, done: done, inlineCode: inlineCode, style: style),
             ]
             set[.underlineStyle] = underline ? NSUnderlineStyle.single.rawValue : nil
+            set[.underlineColor] = underline ? style.accentColor : nil
             set[.strikethroughStyle] = done ? NSUnderlineStyle.single.rawValue : nil
-            set[.backgroundColor] = code && block.type != .code ? style.codeBackground : nil
-            for key in [NSAttributedString.Key.underlineStyle, .strikethroughStyle, .backgroundColor] where set[key] == nil {
+            set[.backgroundColor] = inlineCode ? style.inlineCodeBackground : nil
+            set[.kern] = style.isCaps(block, isTitle: isTitle) ? style.size(of: block, isTitle: isTitle) * 0.06 : nil
+            for key in [NSAttributedString.Key.underlineStyle, .underlineColor, .strikethroughStyle, .backgroundColor, .kern] where set[key] == nil {
                 text.removeAttribute(key, range: run)
             }
             text.addAttributes(set.compactMapValues { $0 }, range: run)
         }
+    }
+
+    static func color(block: Block, isTitle: Bool, done: Bool, inlineCode: Bool, style: EditorStyle) -> PlatformColor {
+        if done { return style.secondaryColor }
+        if block.type == .heading { return style.headingColor(block, isTitle: isTitle) }
+        return inlineCode ? style.inlineCodeColor : style.textColor
     }
 
     /// What newly typed text gets in a paragraph of `block`.
@@ -152,12 +161,17 @@ public enum Restyler {
         var attributes: [NSAttributedString.Key: Any] = [
             .mdBlock: block.encoded,
             .font: style.font(for: block, isTitle: isTitle, bold: inline.contains(.bold), italic: inline.contains(.italic), code: inline.contains(.code)),
-            .foregroundColor: block.type == .checkbox && block.checked ? style.secondaryColor : style.textColor,
+            .foregroundColor: color(block: block, isTitle: isTitle, done: block.type == .checkbox && block.checked,
+                                    inlineCode: inline.contains(.code) && block.type != .code, style: style),
             .paragraphStyle: style.paragraphStyle(for: block, isTitle: isTitle, previous: previous),
         ]
         for kind in inline where block.type != .code { attributes[kind.key] = true }
-        if inline.contains(.underline) { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
-        if inline.contains(.code) && block.type != .code { attributes[.backgroundColor] = style.codeBackground }
+        if inline.contains(.underline) {
+            attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            attributes[.underlineColor] = style.accentColor
+        }
+        if inline.contains(.code) && block.type != .code { attributes[.backgroundColor] = style.inlineCodeBackground }
+        if style.isCaps(block, isTitle: isTitle) { attributes[.kern] = style.size(of: block, isTitle: isTitle) * 0.06 }
         return attributes
     }
 }

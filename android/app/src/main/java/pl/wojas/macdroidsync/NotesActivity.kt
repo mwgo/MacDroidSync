@@ -254,6 +254,7 @@ class NotesActivity : ScreenActivity() {
         inTrash = note.deleted != null
         loading = true
         editor.setMarkdown(store.read(id))
+        showInfo()
         baseline = editor.toMarkdown()
         // Edits carried over a rotation are still edits.
         savedInstanceState?.getString(STATE_MARKDOWN)?.takeIf { it != baseline }?.let(editor::setMarkdown)
@@ -337,7 +338,15 @@ class NotesActivity : ScreenActivity() {
             store.save(noteId, markdown)
             baseline = markdown
             unsaved = false
+            showInfo()
         }
+    }
+
+    /** When the note was edited and its folder, under its title. */
+    private fun showInfo() {
+        val note = store.note(noteId) ?: return
+        val date = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.LONG, java.text.DateFormat.SHORT).format(java.util.Date(note.modified))
+        editor.setInfo(date, note.folder)
     }
 
     private fun edited() {
@@ -358,6 +367,7 @@ class NotesActivity : ScreenActivity() {
         val scroll = binding.editorScroll.scrollY
         loading = true
         editor.setMarkdown(markdown)
+        showInfo()
         baseline = editor.toMarkdown()
         loading = false
         if (binding.editor.hasFocus() && caret >= 0) binding.editor.setSelection(minOf(caret, binding.editor.length()))
@@ -399,6 +409,7 @@ class NotesActivity : ScreenActivity() {
 
     private fun moveNote(folder: String) {
         store.move(noteId, folder)
+        showInfo()
         Toast.makeText(this, getString(R.string.note_moved, folder), Toast.LENGTH_SHORT).show()
     }
 

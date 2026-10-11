@@ -13,4 +13,16 @@
     <color name="note_unsynced">#FFB06B</color>
     <!-- The icons of the groups on the notes list, the amber of Notes MD on the Mac. -->
     <color name="note_group_icon">#F0973A</color>
+    <!-- A note, as Notes MD shows it on the Mac: the lowest headings and the date under the title. -->
+    <color name="note_muted">#98989D</color>
+    <color name="note_chevron">#6E6E73</color>
+    <!-- The line under the title, and the bar of a quote. -->
+    <color name="note_rule">#3A3532</color>
+    <color name="note_quote_bar">#4A433C</color>
+    <!-- Code within a line of text. -->
+    <color name="note_code_background">#3A2E24</color>
+    <color name="note_code_text">#FFC08A</color>
+    <!-- The ring of a box not ticked, and the tick on the amber of one ticked. -->
+    <color name="note_box">#636366</color>
+    <color name="note_tick">#1E1E1E</color>
 </resources>

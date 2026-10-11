@@ -14,6 +14,8 @@ public struct NoteEditorView {
     public var key: String
     public var markdown: String
     public var editable: Bool
+    /// When and where, shown under the title.
+    public var info: NoteInfo?
     public var style: EditorStyle
     public var resolve: (String) -> URL?
     public var controller: EditorController
@@ -24,6 +26,7 @@ public struct NoteEditorView {
         key: String,
         markdown: String,
         editable: Bool = true,
+        info: NoteInfo? = nil,
         style: EditorStyle = EditorStyle(),
         resolve: @escaping (String) -> URL?,
         controller: EditorController,
@@ -33,6 +36,7 @@ public struct NoteEditorView {
         self.key = key
         self.markdown = markdown
         self.editable = editable
+        self.info = info
         self.style = style
         self.resolve = resolve
         self.controller = controller
@@ -100,6 +104,7 @@ extension NoteEditorView: NSViewRepresentable {
         controller.view = view
         view.controller = controller
         view.isEditable = editable
+        (view.layoutManager as? NoteLayoutManager)?.info = info
         context.coordinator.load(view)
     }
 }
@@ -118,6 +123,7 @@ extension NoteEditorView: UIViewRepresentable {
         controller.view = view
         view.controller = controller
         view.isEditable = editable
+        (view.layoutManager as? NoteLayoutManager)?.info = info
         context.coordinator.load(view)
     }
 }

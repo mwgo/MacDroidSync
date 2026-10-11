@@ -42,6 +42,7 @@ struct NoteDetailView: View {
                     key: key,
                     markdown: markdown,
                     editable: !inTrash,
+                    info: NoteInfo(date: note.modified.formatted(date: .long, time: .shortened), folder: note.folder),
                     resolve: { [weak model] link in model?.resolve(link, in: note) },
                     controller: editor,
                     onChange: changed,

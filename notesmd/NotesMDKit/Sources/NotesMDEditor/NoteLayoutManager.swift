@@ -10,6 +10,17 @@ import UIKit
 /// boxes of a checklist in the room left of a list item, the bar of a quote,
 /// the panel behind code, the arrow left of a heading that folds its section.
 /// A folded section is still in the text, laid out as lines of no height.
+/// When a note was edited and the folder it is in.
+public struct NoteInfo: Equatable {
+    public var date: String
+    public var folder: String
+
+    public init(date: String, folder: String) {
+        self.date = date
+        self.folder = folder
+    }
+}
+
 public final class NoteLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     public var style: EditorStyle
     /// The block of the empty last line, which has no character to carry it.
@@ -17,6 +28,13 @@ public final class NoteLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
 
     private var numbers: [Int: Int] = [:]
     private var numbersValid = false
+    /// When the note was edited and its folder, shown under the title.
+    public var info: NoteInfo? {
+        didSet {
+            guard info != oldValue, let storage = textStorage else { return }
+            invalidateDisplay(forCharacterRange: NSRange(location: 0, length: min(storage.length, 1)))
+        }
+    }
     /// The text of the folded sections, left out of the layout.
     public private(set) var hidden: [NSRange] = []
 
@@ -187,7 +205,7 @@ public final class NoteLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
                 drawCode(paragraph, container: container, origin: origin, first: previous?.type != .code, last: next?.type != .code)
             case .quote:
                 guard let rect = paragraphRect(paragraph) else { continue }
-                style.separatorColor.setFill()
+                style.quoteBarColor.setFill()
                 let bar = CGRect(x: origin.x + rect.minX + container.lineFragmentPadding, y: origin.y + rect.minY + 2, width: 3, height: rect.height - 4)
                 bezier(roundedRect: bar, radius: 1.5).fill()
             case .bullet, .numbered, .checkbox:
@@ -200,6 +218,63 @@ public final class NoteLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
                 break
             }
         }
+        if let title = paragraphs.first, title.length > 0,
+           AttributedCodec.block(of: storage, paragraph: title).type == .heading {
+            drawUnderTitle(title, container: container, origin: origin)
+        }
+    }
+
+    /// The line of when and where under the title, and the rule below it, in
+    /// the room the title's paragraph leaves.
+    private func drawUnderTitle(_ title: NSRange, container: NSTextContainer, origin: CGPoint) {
+        guard let storage = textStorage else { return }
+        var body = title
+        if body.length > 1, (storage.string as NSString).character(at: NSMaxRange(body) - 1) == 0x0A { body.length -= 1 }
+        let glyph = glyphIndexForCharacter(at: NSMaxRange(body) - 1)
+        let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let font = storage.attribute(.font, at: body.location, effectiveRange: nil) as? PlatformFont
+            ?? PlatformFont.systemFont(ofSize: style.bodySize * 2)
+        let bottom = line.minY + location(forGlyphAt: glyph).y - font.descender
+        let left = origin.x + container.lineFragmentPadding
+        let right = origin.x + container.size.width - container.lineFragmentPadding
+        let infoFont = PlatformFont.systemFont(ofSize: style.infoSize)
+        var y = origin.y + bottom + style.infoGap
+        if let info {
+            let date = NSAttributedString(string: info.date + "  ·  ", attributes: [.font: infoFont, .foregroundColor: style.mutedColor])
+            date.draw(at: CGPoint(x: left, y: y))
+            var x = left + date.size().width
+            if !info.folder.isEmpty {
+                let icon = style.infoSize
+                drawFolder(in: CGRect(x: x, y: y + (infoFont.lineHeight - icon) / 2, width: icon, height: icon))
+                x += icon + 4
+                let bold = PlatformFont.systemFont(ofSize: style.infoSize, weight: .semibold)
+                NSAttributedString(string: info.folder, attributes: [.font: bold, .foregroundColor: style.accentColor]).draw(at: CGPoint(x: x, y: y))
+            }
+        }
+        y += infoFont.lineHeight + style.ruleGap
+        style.ruleColor.setFill()
+        bezier(roundedRect: CGRect(x: left, y: y, width: max(right - left, 0), height: 1), radius: 0).fill()
+    }
+
+    /// A folder with its tab, as on the notes list.
+    private func drawFolder(in rect: CGRect) {
+        let s = rect.width / 24
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * s, y: rect.minY + y * s) }
+        let path = bezier()
+        path.move(to: p(3, 19))
+        path.addLine(to: p(3, 6))
+        path.addLine(to: p(9, 6))
+        path.addLine(to: p(11, 8))
+        path.addLine(to: p(21, 8))
+        path.addLine(to: p(21, 19))
+        path.close()
+        path.move(to: p(3, 10.5))
+        path.addLine(to: p(21, 10.5))
+        path.lineWidth = max(1.2, 2 * s)
+        path.lineJoinStyle = .round
+        path.lineCapStyle = .round
+        style.accentColor.setStroke()
+        path.stroke()
     }
 
     /// The whole paragraph, all of its lines, in the text container's coordinates.
@@ -276,12 +351,12 @@ public final class NoteLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
                 tick.addLine(to: CGPoint(x: box.minX + r * 0.88, y: box.midY + r * 0.36))
                 tick.addLine(to: CGPoint(x: box.maxX - r * 0.5, y: box.midY - r * 0.36))
                 tick.lineWidth = max(1.6, size * 0.12)
-                PlatformColor.white.setStroke()
+                style.tickColor.setStroke()
                 tick.stroke()
             } else {
                 let ring = ovalPath(box.insetBy(dx: 0.75, dy: 0.75))
                 ring.lineWidth = 1.3
-                style.secondaryColor.setStroke()
+                style.boxColor.setStroke()
                 ring.stroke()
             }
         default:
@@ -306,7 +381,7 @@ public final class NoteLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         path.lineWidth = 1.8
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        style.secondaryColor.setStroke()
+        style.chevronColor.setStroke()
         path.stroke()
     }
 

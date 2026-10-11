@@ -96,6 +96,13 @@ class MarkdownEditor(
         view.setSelection(0)
     }
 
+    /** When the note was edited and its folder, shown under the title. */
+    fun setInfo(date: String, folder: String) {
+        if (style.info == date to folder) return
+        style.info = date to folder
+        view.invalidate()
+    }
+
     fun toMarkdown(): String = Markdown.toMarkdown(linesOf(text))
 
     /** Adds an empty 2×2 table below the caret's line and opens it for editing. */
@@ -1027,6 +1034,7 @@ class MarkdownEditor(
             } else {
                 val number = numbers.next(marker.block)
                 val span = lineSpanFor(marker)
+                (span as? HeadingLineSpan)?.title = start == 0
                 val changed = marker.number != number || marker.drawn != marker.block
                 marker.number = number
                 marker.drawn = marker.block
@@ -1176,7 +1184,7 @@ class MarkdownEditor(
         Inline.ITALIC -> StyleSpan(Typeface.ITALIC)
         Inline.BOLD -> StyleSpan(Typeface.BOLD)
         Inline.UNDERLINE -> UnderlineSpan()
-        Inline.CODE -> CodeSpan(style.surface)
+        Inline.CODE -> CodeSpan(style.codeBackground, style.codeText)
     }
 
     /** The text of [start, end) with only the spans that make up the note and lie wholly inside it. */

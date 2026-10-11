@@ -10,9 +10,11 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.text.Layout
 import android.text.Spanned
 import android.text.StaticLayout
+import android.text.TextUtils
 import android.text.style.BackgroundColorSpan
 import android.text.TextPaint
 import android.text.style.CharacterStyle
@@ -22,6 +24,7 @@ import android.text.style.LineBackgroundSpan
 import android.text.style.MetricAffectingSpan
 import android.text.style.ReplacementSpan
 import android.text.style.UpdateLayout
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.withClip
 import androidx.core.graphics.withTranslation
@@ -46,9 +49,16 @@ class NoteStyle(context: Context) {
     val quoteIndent = dp(20f).roundToInt()
     val cellPadding = dp(8f).roundToInt()
     val tableGap = dp(8f).roundToInt()
-    val titleGap = dp(10f).roundToInt()
-    val headingBefore = dp(16f).roundToInt()
     val headingAfter = dp(6f).roundToInt()
+
+    /** The room above a heading, by its rank under the title. */
+    fun headingBefore(rank: Int) = dp(if (rank == 1) 22f else if (rank == 2) 18f else 16f).roundToInt()
+
+    /** Below the title: from it to its line of when and where, and from that to the rule. */
+    val infoGap = dp(6f)
+    val ruleGap = dp(12f)
+    /** All the room the title leaves below it, down to the text. */
+    val titleSpace = dp(46f).roundToInt()
 
     val primary = MaterialColors.getColor(context, androidx.appcompat.R.attr.colorPrimary, Color.BLUE)
     val onPrimary = MaterialColors.getColor(context, com.google.android.material.R.attr.colorOnPrimary, Color.WHITE)
@@ -56,14 +66,36 @@ class NoteStyle(context: Context) {
     val outline = MaterialColors.getColor(context, com.google.android.material.R.attr.colorOutlineVariant, Color.LTGRAY)
     val surface = MaterialColors.getColor(context, com.google.android.material.R.attr.colorSurfaceVariant, Color.LTGRAY)
     val background = MaterialColors.getColor(context, android.R.attr.colorBackground, Color.WHITE)
+
+    /** Notes MD's amber, as on the Mac: sections, the folder, ticked boxes. */
+    val accent = ContextCompat.getColor(context, R.color.note_group_icon)
+    val muted = ContextCompat.getColor(context, R.color.note_muted)
+    val chevron = ContextCompat.getColor(context, R.color.note_chevron)
+    val rule = ContextCompat.getColor(context, R.color.note_rule)
+    val quoteBar = ContextCompat.getColor(context, R.color.note_quote_bar)
+    val codeBackground = ContextCompat.getColor(context, R.color.note_code_background)
+    val codeText = ContextCompat.getColor(context, R.color.note_code_text)
+    val box = ContextCompat.getColor(context, R.color.note_box)
+    val tick = ContextCompat.getColor(context, R.color.note_tick)
+    val folderIcon: Drawable = ContextCompat.getDrawable(context, R.drawable.ic_group_folder)!!.mutate().apply { setTint(accent) }
+
+    /** When the note was edited and its folder, shown under the title. */
+    var info: Pair<String, String>? = null
 }
 
-fun headingScale(level: Int) = when (level) {
-    1 -> 1.6f
-    2 -> 1.4f
-    3 -> 1.2f
-    else -> 1.1f
+/**
+ * A heading's rank under the title, which is `#`: 1 for a section (`#` or
+ * `##`), 2 for `###`, 3 for the rest, drawn in small grey capitals.
+ */
+fun headingRank(level: Int) = maxOf(1, minOf(level, 4) - 1)
+
+fun headingScale(level: Int) = when (headingRank(level)) {
+    1 -> 1.45f
+    2 -> 1.2f
+    else -> 0.87f
 }
+
+const val TITLE_SCALE = 2f
 
 /**
  * What a line is, attached to its [MARK]. Deleting the mark with a backspace
@@ -95,30 +127,98 @@ class MarkerSpan(var block: Block) : ReplacementSpan() {
 sealed interface LineSpan
 
 /**
- * A heading, with room above it and a little below; the note's title, the one
- * at the very start, keeps more room below it and none above.
+ * A heading, with room above it and a little below: amber for a section,
+ * black below it, small grey capitals lower still. The note's title, the one
+ * at the very start, is larger and black, with none above it and below it a
+ * line of when and where and a rule, as Notes MD shows a note on the Mac.
  */
-class HeadingLineSpan(private val marker: MarkerSpan, private val style: NoteStyle) : MetricAffectingSpan(), LineHeightSpan, LineSpan {
+class HeadingLineSpan(private val marker: MarkerSpan, private val style: NoteStyle) :
+    MetricAffectingSpan(), LineHeightSpan, LineBackgroundSpan, LineSpan {
+
+    /** Set by the editor: whether this is the first line, the title. */
+    var title = false
+
+    /** The ascent the first line was given, room above included. */
+    private var raised = Int.MIN_VALUE
+
     override fun updateMeasureState(tp: TextPaint) = apply(tp)
-    override fun updateDrawState(tp: TextPaint) = apply(tp)
+    override fun updateDrawState(tp: TextPaint) {
+        apply(tp)
+        if (title) return
+        when (headingRank(marker.block.level)) {
+            1 -> tp.color = style.accent
+            2 -> Unit
+            else -> tp.color = style.muted
+        }
+    }
 
     override fun chooseHeight(text: CharSequence, start: Int, end: Int, spanstartv: Int, lineHeight: Int, fm: Paint.FontMetricsInt) {
         if (text !is Spanned) return
         val spanStart = text.getSpanStart(this)
-        val title = spanStart == 0
-        if (!title && start == spanStart) {
-            fm.ascent -= style.headingBefore
-            fm.top -= style.headingBefore
+        // Right under the title, the rule there already makes room.
+        val underTitle = spanStart == TextUtils.indexOf(text, '\n') + 1
+        val before = if (title || underTitle) 0 else style.headingBefore(headingRank(marker.block.level))
+        if (start == spanStart) {
+            fm.ascent -= before
+            fm.top -= before
+            raised = fm.ascent
+        } else if (before > 0 && fm.ascent == raised) {
+            // The lines after the first are handed the first one's metrics, room above included.
+            fm.ascent += before
+            fm.top += before
         }
         if (end < text.getSpanEnd(this)) return
-        val after = if (title) style.titleGap else style.headingAfter
+        val after = if (title) style.titleSpace else style.headingAfter
         fm.descent += after
         fm.bottom += after
     }
 
     private fun apply(tp: TextPaint) {
-        tp.textSize *= headingScale(marker.block.level)
+        tp.textSize *= if (title) TITLE_SCALE else headingScale(marker.block.level)
         tp.typeface = Typeface.create(tp.typeface, Typeface.BOLD)
+        if (!title && headingRank(marker.block.level) >= 3) {
+            tp.fontFeatureSettings = "smcp, c2sc"
+            tp.letterSpacing = 0.06f
+        }
+    }
+
+    private val infoPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+
+    /** Under the title's last line: the date and the folder, then the rule. */
+    override fun drawBackground(
+        canvas: Canvas, paint: Paint, left: Int, right: Int, top: Int, baseline: Int, bottom: Int,
+        text: CharSequence, start: Int, end: Int, lineNumber: Int,
+    ) {
+        if (!title || text !is Spanned || end < text.getSpanEnd(this)) return
+        val x0 = (left + style.gutter).toFloat()
+        val infoTop = baseline + paint.textSize * TITLE_SCALE * 0.27f + style.infoGap
+        infoPaint.set(paint)
+        infoPaint.textSize = paint.textSize * 0.8f
+        infoPaint.typeface = Typeface.DEFAULT
+        infoPaint.letterSpacing = 0f
+        infoPaint.fontFeatureSettings = null
+        val lineHeight = infoPaint.descent() - infoPaint.ascent()
+        val infoBaseline = infoTop - infoPaint.ascent()
+        style.info?.let { (date, folder) ->
+            infoPaint.color = style.muted
+            val dated = "$date  ·  "
+            canvas.drawText(dated, x0, infoBaseline, infoPaint)
+            var x = x0 + infoPaint.measureText(dated)
+            if (folder.isNotEmpty()) {
+                val size = infoPaint.textSize.roundToInt()
+                val iconTop = (infoTop + (lineHeight - size) / 2).roundToInt()
+                style.folderIcon.setBounds(x.roundToInt(), iconTop, x.roundToInt() + size, iconTop + size)
+                style.folderIcon.draw(canvas)
+                x += size + style.dp(4f)
+                infoPaint.color = style.accent
+                infoPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                canvas.drawText(folder, x, infoBaseline, infoPaint)
+            }
+        }
+        val ruleTop = infoTop + lineHeight + style.ruleGap
+        infoPaint.color = style.rule
+        infoPaint.style = Paint.Style.FILL
+        canvas.drawRect(x0, ruleTop, right.toFloat(), ruleTop + maxOf(1f, style.dp(1f)), infoPaint)
     }
 }
 
@@ -238,7 +338,7 @@ class ListLineSpan(private val marker: MarkerSpan, private val style: NoteStyle)
         if (marker.block.type == BlockType.QUOTE) {
             val color = p.color
             val paintStyle = p.style
-            p.color = style.outline
+            p.color = style.quoteBar
             p.style = Paint.Style.FILL
             c.drawRect(x + style.dp(2f), top.toFloat(), x + style.dp(5f), bottom.toFloat(), p)
             p.color = color
@@ -291,13 +391,13 @@ class ListLineSpan(private val marker: MarkerSpan, private val style: NoteStyle)
         val size = p.textSize * 0.95f
         val l = left + (style.indent - size) / 2 - style.dp(4f)
         val t = cy - size / 2
-        val radius = style.dp(3f)
-        p.color = style.primary
+        val radius = size / 2
+        p.color = style.accent
         p.strokeWidth = style.dp(2f)
         if (marker.block.checked) {
             p.style = Paint.Style.FILL
             c.drawRoundRect(l, t, l + size, t + size, radius, radius, p)
-            p.color = style.onPrimary
+            p.color = style.tick
             p.style = Paint.Style.STROKE
             p.strokeCap = Paint.Cap.ROUND
             val check = Path().apply {
@@ -308,6 +408,8 @@ class ListLineSpan(private val marker: MarkerSpan, private val style: NoteStyle)
             c.drawPath(check, p)
             p.strokeCap = Paint.Cap.BUTT
         } else {
+            p.color = style.box
+            p.strokeWidth = style.dp(1.4f)
             p.style = Paint.Style.STROKE
             val inset = p.strokeWidth / 2
             c.drawRoundRect(l + inset, t + inset, l + size - inset, t + size - inset, radius, radius, p)
@@ -333,29 +435,38 @@ class GutterSpan(private val style: NoteStyle) : LeadingMarginSpan {
         val cx = x + style.gutter / 2f
         val cy = baseline - p.textSize * headingScale(marker.block.level) * 0.35f
         val half = style.dp(5f)
+        // A chevron, as on the Mac: right while the section is folded, down while it shows.
         val arrow = Path().apply {
             if (marker.hidden != null) {
-                moveTo(cx - half * 0.6f, cy - half)
-                lineTo(cx + half * 0.8f, cy)
-                lineTo(cx - half * 0.6f, cy + half)
+                moveTo(cx - half * 0.35f, cy - half * 0.75f)
+                lineTo(cx + half * 0.45f, cy)
+                lineTo(cx - half * 0.35f, cy + half * 0.75f)
             } else {
-                moveTo(cx - half, cy - half * 0.6f)
-                lineTo(cx + half, cy - half * 0.6f)
-                lineTo(cx, cy + half * 0.8f)
+                moveTo(cx - half * 0.75f, cy - half * 0.35f)
+                lineTo(cx, cy + half * 0.45f)
+                lineTo(cx + half * 0.75f, cy - half * 0.35f)
             }
-            close()
         }
         val color = p.color
         val paintStyle = p.style
-        p.color = style.dimmed
-        p.style = Paint.Style.FILL
+        val stroke = p.strokeWidth
+        val cap = p.strokeCap
+        val join = p.strokeJoin
+        p.color = style.chevron
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = style.dp(1.8f)
+        p.strokeCap = Paint.Cap.ROUND
+        p.strokeJoin = Paint.Join.ROUND
         c.drawPath(arrow, p)
         p.color = color
         p.style = paintStyle
+        p.strokeWidth = stroke
+        p.strokeCap = cap
+        p.strokeJoin = join
     }
 }
 
-class CodeSpan(private val background: Int) : MetricAffectingSpan() {
+class CodeSpan(private val background: Int, private val color: Int) : MetricAffectingSpan() {
     override fun updateMeasureState(tp: TextPaint) {
         tp.typeface = Typeface.create(Typeface.MONOSPACE, tp.typeface?.style ?: Typeface.NORMAL)
     }
@@ -363,6 +474,7 @@ class CodeSpan(private val background: Int) : MetricAffectingSpan() {
     override fun updateDrawState(tp: TextPaint) {
         updateMeasureState(tp)
         tp.bgColor = background
+        tp.color = color
     }
 }
 
