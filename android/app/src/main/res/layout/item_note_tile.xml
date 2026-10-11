@@ -4,10 +4,10 @@
 <com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="200dp"
-    android:layout_margin="5dp"
+    android:layout_height="150dp"
+    android:layout_margin="4dp"
     app:cardBackgroundColor="?attr/colorSurfaceContainerLow"
-    app:cardCornerRadius="14dp"
+    app:cardCornerRadius="12dp"
     app:cardElevation="0dp"
     app:strokeColor="?attr/colorOutlineVariant"
     app:strokeWidth="1dp">
@@ -20,7 +20,7 @@
         <ImageView
             android:id="@+id/thumb"
             android:layout_width="match_parent"
-            android:layout_height="84dp"
+            android:layout_height="56dp"
             android:importantForAccessibility="no"
             android:scaleType="centerCrop"
             android:visibility="gone" />
@@ -30,9 +30,9 @@
             android:layout_height="0dp"
             android:layout_weight="1"
             android:orientation="vertical"
-            android:paddingHorizontal="12dp"
-            android:paddingTop="10dp"
-            android:paddingBottom="10dp">
+            android:paddingHorizontal="9dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp">
 
             <TextView
                 android:id="@+id/title"
@@ -40,7 +40,7 @@
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
                 android:maxLines="2"
-                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
                 android:textStyle="bold" />
 
             <TextView
@@ -56,10 +56,10 @@
                 android:id="@+id/preview"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="4dp"
                 android:layout_weight="1"
                 android:ellipsize="end"
-                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
                 android:textColor="?attr/colorOnSurfaceVariant" />
         </LinearLayout>
     </LinearLayout>

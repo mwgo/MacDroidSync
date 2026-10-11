@@ -47,7 +47,8 @@ struct NoteDetailView: View {
                     onChange: changed,
                     onObjectTap: { attachment, location in opened = OpenedObject(attachment: attachment, location: location) }
                 )
-                .ignoresSafeArea(.container, edges: .bottom)
+                // Under the bars: the note scrolls on beneath the glass, which blurs it at its edge.
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -210,6 +211,7 @@ struct NoteDetailView: View {
         } else {
             #if os(macOS)
             ToolbarItemGroup(placement: .primaryAction) {
+                foldAllButton
                 FormatMenu()
                 Button { editor.toggleBlock(.checkbox) } label: { Label("Checklist", systemImage: "checklist") }
                 Button { insertTable() } label: { Label("Table", systemImage: "tablecells") }
@@ -217,6 +219,28 @@ struct NoteDetailView: View {
                 moreMenu
             }
             #else
+            if isPad {
+                // iPad: everything at the top, as Notes has it there.
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    foldAllButton
+                    FormatMenu()
+                    Button { editor.toggleBlock(.checkbox) } label: { Label("Checklist", systemImage: "checklist") }
+                    Button { insertTable() } label: { Label("Table", systemImage: "tablecells") }
+                    attachMenu
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if let note {
+                        Button { Task { await model.setPinned(noteId, !note.pinned) } } label: {
+                            Label(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin")
+                        }
+                    }
+                    moreMenu
+                    Button { Task { await model.newNote(in: note?.folder) } } label: { Label("New Note", systemImage: "square.and.pencil") }
+                    if editor.isEditing {
+                        Button("Done") { editor.endEditing() }.bold()
+                    }
+                }
+            } else {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if let note {
                     Button { Task { await model.setPinned(noteId, !note.pinned) } } label: {
@@ -249,8 +273,19 @@ struct NoteDetailView: View {
                 Button { editor.outdent() } label: { Image(systemName: "decrease.indent") }
                 Button { editor.indent() } label: { Image(systemName: "increase.indent") }
             }
+            }
             #endif
         }
+    }
+
+    /// Folds every heading of the note, or unfolds them all, as on the phone.
+    private var foldAllButton: some View {
+        Button { editor.toggleAllFolds() } label: {
+            Label(editor.allFolded ? "Expand All Headings" : "Collapse All Headings",
+                  systemImage: editor.allFolded ? "arrow.up.and.line.horizontal.and.arrow.down" : "arrow.down.and.line.horizontal.and.arrow.up")
+        }
+        .help(editor.allFolded ? "Expand All Headings" : "Collapse All Headings")
+        .disabled(!editor.canFoldAll)
     }
 
     private var attachMenu: some View {

@@ -6,17 +6,25 @@ import SwiftUI
 struct NotesMDApp: App {
     @StateObject private var model = NotesModel()
     @StateObject private var editor = EditorController()
+    #if os(macOS)
+    /// Light, dark, or as the system is; the whole app, menus and windows alike.
+    @AppStorage("appearance") private var appearance = Appearance.system.rawValue
+    #endif
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(model)
                 .environmentObject(editor)
-                .tint(.yellow)
+                #if os(macOS)
+                .onAppear { Appearance(rawValue: appearance)?.apply() }
+                .onChange(of: appearance) { _, value in Appearance(rawValue: value)?.apply() }
+                #endif
         }
         #if os(macOS)
         .defaultSize(width: 1100, height: 720)
         .commands {
+            SidebarCommands()
             CommandGroup(replacing: .newItem) {
                 Button("New Note") { Task { await model.newNote() } }
                     .keyboardShortcut("n")
@@ -44,6 +52,13 @@ struct NotesMDApp: App {
                 Button("Indent") { editor.indent() }.keyboardShortcut("]")
                 Button("Outdent") { editor.outdent() }.keyboardShortcut("[")
             }
+            CommandGroup(after: .sidebar) {
+                Picker("Appearance", selection: $appearance) {
+                    ForEach(Appearance.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .pickerStyle(.inline)
+                Divider()
+            }
             CommandGroup(after: .importExport) {
                 Button("Import from Notes…") { NotificationCenter.default.post(name: .importFromNotes, object: nil) }
                     .disabled(model.store == nil)
@@ -62,3 +77,29 @@ extension Notification.Name {
     static let importFromNotes = Notification.Name("NotesMD.importFromNotes")
     static let exportToNotes = Notification.Name("NotesMD.exportToNotes")
 }
+
+#if os(macOS)
+import AppKit
+
+/// How the app looks: as the system does, or always light or dark.
+enum Appearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "Use System Appearance"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    func apply() {
+        switch self {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+}
+#endif

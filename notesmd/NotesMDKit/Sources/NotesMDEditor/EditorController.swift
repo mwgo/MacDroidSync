@@ -17,6 +17,9 @@ public final class EditorController: ObservableObject {
     @Published public private(set) var tasks: (all: Int, open: Int) = (0, 0)
     /// Whether the caret is in the note's first line, its title.
     @Published public private(set) var inTitle = false
+    /// Whether the note has headings to fold, and whether they all are.
+    @Published public private(set) var canFoldAll = false
+    @Published public private(set) var allFolded = false
 
     weak var view: NoteTextView?
 
@@ -31,6 +34,8 @@ public final class EditorController: ObservableObject {
         block = editing.block(at: selection.location)
         tasks = editing.tasks()
         inTitle = editing.paragraph(at: selection.location).location == 0
+        canFoldAll = editing.canFoldAll
+        allFolded = editing.allFolded
         isEditing = view.isEditingText
     }
 
@@ -51,6 +56,9 @@ public final class EditorController: ObservableObject {
 
     public func endEditing() { view?.stopEditing() }
 
+    /// Folds every heading, or unfolds them all once they are.
+    public func toggleAllFolds() { view?.fold { $0.toggleAllFolds() } }
+
     /// The note as it is now.
     public func markdown() -> String? { editing?.markdown() }
 }
@@ -64,6 +72,11 @@ protocol NoteTextViewHost: AnyObject {
 }
 
 #if os(macOS)
+/// Top-down, as the text view is.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 public final class NoteTextView: NSTextView {
     public let editing: NoteEditing
     weak var host: NoteTextViewHost?
@@ -77,7 +90,7 @@ public final class NoteTextView: NSTextView {
         storage.addLayoutManager(layout)
         let container = NSTextContainer(size: CGSize(width: 600, height: CGFloat.greatestFiniteMagnitude))
         container.widthTracksTextView = true
-        container.lineFragmentPadding = 6
+        container.lineFragmentPadding = EditorStyle.gutter
         layout.addTextContainer(container)
         editing = NoteEditing(storage: storage, style: style, maker: AttachmentMaker(style: style, resolve: resolve))
         super.init(frame: CGRect(x: 0, y: 0, width: 600, height: 400), textContainer: container)
@@ -89,7 +102,7 @@ public final class NoteTextView: NSTextView {
         isAutomaticDashSubstitutionEnabled = false
         isAutomaticTextReplacementEnabled = false
         smartInsertDeleteEnabled = false
-        textContainerInset = CGSize(width: 22, height: 18)
+        textContainerInset = CGSize(width: 28 - EditorStyle.gutter, height: 18)
         drawsBackground = true
         backgroundColor = .textBackgroundColor
         isVerticallyResizable = true
@@ -117,6 +130,7 @@ public final class NoteTextView: NSTextView {
         guard !applyingOwnChange else { return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString) }
         let replacement = replacementString ?? ""
         if replacementString != nil {
+            editing.unfold(forChange: affectedCharRange, replacement: replacement)
             let before = snapshot()
             if let selection = editing.intercept(range: affectedCharRange, replacement: replacement) {
                 registerUndo(before)
@@ -157,6 +171,64 @@ public final class NoteTextView: NSTextView {
         }
     }
 
+    /// Folding or unfolding: no change to the note, so nothing to save or
+    /// undo. What is below `heading` slides over its section or away from it;
+    /// with no heading, everything the fold changed fades from before to after.
+    func fold(around heading: NSRange? = nil, _ action: (NoteEditing) -> Void) {
+        guard let layout = layoutManager as? NoteLayoutManager, let container = textContainer else { return action(editing) }
+        layout.ensureLayout(for: container)
+        let before = layout.usedRect(for: container).height
+        let visible = visibleRect
+        let top = heading.flatMap { layout.bottom(ofParagraph: $0) }.map { $0 + textContainerOrigin.y } ?? visible.minY
+        let region = CGRect(x: visible.minX, y: max(top, visible.minY), width: visible.width, height: visible.maxY - max(top, visible.minY))
+        let old = region.height > 1 ? image(of: region) : nil
+
+        action(editing)
+        let caret = selectedRange()
+        if caret.length == 0 { setSelectedRange(NSRange(location: editing.visibleCaret(caret.location, forward: false), length: 0)) }
+        layout.ensureLayout(for: container)
+        needsDisplay = true
+        controller?.refresh()
+
+        let delta = layout.usedRect(for: container).height - before
+        guard let old, abs(delta) > 0.5, let new = image(of: region) else { return }
+        let overlay = FlippedView(frame: region)
+        overlay.wantsLayer = true
+        overlay.layer?.masksToBounds = true
+        let bounds = CGRect(origin: .zero, size: region.size)
+        let fade = heading == nil
+        let folding = delta < 0
+        let under = NSImageView(frame: bounds)
+        let over = NSImageView(frame: bounds)
+        for (view, image) in [(under, fade || !folding ? new : old), (over, fade || !folding ? old : new)] {
+            view.image = image
+            view.imageScaling = .scaleAxesIndependently
+            overlay.addSubview(view)
+        }
+        if !fade, folding { over.setFrameOrigin(CGPoint(x: 0, y: -delta)) }
+        addSubview(overlay)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            if fade {
+                over.animator().alphaValue = 0
+            } else {
+                over.animator().setFrameOrigin(CGPoint(x: 0, y: folding ? 0 : delta))
+            }
+        } completionHandler: {
+            overlay.removeFromSuperview()
+        }
+    }
+
+    /// The view as drawn now within `rect`.
+    private func image(of rect: CGRect) -> NSImage? {
+        guard let rep = bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+        cacheDisplay(in: rect, to: rep)
+        let image = NSImage(size: rect.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
     private func finish(_ selection: NSRange) {
         setSelectedRange(NSRange(location: min(selection.location, textStorage?.length ?? 0), length: selection.length))
         typingAttributes = editing.typingAttributes(at: selectedRange().location)
@@ -195,6 +267,13 @@ public final class NoteTextView: NSTextView {
     }
 
     public override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
+        let previous = selectedRange().location
+        var ranges = ranges
+        // The caret steps over a folded section rather than into it.
+        if ranges.count == 1, let caret = ranges.first?.rangeValue, caret.length == 0 {
+            let visible = editing.visibleCaret(caret.location, forward: caret.location > previous)
+            if visible != caret.location { ranges = [NSValue(range: NSRange(location: visible, length: 0))] }
+        }
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
         if !stillSelectingFlag {
             if editing.typingInline != nil, selectedRange().length > 0 { editing.typingInline = nil }
@@ -223,11 +302,15 @@ public final class NoteTextView: NSTextView {
         super.mouseDown(with: event)
     }
 
-    /// A box of a checklist ticks; a picture, table or file opens.
+    /// The arrow of a heading folds it; a box of a checklist ticks; a picture, table or file opens.
     private func handleTap(at point: CGPoint) -> Bool {
         guard let layout = layoutManager as? NoteLayoutManager, let container = textContainer else { return false }
         let inContainer = CGPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
-        for p in editing.paragraphs {
+        if let heading = editing.foldArrow(at: inContainer) {
+            fold(around: heading) { $0.toggleFold(paragraph: heading) }
+            return true
+        }
+        for p in editing.paragraphs where !layout.isHidden(p.location) {
             let block = editing.block(of: p)
             if block.type == .checkbox, let marker = layout.markerRect(ofParagraph: p, block: block), marker.insetBy(dx: -4, dy: -2).contains(inContainer) {
                 perform { editing, _ in editing.toggleCheckbox(paragraph: p) }
@@ -281,15 +364,21 @@ public final class NoteTextView: UITextView, UITextViewDelegate {
         storage.addLayoutManager(layout)
         let container = NSTextContainer(size: CGSize(width: 400, height: CGFloat.greatestFiniteMagnitude))
         container.widthTracksTextView = true
-        container.lineFragmentPadding = 6
+        container.lineFragmentPadding = EditorStyle.gutter
         layout.addTextContainer(container)
         editing = NoteEditing(storage: storage, style: style, maker: AttachmentMaker(style: style, resolve: resolve))
         super.init(frame: .zero, textContainer: container)
         editing.layout = layout
         delegate = self
         alwaysBounceVertical = true
+        // Its text starts below the bars it reaches under, and scrolls on beneath them.
+        contentInsetAdjustmentBehavior = .always
+        if #available(iOS 26.0, *) {
+            topEdgeEffect.style = .soft
+            bottomEdgeEffect.style = .soft
+        }
         keyboardDismissMode = .interactive
-        textContainerInset = UIEdgeInsets(top: 12, left: 14, bottom: 40, right: 14)
+        textContainerInset = UIEdgeInsets(top: 12, left: 20 - EditorStyle.gutter, bottom: 40, right: 20 - EditorStyle.gutter)
         smartQuotesType = .no
         smartDashesType = .no
         smartInsertDeleteType = .no
@@ -304,6 +393,22 @@ public final class NoteTextView: UITextView, UITextViewDelegate {
         fatalError("not coded")
     }
 
+    /// The bars of the screen learn that this is what scrolls under them, so
+    /// that their glass reacts to it, as it does over a list.
+    public override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        var responder: UIResponder? = self
+        while let next = responder?.next {
+            if let controller = next as? UIViewController {
+                controller.setContentScrollView(self, for: .top)
+                controller.setContentScrollView(self, for: .bottom)
+                break
+            }
+            responder = next
+        }
+    }
+
     var selection: NSRange { selectedRange }
 
     var isEditingText: Bool { isFirstResponder }
@@ -312,6 +417,7 @@ public final class NoteTextView: UITextView, UITextViewDelegate {
 
     public func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
         guard !applyingOwnChange else { return true }
+        editing.unfold(forChange: range, replacement: text)
         let before = snapshot()
         if let selection = editing.intercept(range: range, replacement: text) {
             registerUndo(before)
@@ -334,7 +440,18 @@ public final class NoteTextView: UITextView, UITextViewDelegate {
         controller?.refresh()
     }
 
+    /// Where the caret was, to tell which way it went past a folded section.
+    private var lastCaret = 0
+
     public func textViewDidChangeSelection(_ textView: UITextView) {
+        if selectedRange.length == 0 {
+            let visible = editing.visibleCaret(selectedRange.location, forward: selectedRange.location > lastCaret)
+            lastCaret = visible
+            if visible != selectedRange.location {
+                selectedRange = NSRange(location: visible, length: 0)
+                return
+            }
+        }
         if editing.typingInline != nil, selectedRange.length > 0 { editing.typingInline = nil }
         typingAttributes = editing.typingAttributes(at: selectedRange.location)
         controller?.refresh()
@@ -354,6 +471,51 @@ public final class NoteTextView: UITextView, UITextViewDelegate {
         perform(selecting: false) { editing, selection in
             action(editing, selection)
             return nil
+        }
+    }
+
+    /// As on the Mac: what is below `heading` slides over its section or away
+    /// from it; with no heading, the fold fades from before to after.
+    func fold(around heading: NSRange? = nil, _ action: (NoteEditing) -> Void) {
+        let layout = self.layoutManager
+        layout.ensureLayout(for: textContainer)
+        let before = layout.usedRect(for: textContainer).height
+        let visible = bounds
+        let top = heading.flatMap { (layout as? NoteLayoutManager)?.bottom(ofParagraph: $0) }.map { $0 + textContainerInset.top } ?? visible.minY
+        let region = CGRect(x: visible.minX, y: max(top, visible.minY), width: visible.width, height: visible.maxY - max(top, visible.minY))
+        let old = region.height > 1 ? resizableSnapshotView(from: region, afterScreenUpdates: false, withCapInsets: .zero) : nil
+
+        action(editing)
+        if selectedRange.length == 0 { selectedRange = NSRange(location: editing.visibleCaret(selectedRange.location, forward: false), length: 0) }
+        layout.ensureLayout(for: textContainer)
+        setNeedsDisplay()
+        controller?.refresh()
+
+        let delta = layout.usedRect(for: textContainer).height - before
+        guard let old, abs(delta) > 0.5, let new = resizableSnapshotView(from: region, afterScreenUpdates: true, withCapInsets: .zero) else { return }
+        let overlay = UIView(frame: region)
+        overlay.clipsToBounds = true
+        overlay.isUserInteractionEnabled = false
+        overlay.backgroundColor = backgroundColor
+        let fade = heading == nil
+        let folding = delta < 0
+        let under = fade || !folding ? new : old
+        let over = fade || !folding ? old : new
+        for view in [under, over] {
+            view.frame = CGRect(origin: .zero, size: region.size)
+            overlay.addSubview(view)
+        }
+        if !fade, folding { over.frame.origin.y = -delta }
+        over.backgroundColor = backgroundColor
+        addSubview(overlay)
+        UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseInOut]) {
+            if fade {
+                over.alpha = 0
+            } else {
+                over.frame.origin.y = folding ? 0 : delta
+            }
+        } completion: { _ in
+            overlay.removeFromSuperview()
         }
     }
 
@@ -400,7 +562,11 @@ public final class NoteTextView: UITextView, UITextViewDelegate {
     private func handleTap(at point: CGPoint) -> Bool {
         guard let layout = layoutManager as? NoteLayoutManager else { return false }
         let inContainer = CGPoint(x: point.x - textContainerInset.left, y: point.y - textContainerInset.top)
-        for p in editing.paragraphs {
+        if let heading = editing.foldArrow(at: inContainer) {
+            fold(around: heading) { $0.toggleFold(paragraph: heading) }
+            return true
+        }
+        for p in editing.paragraphs where !layout.isHidden(p.location) {
             let block = editing.block(of: p)
             if block.type == .checkbox, let marker = layout.markerRect(ofParagraph: p, block: block), marker.insetBy(dx: -8, dy: -4).contains(inContainer) {
                 perform { editing, _ in editing.toggleCheckbox(paragraph: p) }
@@ -450,7 +616,8 @@ extension NoteTextView: UIGestureRecognizerDelegate {
         let point = gestureRecognizer.location(in: self)
         guard let layout = layoutManager as? NoteLayoutManager else { return false }
         let inContainer = CGPoint(x: point.x - textContainerInset.left, y: point.y - textContainerInset.top)
-        for p in editing.paragraphs {
+        if editing.foldArrow(at: inContainer) != nil { return true }
+        for p in editing.paragraphs where !layout.isHidden(p.location) {
             let block = editing.block(of: p)
             if block.type == .checkbox, let marker = layout.markerRect(ofParagraph: p, block: block), marker.insetBy(dx: -8, dy: -4).contains(inContainer) {
                 return true

@@ -91,7 +91,8 @@ class NotesListAdapter(
         shownWords = words
         shownSnippets = snippets
         rows = groups.flatMap { group ->
-            listOf(Row.Header(group)) + if (group.folder.collapsed && !searching) emptyList() else group.notes.map { Row.Note(it, group.folder.name) }
+            val folded = (group.folder.collapsed || foldedForDrag) && !searching
+            listOf(Row.Header(group)) + if (folded) emptyList() else group.notes.map { Row.Note(it, group.folder.name) }
         }
         // Only what changed is told, so the list animates it: a folder folding
         // takes its notes away while the folders below it slide up.
@@ -119,6 +120,12 @@ class NotesListAdapter(
     /** The group, by folder name, that the row at [position] belongs to. */
     fun folderAt(position: Int): String? = rows.getOrNull(position)?.folder
 
+    /**
+     * Every group shows only its header while a note is dragged, so that each
+     * is in reach; the folds of the groups themselves stay as they are.
+     */
+    var foldedForDrag = false
+
     /** The group whose header is lit as where a dragged note would go, if any. */
     var dropTarget: String? = null
         set(value) {
@@ -128,7 +135,7 @@ class NotesListAdapter(
             rows.forEachIndexed { i, row -> if (row is Row.Header && (row.folder == old || row.folder == value)) notifyItemChanged(i, DROP) }
         }
 
-    /** Headers take the whole row, and so do the rows of a list; tiles share it two by two. */
+    /** Headers take the whole row, and so do the rows of a list; tiles share it three by three. */
     val spans = object : GridLayoutManager.SpanSizeLookup() {
         override fun getSpanSize(position: Int) = if (rows[position] is Row.Header || asList) COLUMNS else 1
     }
@@ -186,8 +193,16 @@ class NotesListAdapter(
             }
             // All the notes together fold no more than a folder of one note would help.
             b.chevron.isVisible = !group.isAll
+            b.icon.setImageResource(
+                when {
+                    group.isPinned -> R.drawable.ic_tool_pin
+                    group.isAll -> R.drawable.ic_group_all
+                    group.isTrash -> R.drawable.ic_tool_delete
+                    else -> R.drawable.ic_group_folder
+                },
+            )
             b.count.text = group.notes.size.toString()
-            val rotation = if (folder.collapsed && !searching) -90f else 0f
+            val rotation = if ((folder.collapsed || foldedForDrag) && !searching) -90f else 0f
             if (animate) b.chevron.animate().rotation(rotation).setDuration(FOLD_TURN).start() else b.chevron.rotation = rotation
             // The pinned notes belong to folders of their own; a new one goes into a folder.
             val realFolder = !group.isPinned && !group.isAll && !group.isTrash
@@ -279,7 +294,7 @@ class NotesListAdapter(
     }
 
     companion object {
-        const val COLUMNS = 2
+        const val COLUMNS = 3
         private const val FOLD = "fold"
         private const val DROP = "drop"
         private const val FOLD_TURN = 200L

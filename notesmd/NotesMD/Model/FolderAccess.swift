@@ -65,3 +65,8 @@ enum FolderAccess {
         UserDefaults.standard.removeObject(forKey: bookmarkKey)
     }
 }
+
+#if os(iOS)
+/// iPad, where the note's bar at the top holds every command, rather than iPhone.
+var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+#endif

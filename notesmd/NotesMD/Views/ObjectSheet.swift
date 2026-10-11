@@ -70,7 +70,7 @@ struct TableEditor: View {
                         Color.clear.frame(width: 28, height: 24)
                         ForEach(0..<columns, id: \.self) { column in
                             Button { selectedColumn = selectedColumn == column ? nil : column; selectedRow = nil } label: {
-                                Capsule().fill(selectedColumn == column ? Color.yellow : Color.secondary.opacity(0.3)).frame(width: 28, height: 6)
+                                Capsule().fill(selectedColumn == column ? Color.accentColor : Color.secondary.opacity(0.3)).frame(width: 28, height: 6)
                             }
                             .buttonStyle(.plain)
                             .frame(height: 24)
@@ -79,7 +79,7 @@ struct TableEditor: View {
                     ForEach(rows.indices, id: \.self) { row in
                         GridRow {
                             Button { selectedRow = selectedRow == row ? nil : row; selectedColumn = nil } label: {
-                                Capsule().fill(selectedRow == row ? Color.yellow : Color.secondary.opacity(0.3)).frame(width: 6, height: 28)
+                                Capsule().fill(selectedRow == row ? Color.accentColor : Color.secondary.opacity(0.3)).frame(width: 6, height: 28)
                             }
                             .buttonStyle(.plain)
                             .frame(width: 28)
@@ -88,7 +88,7 @@ struct TableEditor: View {
                                     .textFieldStyle(.plain)
                                     .padding(8)
                                     .frame(minWidth: 120, maxWidth: 260, minHeight: 36, alignment: .topLeading)
-                                    .background(selectedRow == row || selectedColumn == column ? Color.yellow.opacity(0.15) : Color.clear)
+                                    .background(selectedRow == row || selectedColumn == column ? Color.accentColor.opacity(0.15) : Color.clear)
                                     .border(Color.secondary.opacity(0.35), width: 0.5)
                             }
                         }

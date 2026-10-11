@@ -118,11 +118,11 @@
     <string name="notes_app_name">MD Notes</string>
     <string name="notes_title">Note</string>
     <string name="notes_default_folder">Notes</string>
-    <string name="notes_trash">Recently Deleted</string>
+    <string name="notes_trash">Deleted</string>
     <string name="note_restore">Restore</string>
     <string name="note_delete_forever">Delete forever</string>
     <string name="note_delete_forever_confirm">Delete this note for good? This cannot be undone.</string>
-    <string name="note_in_trash">In Recently Deleted. Restore it to edit.</string>
+    <string name="note_in_trash">In Deleted. Restore it to edit.</string>
     <string name="note_share_label">New note</string>
     <string name="note_share_nothing">Nothing to put in a note</string>
     <string name="notes_pinned">Pinned</string>

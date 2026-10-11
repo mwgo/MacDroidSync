@@ -11,4 +11,6 @@
     <color name="note_edited">#9DB4F5</color>
     <!-- The dot before the title of a note not yet synced with the Mac. -->
     <color name="note_unsynced">#FFB06B</color>
+    <!-- The icons of the groups on the notes list, the amber of Notes MD on the Mac. -->
+    <color name="note_group_icon">#F0973A</color>
 </resources>

@@ -162,6 +162,12 @@ class NotesListActivity : ScreenActivity() {
                 dragged = id
                 dragY = event.y
                 binding.list.postOnAnimation(dragScroll)
+                // Every group folded to its header, so that each one is in reach.
+                binding.list.post {
+                    if (dragged == null) return@post
+                    adapter.foldedForDrag = true
+                    refresh()
+                }
             }
             DragEvent.ACTION_DRAG_LOCATION -> {
                 dragY = event.y
@@ -173,6 +179,7 @@ class NotesListActivity : ScreenActivity() {
                 dragY = -1f
                 dragged = null
                 adapter.dropTarget = null
+                adapter.foldedForDrag = false
                 refresh()
             }
         }
@@ -189,8 +196,7 @@ class NotesListActivity : ScreenActivity() {
             ?: (0 until list.childCount).map(list::getChildAt).lastOrNull { it.top <= y }
             ?: return null
         val target = adapter.folderAt(list.getChildAdapterPosition(child)) ?: return null
-        // The trash is not somewhere to drop a note; deleting asks first.
-        return target.takeIf { it != NotesStore.TRASH && it != dragged?.let(::groupOf) }
+        return target.takeIf { it != dragged?.let(::groupOf) }
     }
 
     /** The group a note is shown in now. */
@@ -207,13 +213,19 @@ class NotesListActivity : ScreenActivity() {
     /**
      * Onto the pinned group a note is pinned; onto all the notes it is
      * unpinned; into a folder it moves there and is unpinned, as it would not
-     * show in that folder otherwise.
+     * show in that folder otherwise; onto the deleted notes it is deleted.
      */
     private fun drop(id: String, target: String) {
         val note = store.note(id) ?: return
+        // The group the note goes into opens, to show it there.
+        if (target != NotesStore.ALL) store.setCollapsed(target, false)
         when (target) {
             NotesStore.PINNED -> store.setPinned(id, true)
             NotesStore.ALL -> store.setPinned(id, false)
+            NotesStore.TRASH -> {
+                store.delete(id)
+                Toast.makeText(this, getString(R.string.note_moved, getString(R.string.notes_trash)), Toast.LENGTH_SHORT).show()
+            }
             else -> {
                 if (note.pinned) store.setPinned(id, false)
                 store.move(id, target)
@@ -325,7 +337,7 @@ class NotesListActivity : ScreenActivity() {
         val words = NoteSearch.words(query)
         if (words.isEmpty()) {
             binding.noResults.isVisible = false
-            adapter.show(store.groups(byFolder()))
+            adapter.show(store.groups(byFolder(), withTrash = adapter.foldedForDrag))
             return
         }
         val snippets = mutableMapOf<String, String>()

@@ -360,10 +360,11 @@ class NotesStore(private val root: File, private val clock: () -> Long = System:
     /**
      * The list as it is shown: the pinned notes first when there are any,
      * then every folder in order, or with [byFolder] off all the other notes
-     * together in one group.
+     * together in one group. The deleted notes come last, when there are
+     * any, or with [withTrash] always, as somewhere to drop a note.
      */
     @Synchronized
-    fun groups(byFolder: Boolean = true): List<Group> {
+    fun groups(byFolder: Boolean = true, withTrash: Boolean = false): List<Group> {
         val groups = mutableListOf<Group>()
         val live = noteList.filter { it.deleted == null }
         val pinnedNotes = live.filter { it.pinned }
@@ -375,7 +376,7 @@ class NotesStore(private val root: File, private val clock: () -> Long = System:
             for (folder in folderList) groups += Group(folder, sorted(live.filter { !it.pinned && it.folder == folder.name }))
         }
         val trashed = noteList.filter { it.deleted != null }
-        if (trashed.isNotEmpty()) groups += Group(trash, trashed.sortedByDescending { it.deleted })
+        if (trashed.isNotEmpty() || withTrash) groups += Group(trash, trashed.sortedByDescending { it.deleted })
         return groups
     }
 

@@ -9,6 +9,9 @@ import UIKit
 /// How a note looks, after Notes: a large bold title, bold headings, the
 /// text in the system font, monospace for code.
 public struct EditorStyle {
+    /// The text container's padding each side, which holds the arrows that fold headings.
+    public static let gutter: CGFloat = 18
+
     public var bodySize: CGFloat
     /// Per nesting level of a list.
     public var listIndent: CGFloat

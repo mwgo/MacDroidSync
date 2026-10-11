@@ -26,6 +26,8 @@ extension NSAttributedString.Key {
     public static let mdCode = NSAttributedString.Key("md.code")
     /// On the one character of a table, picture or file: its Markdown, as it is written.
     public static let mdObject = NSAttributedString.Key("md.object")
+    /// On the first character of a heading whose section is folded away. Not part of the Markdown.
+    public static let mdFolded = NSAttributedString.Key("md.folded")
 }
 
 extension InlineKind {

@@ -1,3 +1,4 @@
+import ImageIO
 import NotesMDKit
 import SwiftUI
 
@@ -5,6 +6,11 @@ import SwiftUI
 struct NoteListView: View {
     @EnvironmentObject private var model: NotesModel
     @State private var moving: String?
+    /// The group a dragged note is over.
+    @State private var dropTarget: String?
+    /// Whether a dragged note is anywhere over the list, or over one of its groups.
+    @State private var listTargeted = false
+    @State private var hoveredGroup: String?
 
     var body: some View {
         Group {
@@ -14,6 +20,13 @@ struct NoteListView: View {
                 list
             }
         }
+        // The whole list hears a drag pass over it, so that one let go of
+        // elsewhere, or given up, is known to have ended.
+        .onDrop(of: [.plainText], isTargeted: $listTargeted) { _ in
+            model.endDrag()
+            return false
+        }
+        .onChange(of: listTargeted) { _, over in model.dragHover(over || hoveredGroup != nil) }
         .navigationTitle(model.scopeTitle)
         .searchable(text: $model.search, prompt: "Search")
         .overlay {
@@ -24,10 +37,15 @@ struct NoteListView: View {
         }
         .toolbar {
             #if os(iOS)
+            ToolbarItem(placement: .topBarTrailing) { foldAllButton }
             ToolbarItem(placement: .topBarTrailing) { viewMenu }
-            ToolbarItem(placement: .bottomBar) { Spacer() }
-            ToolbarItem(placement: .bottomBar) { newNoteButton }
+            // On iPad a new note is made from the note's own bar; on iPhone from here.
+            if !isPad {
+                ToolbarItem(placement: .bottomBar) { Spacer() }
+                ToolbarItem(placement: .bottomBar) { newNoteButton }
+            }
             #else
+            ToolbarItem { foldAllButton }
             ToolbarItem { viewMenu }
             ToolbarItem { newNoteButton }
             #endif
@@ -35,6 +53,120 @@ struct NoteListView: View {
         .sheet(item: Binding(get: { moving.map(IdBox.init) }, set: { moving = $0?.id })) { box in
             MoveSheet(noteId: box.id)
         }
+    }
+
+    /// Folds every group, or unfolds them all.
+    private var foldAllButton: some View {
+        Button {
+            withAnimation(.snappy) { model.toggleAllCollapsed() }
+        } label: {
+            Label(model.allCollapsed ? "Expand All Groups" : "Collapse All Groups",
+                  systemImage: model.allCollapsed ? "rectangle.expand.vertical" : "rectangle.compress.vertical")
+        }
+        .help(model.allCollapsed ? "Expand All Groups" : "Collapse All Groups")
+        .disabled(model.sections.allSatisfy { $0.title.isEmpty })
+    }
+
+    /// A group's header, drawn as its folder is in the sidebar - the same icon,
+    /// name and count - with a chevron; a tap folds or unfolds it.
+    private func header(_ section: NoteSection) -> some View {
+        Button {
+            withAnimation(.snappy) { model.toggleCollapsed(section) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(model.isCollapsed(section) ? 0 : 90))
+                    .frame(width: 12)
+                Label {
+                    Text(section.title).foregroundStyle(.primary)
+                } icon: {
+                    Image(systemName: icon(of: section)).foregroundStyle(Color.accentColor)
+                }
+                .font(.body)
+                Spacer()
+                Text("\(section.notes.count)")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .textCase(nil)
+    }
+
+    // MARK: - Dragging notes between groups
+
+    /// Whether notes can be dropped on a group: a folder, or the pinned ones.
+    private func accepts(_ section: NoteSection) -> Bool {
+        section.id == "pinned" || section.id == "deleted" || section.id.hasPrefix("folder:")
+    }
+
+    /// A header that takes dropped notes, lit while one is over it.
+    private func droppableHeader(_ section: NoteSection) -> some View {
+        header(section)
+            .padding(.horizontal, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(dropTarget == section.id ? 0.25 : 0))
+            )
+            .dropDestination(for: String.self) { ids, _ in drop(ids, on: section) } isTargeted: { target(section, $0) }
+    }
+
+    private func target(_ section: NoteSection, _ over: Bool) {
+        if over {
+            hoveredGroup = section.id
+        } else if hoveredGroup == section.id {
+            hoveredGroup = nil
+        }
+        model.dragHover(listTargeted || hoveredGroup != nil)
+        guard accepts(section) else { return }
+        if over {
+            dropTarget = section.id
+        } else if dropTarget == section.id {
+            dropTarget = nil
+        }
+    }
+
+    /// Notes dropped on a group: on a folder they move there and are no longer
+    /// pinned, as on the phone; on the pinned group they are pinned; on the
+    /// deleted notes they are deleted.
+    private func drop(_ ids: [String], on section: NoteSection) -> Bool {
+        dropTarget = nil
+        hoveredGroup = nil
+        model.endDrag()
+        // The group the note went into opens, to show it there.
+        if accepts(section) { model.expand(section.id) }
+        guard accepts(section) else { return false }
+        let notes = ids.compactMap { model.note($0) }.filter { $0.trashed == nil }
+        guard !notes.isEmpty else { return false }
+        Task {
+            for note in notes {
+                if section.id == "pinned" {
+                    if !note.pinned { await model.setPinned(note.id, true) }
+                    continue
+                }
+                if section.id == "deleted" {
+                    await model.delete(note.id)
+                    continue
+                }
+                let folder = String(section.id.dropFirst("folder:".count))
+                if note.pinned { await model.setPinned(note.id, false) }
+                if note.folder != folder { await model.move(note.id, to: folder) }
+            }
+        }
+        return true
+    }
+
+    /// The icon a group has in the sidebar.
+    private func icon(of section: NoteSection) -> String {
+        if section.id == "pinned" { return "pin" }
+        if section.id == "deleted" { return "trash" }
+        if section.id.hasPrefix("folder:") { return "folder" }
+        return "calendar"
     }
 
     private var newNoteButton: some View {
@@ -52,6 +184,12 @@ struct NoteListView: View {
                 Label("View as List", systemImage: "list.bullet").tag(false)
                 Label("View as Gallery", systemImage: "square.grid.2x2").tag(true)
             }
+            if model.scope == .all {
+                Picker("Group By", selection: $model.byFolder) {
+                    Label("Folders", systemImage: "folder").tag(true)
+                    Label("Date", systemImage: "calendar").tag(false)
+                }
+            }
             Picker("Sort By", selection: $model.sort) {
                 ForEach(SortOrder.allCases) { Text($0.label).tag($0) }
             }
@@ -68,10 +206,11 @@ struct NoteListView: View {
         List(selection: $model.selected) {
             ForEach(model.sections) { section in
                 Section {
-                    ForEach(section.notes) { note in
+                    ForEach(model.isCollapsed(section) ? [] : section.notes) { note in
                         NoteRow(note: note)
                             .tag(note.id)
-                            .draggable(note.id)
+                            .dropDestination(for: String.self) { ids, _ in drop(ids, on: section) } isTargeted: { target(section, $0) }
+                            .onDrag { model.dragItem(note.id) }
                             .contextMenu { menu(for: note) }
                             .swipeActions(edge: .leading) {
                                 if note.trashed == nil {
@@ -92,7 +231,7 @@ struct NoteListView: View {
                             }
                     }
                 } header: {
-                    if !section.title.isEmpty { Text(section.title) }
+                    if !section.title.isEmpty { droppableHeader(section) }
                 }
             }
         }
@@ -108,13 +247,14 @@ struct NoteListView: View {
             LazyVStack(alignment: .leading, spacing: 18) {
                 ForEach(model.sections) { section in
                     if !section.title.isEmpty {
-                        Text(section.title).font(.headline).padding(.horizontal)
+                        droppableHeader(section).padding(.horizontal)
                     }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)], spacing: 14) {
-                        ForEach(section.notes) { note in
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 88, maximum: 108), spacing: 10)], spacing: 12) {
+                        ForEach(model.isCollapsed(section) ? [] : section.notes) { note in
                             NoteTile(note: note, selected: model.selected == note.id)
+                                .dropDestination(for: String.self) { ids, _ in drop(ids, on: section) } isTargeted: { target(section, $0) }
                                 .onTapGesture { model.selected = note.id }
-                                .draggable(note.id)
+                                .onDrag { model.dragItem(note.id) }
                                 .contextMenu { menu(for: note) }
                         }
                     }
@@ -149,7 +289,7 @@ struct NoteRow: View {
     let note: NoteRecord
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
                     if note.pinned { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.orange) }
@@ -159,13 +299,13 @@ struct NoteRow: View {
                     Text(shortDate(note.modified)).font(.subheadline).foregroundStyle(.primary.opacity(0.8))
                     highlighted(preview).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
-                if model.scope == .all || model.scope == .trash {
+                if (model.scope == .all && !model.byFolder) || model.scope == .trash {
                     Label(note.folder, systemImage: "folder").font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
                 }
             }
             Spacer(minLength: 0)
             if let image = note.summary.image {
-                Thumbnail(url: model.resolve(image, in: note)).frame(width: 44, height: 44)
+                Thumbnail(url: model.resolve(image, in: note), corner: 5).frame(width: 36, height: 36)
             }
         }
         .padding(.vertical, 3)
@@ -216,53 +356,69 @@ struct NoteTile: View {
     let selected: Bool
 
     var body: some View {
-        VStack(spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(.background)
-                    .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                if let image = note.summary.image {
-                    Thumbnail(url: model.resolve(image, in: note)).clipShape(RoundedRectangle(cornerRadius: 10))
-                } else {
-                    Text(note.summary.preview)
-                        .font(.system(size: 8))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(8)
+        VStack(spacing: 4) {
+            card
+                .aspectRatio(0.82, contentMode: .fit)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(selected ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: selected ? 2.5 : 0.5)
+                )
+            Text(note.title).font(.caption.bold()).lineLimit(1)
+            Text(shortDate(note.modified)).font(.caption2).foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// The note as a small page: its first picture filling it, or the start of its text.
+    @ViewBuilder
+    private var card: some View {
+        if let image = note.summary.image {
+            Thumbnail(url: model.resolve(image, in: note), corner: 8)
+                .shadow(color: .black.opacity(0.08), radius: 1.5, y: 1)
+        } else {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.background)
+                .shadow(color: .black.opacity(0.08), radius: 1.5, y: 1)
+                .overlay(alignment: .topLeading) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(note.title).font(.system(size: 8, weight: .bold)).lineLimit(2)
+                        Text(note.summary.preview).font(.system(size: 6.5)).foregroundStyle(.secondary)
+                    }
+                    .padding(7)
                 }
-            }
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.yellow : Color.secondary.opacity(0.25), lineWidth: selected ? 3 : 1))
-            .aspectRatio(0.9, contentMode: .fit)
-            Text(note.title).font(.subheadline.bold()).lineLimit(1)
-            Text(shortDate(note.modified)).font(.caption).foregroundStyle(.secondary)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 }
 
-/// The first picture of a note, small.
+/// The first picture of a note, small, filling its frame and cut to it.
 struct Thumbnail: View {
     let url: URL?
+    var corner: CGFloat = 6
     @State private var image: Image?
 
     var body: some View {
-        ZStack {
-            Rectangle().fill(.quaternary)
-            if let image { image.resizable().scaledToFill() }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .task(id: url) { image = await load() }
+        Rectangle()
+            .fill(.quaternary)
+            .overlay {
+                if let image { image.resizable().scaledToFill() }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: corner))
+            .task(id: url) { image = await load() }
     }
 
+    /// A small copy, read off the main thread; a large photo is never decoded whole.
     private func load() async -> Image? {
         guard let url else { return nil }
         return await Task.detached(priority: .utility) { () -> Image? in
-            #if os(macOS)
-            guard let picture = NSImage(contentsOf: url) else { return nil }
-            return Image(nsImage: picture)
-            #else
-            guard let picture = UIImage(contentsOfFile: url.path)?.preparingThumbnail(of: CGSize(width: 240, height: 240)) else { return nil }
-            return Image(uiImage: picture)
-            #endif
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 320,
+            ]
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let picture = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+            return Image(decorative: picture, scale: 1)
         }.value
     }
 }

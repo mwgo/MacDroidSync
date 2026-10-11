@@ -61,12 +61,12 @@
 
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/thumbFrame"
-            android:layout_width="52dp"
-            android:layout_height="52dp"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
             android:layout_marginStart="12dp"
             android:visibility="gone"
             xmlns:app="http://schemas.android.com/apk/res-auto"
-            app:cardCornerRadius="8dp"
+            app:cardCornerRadius="6dp"
             app:cardElevation="0dp"
             app:strokeWidth="0dp">
 

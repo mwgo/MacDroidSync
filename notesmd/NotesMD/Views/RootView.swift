@@ -32,7 +32,7 @@ struct WelcomeView: View {
         VStack(spacing: 18) {
             Image(systemName: "note.text")
                 .font(.system(size: 56, weight: .regular))
-                .foregroundStyle(.yellow)
+                .foregroundStyle(Color.accentColor)
             Text("Notes MD")
                 .font(.largeTitle.bold())
             Text("Your notes are Markdown files in a folder on iCloud Drive, one folder per notebook. Choose the same folder on your Mac, iPad and iPhone.")

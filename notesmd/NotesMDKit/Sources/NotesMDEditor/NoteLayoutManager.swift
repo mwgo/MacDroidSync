@@ -8,18 +8,22 @@ import UIKit
 
 /// Lays out a note and draws what is not text: bullets, numbers and the round
 /// boxes of a checklist in the room left of a list item, the bar of a quote,
-/// the panel behind code.
-public final class NoteLayoutManager: NSLayoutManager {
+/// the panel behind code, the arrow left of a heading that folds its section.
+/// A folded section is still in the text, laid out as lines of no height.
+public final class NoteLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     public var style: EditorStyle
     /// The block of the empty last line, which has no character to carry it.
     public var trailingBlock: Block = .paragraph
 
     private var numbers: [Int: Int] = [:]
     private var numbersValid = false
+    /// The text of the folded sections, left out of the layout.
+    public private(set) var hidden: [NSRange] = []
 
     public init(style: EditorStyle) {
         self.style = style
         super.init()
+        delegate = self
     }
 
     required init?(coder: NSCoder) {
@@ -29,6 +33,91 @@ public final class NoteLayoutManager: NSLayoutManager {
     public override func processEditing(for textStorage: NSTextStorage, edited editMask: TextEditActions, range newCharRange: NSRange, changeInLength delta: Int, invalidatedRange invalidatedCharRange: NSRange) {
         numbersValid = false
         super.processEditing(for: textStorage, edited: editMask, range: newCharRange, changeInLength: delta, invalidatedRange: invalidatedCharRange)
+        let before = hidden
+        hidden = Folding.hidden(textStorage)
+        guard before != hidden else { return }
+        // What folds or unfolds may lie far from what was edited.
+        let length = textStorage.length
+        let from = min([before.first?.location, hidden.first?.location, newCharRange.location].compactMap { $0 }.min() ?? 0, length)
+        let range = NSRange(location: from, length: length - from)
+        invalidateGlyphs(forCharacterRange: range, changeInLength: 0, actualCharacterRange: nil)
+        invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+    }
+
+    public func isHidden(_ location: Int) -> Bool {
+        hidden.contains { location >= $0.location && location < NSMaxRange($0) }
+    }
+
+    /// Whether all of `range` is folded away.
+    func isHidden(range: NSRange) -> Bool {
+        hidden.contains { range.location >= $0.location && NSMaxRange(range) <= NSMaxRange($0) }
+    }
+
+    // MARK: - Folded sections
+
+    public func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+        properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
+        characterIndexes charIndexes: UnsafePointer<Int>,
+        font aFont: PlatformFont,
+        forGlyphRange glyphRange: NSRange
+    ) -> Int {
+        guard !hidden.isEmpty, let string = textStorage?.string as NSString? else { return 0 }
+        let count = glyphRange.length
+        var changed = false
+        var properties = [NSLayoutManager.GlyphProperty](repeating: [], count: count)
+        for i in 0..<count {
+            properties[i] = props[i]
+            // Newlines stay, so each line of the section is still a line, of no height.
+            let index = charIndexes[i]
+            if isHidden(index), index >= string.length || string.character(at: index) != 0x0A {
+                properties[i] = .null
+                changed = true
+            }
+        }
+        guard changed else { return 0 }
+        properties.withUnsafeBufferPointer { buffer in
+            layoutManager.setGlyphs(glyphs, properties: buffer.baseAddress!, characterIndexes: charIndexes, font: aFont, forGlyphRange: glyphRange)
+        }
+        return count
+    }
+
+    public func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<CGRect>,
+        lineFragmentUsedRect: UnsafeMutablePointer<CGRect>,
+        baselineOffset: UnsafeMutablePointer<CGFloat>,
+        in textContainer: NSTextContainer,
+        forGlyphRange glyphRange: NSRange
+    ) -> Bool {
+        guard !hidden.isEmpty else { return false }
+        let characters = characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        guard characters.length > 0, isHidden(range: characters) else { return false }
+        lineFragmentRect.pointee.size.height = 0
+        lineFragmentUsedRect.pointee.size.height = 0
+        baselineOffset.pointee = 0
+        return true
+    }
+
+    /// The bottom of a paragraph's last line, in the text container's coordinates.
+    public func bottom(ofParagraph paragraph: NSRange) -> CGFloat? {
+        guard let storage = textStorage, paragraph.length > 0, NSMaxRange(paragraph) <= storage.length else { return nil }
+        let glyph = glyphIndexForCharacter(at: NSMaxRange(paragraph) - 1)
+        return lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).maxY
+    }
+
+    /// Where the arrow that folds a heading is drawn, left of its first line, in the text container's coordinates.
+    public func foldArrowRect(ofParagraph paragraph: NSRange) -> CGRect? {
+        guard let storage = textStorage, paragraph.location < storage.length,
+              let line = firstLineRect(ofParagraph: paragraph) else { return nil }
+        let font = storage.attribute(.font, at: paragraph.location, effectiveRange: nil) as? PlatformFont
+            ?? PlatformFont.systemFont(ofSize: style.bodySize)
+        let baseline = location(forGlyphAt: glyphIndexForCharacter(at: paragraph.location)).y
+        let padding = textContainers.first?.lineFragmentPadding ?? 0
+        let size: CGFloat = 10
+        let center = CGPoint(x: line.minX + padding - 10, y: line.minY + baseline - font.capHeight / 2)
+        return CGRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
     }
 
     /// The number of each numbered item, by the location of its paragraph.
@@ -90,7 +179,7 @@ public final class NoteLayoutManager: NSLayoutManager {
             defer { previous = block }
             let visible = NSIntersectionRange(paragraph, shown).length > 0
                 || (paragraph.location >= shown.location && paragraph.location <= NSMaxRange(shown))
-            guard visible else { continue }
+            guard visible, paragraph.length == 0 || !isHidden(range: paragraph) else { continue }
             switch block.type {
             case .code:
                 let next = index + 1 < paragraphs.count
@@ -104,6 +193,9 @@ public final class NoteLayoutManager: NSLayoutManager {
             case .bullet, .numbered, .checkbox:
                 guard let marker = markerRect(ofParagraph: paragraph, block: block) else { continue }
                 drawMarker(block, in: marker.offsetBy(dx: origin.x, dy: origin.y), number: block.type == .numbered ? number(at: paragraph.location, in: storage) : 0)
+            case .heading where index > 0:
+                guard let arrow = foldArrowRect(ofParagraph: paragraph) else { continue }
+                drawFoldArrow(in: arrow.offsetBy(dx: origin.x, dy: origin.y), folded: Folding.isFolded(storage, paragraph: paragraph))
             default:
                 break
             }
@@ -195,6 +287,27 @@ public final class NoteLayoutManager: NSLayoutManager {
         default:
             break
         }
+    }
+
+    /// A chevron: down while the section shows, right while it is folded.
+    private func drawFoldArrow(in rect: CGRect, folded: Bool) {
+        let path = bezier()
+        let r = rect.width / 2
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        if folded {
+            path.move(to: CGPoint(x: c.x - r * 0.35, y: c.y - r * 0.75))
+            path.addLine(to: CGPoint(x: c.x + r * 0.45, y: c.y))
+            path.addLine(to: CGPoint(x: c.x - r * 0.35, y: c.y + r * 0.75))
+        } else {
+            path.move(to: CGPoint(x: c.x - r * 0.75, y: c.y - r * 0.35))
+            path.addLine(to: CGPoint(x: c.x, y: c.y + r * 0.45))
+            path.addLine(to: CGPoint(x: c.x + r * 0.75, y: c.y - r * 0.35))
+        }
+        path.lineWidth = 1.8
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        style.secondaryColor.setStroke()
+        path.stroke()
     }
 
     private func ovalPath(_ rect: CGRect) -> PlatformBezier {
