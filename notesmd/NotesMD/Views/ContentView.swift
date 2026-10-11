@@ -6,7 +6,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var model: NotesModel
     /// Whether the folders show, as they were left.
-    @State private var visibility = ContentView.savedVisibility
+    @State private var visibility = ContentView.savedVisibility(byFolder: UserDefaults.standard.object(forKey: "byFolder") as? Bool ?? true)
     /// Until the window has been laid out the split view sets its columns
     /// itself; only what is changed after that is the user's and kept.
     @State private var restored = false
@@ -14,39 +14,55 @@ struct ContentView: View {
     @State private var folderName = ""
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $visibility) {
-            SidebarView(newFolder: $newFolder)
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
-        } content: {
-            NoteListView()
-                .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
-        } detail: {
-            if let id = model.selected, model.note(id) != nil {
-                NoteDetailView(noteId: id)
-                    .id(id)
-            } else {
-                Text(model.visible.isEmpty ? "No Notes" : "No Note Selected")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    #if os(iOS)
-                    .toolbar {
-                        // On iPad the note's bar is where a new note is made, even with no note open.
-                        if isPad {
-                            ToolbarItem(placement: .topBarTrailing) {
+        Group {
+            if model.byFolder {
+                // The list holds the folders: no panel of them, the sidebar button hides the list.
+                NavigationSplitView(columnVisibility: $visibility) {
+                    NoteListView()
+                        .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
+                } detail: {
+                    detail
+                        #if os(macOS)
+                        .toolbar {
+                            ToolbarItem(placement: .navigation) {
                                 Button { Task { await model.newNote() } } label: { Label("New Note", systemImage: "square.and.pencil") }
-                                    .disabled(model.scope == .trash && model.folders.isEmpty)
+                                    .help("New Note")
+                            }
+                            // The note's tools and the search pushed to the right end.
+                            if #available(macOS 26.0, *) {
+                                ToolbarSpacer(.flexible)
                             }
                         }
-                    }
-                    #endif
+                        #endif
+                }
+            } else {
+                NavigationSplitView(columnVisibility: $visibility) {
+                    SidebarView(newFolder: $newFolder)
+                        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+                } content: {
+                    NoteListView()
+                        .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
+                } detail: {
+                    detail
+                }
             }
         }
+        #if os(macOS)
+        .modifier(NoWindowTitle())
+        // The window's search, at the right end of its toolbar.
+        .searchable(text: $model.search, placement: .toolbar, prompt: "Search")
+        #endif
         .onChange(of: visibility) { _, value in
-            if restored { ContentView.save(value) }
+            if restored { ContentView.save(value, byFolder: model.byFolder) }
+        }
+        .onChange(of: model.byFolder) { _, byFolder in
+            restored = false
+            visibility = ContentView.savedVisibility(byFolder: byFolder)
+            DispatchQueue.main.async { restored = true }
         }
         .onAppear {
-            let saved = ContentView.savedVisibility
+            if model.byFolder { model.scope = .all }
+            let saved = ContentView.savedVisibility(byFolder: model.byFolder)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 visibility = saved
                 restored = true
@@ -74,6 +90,31 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .importFromNotes)) { _ in importing = true }
         .onReceive(NotificationCenter.default.publisher(for: .exportToNotes)) { _ in exporting = true }
         #endif
+    }
+
+    /// The open note, or what stands in for one.
+    @ViewBuilder
+    private var detail: some View {
+        if let id = model.selected, model.note(id) != nil {
+            NoteDetailView(noteId: id)
+                .id(id)
+        } else {
+            Text(model.visible.isEmpty ? "No Notes" : "No Note Selected")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                #if os(iOS)
+                .toolbar {
+                    // On iPad the note's bar is where a new note is made, even with no note open.
+                    if isPad {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { Task { await model.newNote() } } label: { Label("New Note", systemImage: "square.and.pencil") }
+                                .disabled(model.scope == .trash && model.folders.isEmpty)
+                        }
+                    }
+                }
+                #endif
+        }
     }
 
     #if os(macOS)
@@ -209,23 +250,37 @@ struct SidebarView: View {
 }
 
 extension ContentView {
-    private static let visibilityKey = "columns"
+    /// Kept apart for the two layouts: with the folders' panel, and with the list alone.
+    private static func visibilityKey(byFolder: Bool) -> String { byFolder ? "listColumns" : "columns" }
 
-    static var savedVisibility: NavigationSplitViewVisibility {
-        switch UserDefaults.standard.string(forKey: visibilityKey) {
+    static func savedVisibility(byFolder: Bool) -> NavigationSplitViewVisibility {
+        switch UserDefaults.standard.string(forKey: visibilityKey(byFolder: byFolder)) {
         case "doubleColumn": return .doubleColumn
         case "detailOnly": return .detailOnly
         default: return .all
         }
     }
 
-    static func save(_ visibility: NavigationSplitViewVisibility) {
+    static func save(_ visibility: NavigationSplitViewVisibility, byFolder: Bool) {
         let value: String
         switch visibility {
         case .doubleColumn: value = "doubleColumn"
         case .detailOnly: value = "detailOnly"
         default: value = "all"
         }
-        UserDefaults.standard.set(value, forKey: visibilityKey)
+        UserDefaults.standard.set(value, forKey: visibilityKey(byFolder: byFolder))
     }
 }
+
+#if os(macOS)
+/// The app's name stays the window's title, not text in its toolbar.
+private struct NoWindowTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.toolbar(removing: .title)
+        } else {
+            content
+        }
+    }
+}
+#endif

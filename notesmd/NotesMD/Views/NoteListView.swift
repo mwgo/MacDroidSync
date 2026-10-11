@@ -6,6 +6,10 @@ import SwiftUI
 struct NoteListView: View {
     @EnvironmentObject private var model: NotesModel
     @State private var moving: String?
+    /// A folder being renamed or deleted from its group's menu.
+    @State private var renaming: String?
+    @State private var newName = ""
+    @State private var deleting: String?
     /// The group a dragged note is over.
     @State private var dropTarget: String?
     /// Whether a dragged note is anywhere over the list, or over one of its groups.
@@ -28,7 +32,9 @@ struct NoteListView: View {
         }
         .onChange(of: listTargeted) { _, over in model.dragHover(over || hoveredGroup != nil) }
         .navigationTitle(model.scopeTitle)
+        #if os(iOS)
         .searchable(text: $model.search, prompt: "Search")
+        #endif
         .overlay {
             if model.visible.isEmpty {
                 Text(model.search.isEmpty ? (model.scope == .trash ? "No Deleted Notes" : "No Notes") : "No Results")
@@ -46,16 +52,48 @@ struct NoteListView: View {
             }
             #else
             // Over the list, where its folders are; a new note at the start of the note's bar, as in Notes.
-            ToolbarItemGroup(placement: .navigation) {
-                foldAllButton
-                viewMenu
+            // With the list as the window's first column, its own items stand over it already.
+            if model.byFolder {
+                // A new note then starts the note's bar, from the window's second column.
+                ToolbarItemGroup {
+                    foldAllButton
+                    viewMenu
+                }
+            } else {
+                ToolbarItemGroup(placement: .navigation) {
+                    foldAllButton
+                    viewMenu
+                }
+                ToolbarItem { newNoteButton }
             }
-            ToolbarItem { newNoteButton }
             #endif
         }
         #if os(macOS)
         .modifier(NoToolbarTitle())
         #endif
+        .alert("Rename Folder", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $newName)
+            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Save") {
+                if let from = renaming {
+                    let to = newName
+                    Task { await model.renameFolder(from, to: to) }
+                }
+                renaming = nil
+            }
+        }
+        .confirmationDialog(
+            "Delete Folder?",
+            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Folder", role: .destructive) {
+                if let name = deleting { Task { await model.deleteFolder(name) } }
+                deleting = nil
+            }
+        } message: {
+            Text("The notes in it are moved to Deleted.")
+        }
         .sheet(item: Binding(get: { moving.map(IdBox.init) }, set: { moving = $0?.id })) { box in
             MoveSheet(noteId: box.id)
         }
@@ -120,6 +158,25 @@ struct NoteListView: View {
                     .fill(Color.accentColor.opacity(dropTarget == section.id ? 0.25 : 0))
             )
             .dropDestination(for: String.self) { ids, _ in drop(ids, on: section) } isTargeted: { target(section, $0) }
+            .contextMenu { folderMenu(section) }
+    }
+
+    /// A folder's own commands, from its group's header, now that no panel of folders shows them.
+    @ViewBuilder
+    private func folderMenu(_ section: NoteSection) -> some View {
+        if section.id.hasPrefix("folder:") {
+            let name = String(section.id.dropFirst("folder:".count))
+            Button("New Note") { Task { await model.newNote(in: name) } }
+            Divider()
+            Button("Rename Folder") {
+                newName = name
+                renaming = name
+            }
+            Button("Delete Folder", role: .destructive) { deleting = name }
+                .disabled(model.folders.count < 2)
+        } else if section.id == "deleted", !model.snapshot.trash.isEmpty {
+            Button("Delete All", role: .destructive) { Task { await model.emptyTrash() } }
+        }
     }
 
     private func target(_ section: NoteSection, _ over: Bool) {
@@ -190,14 +247,19 @@ struct NoteListView: View {
                 Label("View as List", systemImage: "list.bullet").tag(false)
                 Label("View as Gallery", systemImage: "square.grid.2x2").tag(true)
             }
-            if model.scope == .all {
-                Picker("Group By", selection: $model.byFolder) {
-                    Label("Folders", systemImage: "folder").tag(true)
-                    Label("Date", systemImage: "calendar").tag(false)
-                }
+            // From any folder: grouping by folders shows them all, each a group.
+            Picker("Group By", selection: $model.byFolder) {
+                Label("Folders", systemImage: "folder").tag(true)
+                Label("Date", systemImage: "calendar").tag(false)
             }
             Picker("Sort By", selection: $model.sort) {
                 ForEach(SortOrder.allCases) { Text($0.label).tag($0) }
+            }
+            if model.byFolder {
+                Divider()
+                Button { NotificationCenter.default.post(name: .newFolder, object: nil) } label: {
+                    Label("New Folder…", systemImage: "folder.badge.plus")
+                }
             }
             if model.scope == .trash, !model.snapshot.trash.isEmpty {
                 Divider()
@@ -369,31 +431,36 @@ struct NoteTile: View {
                     RoundedRectangle(cornerRadius: 8)
                         .strokeBorder(selected ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: selected ? 2.5 : 0.5)
                 )
-            Text(note.title).font(.caption.bold()).lineLimit(1)
             Text(shortDate(note.modified)).font(.caption2).foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
     }
 
-    /// The note as a small page: its first picture filling it, or the start of its text.
-    @ViewBuilder
+    /// The note as a small page: its title on top, under it its first picture
+    /// filling the rest, or the start of its text.
     private var card: some View {
-        if let image = note.summary.image {
-            Thumbnail(url: model.resolve(image, in: note), corner: 8)
-                .shadow(color: .black.opacity(0.08), radius: 1.5, y: 1)
-        } else {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(.background)
-                .shadow(color: .black.opacity(0.08), radius: 1.5, y: 1)
-                .overlay(alignment: .topLeading) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(note.title).font(.system(size: 8, weight: .bold)).lineLimit(2)
-                        Text(note.summary.preview).font(.system(size: 6.5)).foregroundStyle(.secondary)
+        RoundedRectangle(cornerRadius: 8)
+            .fill(.background)
+            .shadow(color: .black.opacity(0.08), radius: 1.5, y: 1)
+            .overlay(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(note.title)
+                        .font(.system(size: 11, weight: .bold))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let image = note.summary.image {
+                        Thumbnail(url: model.resolve(image, in: note), corner: 4)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        Text(note.summary.preview)
+                            .font(.system(size: 7.5))
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(7)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
+                .padding(7)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

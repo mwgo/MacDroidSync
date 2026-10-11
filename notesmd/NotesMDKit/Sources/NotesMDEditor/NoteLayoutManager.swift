@@ -54,10 +54,24 @@ public final class NoteLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         let before = hidden
         hidden = Folding.hidden(textStorage)
         guard before != hidden else { return }
-        // What folds or unfolds may lie far from what was edited.
-        let length = textStorage.length
-        let from = min([before.first?.location, hidden.first?.location, newCharRange.location].compactMap { $0 }.min() ?? 0, length)
-        let range = NSRange(location: from, length: length - from)
+        // What folds or unfolds may lie far from what was edited. Laid out
+        // again once the edit is over: a text view asked mid-edit where its
+        // caret is would find no glyphs for it, which UIKit does not survive.
+        let from = [before.first?.location, hidden.first?.location, newCharRange.location].compactMap { $0 }.min() ?? 0
+        foldsChangedFrom = min(foldsChangedFrom ?? from, from)
+        DispatchQueue.main.async { [weak self] in self?.layOutFolds() }
+    }
+
+    /// Where the folded sections changed since they were last laid out.
+    private var foldsChangedFrom: Int?
+
+    /// Lays out again what folded or unfolded; called by itself after an edit,
+    /// or at once by whoever folds, outside of any edit.
+    public func layOutFolds() {
+        guard let from = foldsChangedFrom, let length = textStorage?.length else { return }
+        foldsChangedFrom = nil
+        let start = min(from, length)
+        let range = NSRange(location: start, length: length - start)
         invalidateGlyphs(forCharacterRange: range, changeInLength: 0, actualCharacterRange: nil)
         invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
     }

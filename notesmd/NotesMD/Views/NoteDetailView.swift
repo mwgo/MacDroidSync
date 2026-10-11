@@ -48,8 +48,11 @@ struct NoteDetailView: View {
                     onChange: changed,
                     onObjectTap: { attachment, location in opened = OpenedObject(attachment: attachment, location: location) }
                 )
+                #if os(iOS)
                 // Under the bars: the note scrolls on beneath the glass, which blurs it at its edge.
                 .ignoresSafeArea(.container, edges: [.top, .bottom])
+                .modifier(SoftTopEdge())
+                #endif
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -398,4 +401,16 @@ struct OpenedObject: Identifiable {
     let id = UUID()
     let attachment: NoteAttachment
     let location: Int
+}
+
+/// The bar over the note as glass: the text goes on beneath it, blurred and
+/// fading at its edge. On the Mac the note's SwiftUI scroll view has it already.
+private struct SoftTopEdge: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            content.scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            content
+        }
+    }
 }

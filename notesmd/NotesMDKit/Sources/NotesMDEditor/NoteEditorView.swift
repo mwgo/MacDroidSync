@@ -70,6 +70,7 @@ public struct NoteEditorView {
             #if os(macOS)
             view.setSelectedRange(NSRange(location: 0, length: 0))
             view.typingAttributes = view.editing.typingAttributes(at: 0)
+            view.heightMayHaveChanged()
             #else
             view.typingAttributes = view.editing.typingAttributes(at: 0)
             view.setContentOffset(.zero, animated: false)
@@ -83,29 +84,67 @@ public struct NoteEditorView {
 }
 
 #if os(macOS)
-extension NoteEditorView: NSViewRepresentable {
-    public func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        let view = NoteTextView(style: style, resolve: resolve)
-        view.minSize = .zero
-        view.maxSize = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+/// On the Mac the note scrolls in SwiftUI's scroll view, which takes its
+/// height from the text view: so the toolbar over it is glass, the text going
+/// on beneath it as the system draws it for its own scroll views.
+extension NoteEditorView: View {
+    public var body: some View {
+        NoteScroll(editor: self)
+    }
+}
+
+/// The text at least as tall as what shows of it, so that a click anywhere below the end lands in it.
+private struct NoteScroll: View {
+    var editor: NoteEditorView
+    @State private var viewport: CGFloat = 0
+
+    var body: some View {
+        ScrollView(.vertical) {
+            NoteTextHost(editor: editor)
+                .frame(minHeight: viewport, alignment: .top)
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
+        .modifier(SoftEdge())
+    }
+}
+
+/// The text fading softly under the bar's glass, as Notes has it.
+private struct SoftEdge: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            content
+        }
+    }
+}
+
+struct NoteTextHost: NSViewRepresentable {
+    var editor: NoteEditorView
+
+    func makeCoordinator() -> NoteEditorView.Coordinator { editor.makeCoordinator() }
+
+    func makeNSView(context: Context) -> NoteTextView {
+        let view = NoteTextView(style: editor.style, resolve: editor.resolve)
         view.host = context.coordinator
-        view.controller = controller
-        controller.view = view
-        scroll.documentView = view
-        return scroll
+        view.controller = editor.controller
+        editor.controller.view = view
+        return view
     }
 
-    public func updateNSView(_ scroll: NSScrollView, context: Context) {
-        context.coordinator.parent = self
-        guard let view = scroll.documentView as? NoteTextView else { return }
-        controller.view = view
-        view.controller = controller
-        view.isEditable = editable
-        (view.layoutManager as? NoteLayoutManager)?.info = info
+    func updateNSView(_ view: NoteTextView, context: Context) {
+        context.coordinator.parent = editor
+        editor.controller.view = view
+        view.controller = editor.controller
+        view.isEditable = editor.editable
+        (view.layoutManager as? NoteLayoutManager)?.info = editor.info
         context.coordinator.load(view)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView view: NoteTextView, context: Context) -> CGSize? {
+        // Before the width is known the text would be laid out a point wide.
+        guard let width = proposal.width ?? (view.frame.width > 0 ? view.frame.width : nil), width > 2 * view.textContainerInset.width + 20 else { return nil }
+        return CGSize(width: width, height: view.height(forWidth: width))
     }
 }
 #else

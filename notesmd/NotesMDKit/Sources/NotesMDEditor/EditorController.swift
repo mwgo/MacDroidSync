@@ -105,9 +105,9 @@ public final class NoteTextView: NSTextView {
         textContainerInset = CGSize(width: 28 - EditorStyle.gutter, height: 18)
         drawsBackground = true
         backgroundColor = .textBackgroundColor
-        isVerticallyResizable = true
+        // Its height is the text's, which SwiftUI asks for; SwiftUI scrolls it.
+        isVerticallyResizable = false
         isHorizontallyResizable = false
-        autoresizingMask = [.width]
         usesFindBar = true
         isIncrementalSearchingEnabled = true
     }
@@ -121,6 +121,39 @@ public final class NoteTextView: NSTextView {
     }
 
     var selection: NSRange { selectedRange() }
+
+    /// How tall the text is laid out at `width`.
+    func height(forWidth width: CGFloat) -> CGFloat {
+        guard let layout = layoutManager, let container = textContainer else { return 0 }
+        let inner = max(width - 2 * textContainerInset.width, 1)
+        if container.size.width != inner { container.size = CGSize(width: inner, height: CGFloat.greatestFiniteMagnitude) }
+        layout.ensureLayout(for: container)
+        return ceil(layout.usedRect(for: container).height + 2 * textContainerInset.height)
+    }
+
+    private var laidOutHeight: CGFloat = 0
+
+    /// The text grew or shrank: SwiftUI is told to ask for its height again.
+    func heightMayHaveChanged() {
+        let height = height(forWidth: bounds.width > 0 ? bounds.width : 600)
+        guard abs(height - laidOutHeight) > 0.5 else { return }
+        laidOutHeight = height
+        invalidateIntrinsicContentSize()
+    }
+
+    public override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = newSize.width != frame.width
+        super.setFrameSize(newSize)
+        if widthChanged, newSize.width > 0 {
+            textContainer?.size = CGSize(width: max(newSize.width - 2 * textContainerInset.width, 1), height: CGFloat.greatestFiniteMagnitude)
+            heightMayHaveChanged()
+            needsDisplay = true
+        }
+    }
+
+    public override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 600))
+    }
 
     var isEditingText: Bool { window?.firstResponder === self }
 
@@ -152,6 +185,7 @@ public final class NoteTextView: NSTextView {
             setSelectedRange(selection)
         }
         typingAttributes = editing.typingAttributes(at: selectedRange().location)
+        heightMayHaveChanged()
         host?.textChanged()
         controller?.refresh()
     }
@@ -187,6 +221,7 @@ public final class NoteTextView: NSTextView {
         let caret = selectedRange()
         if caret.length == 0 { setSelectedRange(NSRange(location: editing.visibleCaret(caret.location, forward: false), length: 0)) }
         layout.ensureLayout(for: container)
+        heightMayHaveChanged()
         needsDisplay = true
         controller?.refresh()
 
@@ -232,6 +267,7 @@ public final class NoteTextView: NSTextView {
     private func finish(_ selection: NSRange) {
         setSelectedRange(NSRange(location: min(selection.location, textStorage?.length ?? 0), length: selection.length))
         typingAttributes = editing.typingAttributes(at: selectedRange().location)
+        heightMayHaveChanged()
         needsDisplay = true
         host?.textChanged()
         controller?.refresh()

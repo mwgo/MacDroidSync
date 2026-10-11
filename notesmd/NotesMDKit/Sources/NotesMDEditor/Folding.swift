@@ -109,6 +109,7 @@ extension NoteEditing {
             if folded { storage.addAttribute(.mdFolded, value: true, range: first) } else { storage.removeAttribute(.mdFolded, range: first) }
         }
         storage.endEditing()
+        layout?.layOutFolds()
     }
 
     /// Before a change to the text: a folded section opens when the change
@@ -147,7 +148,9 @@ extension NoteEditing {
         guard let layout else { return nil }
         for heading in foldableHeadings where !layout.isHidden(heading.location) {
             guard let arrow = layout.foldArrowRect(ofParagraph: heading) else { continue }
-            if arrow.insetBy(dx: -9, dy: -7).contains(point) { return heading }
+            // A finger's worth around the arrow: the whole margin left of the heading, 44 points high.
+            let target = CGRect(x: arrow.minX - 24, y: arrow.midY - 22, width: arrow.width + 30, height: 44)
+            if target.contains(point) { return heading }
         }
         return nil
     }

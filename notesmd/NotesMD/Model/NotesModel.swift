@@ -50,9 +50,13 @@ final class NotesModel: ObservableObject {
     @Published var gallery = UserDefaults.standard.bool(forKey: "gallery") {
         didSet { UserDefaults.standard.set(gallery, forKey: "gallery") }
     }
-    /// All notes in one list grouped by folder, as on the phone, rather than by date.
+    /// All notes in one list grouped by folder, as on the phone, rather than by
+    /// date. The list then holds the folders itself and always shows every note.
     @Published var byFolder = UserDefaults.standard.object(forKey: "byFolder") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(byFolder, forKey: "byFolder") }
+        didSet {
+            UserDefaults.standard.set(byFolder, forKey: "byFolder")
+            if byFolder { scope = .all }
+        }
     }
     @Published private var collapsed = Set(UserDefaults.standard.stringArray(forKey: "collapsed") ?? []) {
         didSet { UserDefaults.standard.set(collapsed.sorted(), forKey: "collapsed") }
@@ -416,7 +420,7 @@ final class NotesModel: ObservableObject {
     }
 
     func createFolder(_ name: String) async {
-        if let made = await run({ try await $0.createFolder(name) }) { scope = .folder(made) }
+        if let made = await run({ try await $0.createFolder(name) }), !byFolder { scope = .folder(made) }
     }
 
     func renameFolder(_ from: String, to: String) async {
