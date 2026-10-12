@@ -63,11 +63,14 @@ public enum FolderSyncPlan {
 
     /// `pending` are the Mac's paths, by key, left alone for now: not on this
     /// Mac yet, being written, or gone only a moment ago from iCloud Drive.
+    /// `settling` are those of them gone from iCloud Drive: one whose contents
+    /// turn up under another name was moved, and is moved on the phone at once.
     public static func plan(
         base: [String: FolderBase],
         phone: [FolderEntry],
         mac: [FolderEntry],
         pending: Set<String> = [],
+        settling: Set<String> = [],
         allowDeletions: Bool = false
     ) -> Result {
         let phoneByKey = index(phone)
@@ -154,12 +157,29 @@ public enum FolderSyncPlan {
                 files.append(.toMac(to))
             }
         }
+        // Gone from iCloud Drive a moment ago, as it is on the phone still.
+        var moved: [String: String] = [:]
+        for key in settling where macByKey[key] == nil {
+            if let sha = base[key]?.sha, phoneByKey[key]?.h == sha { moved[key] = sha }
+        }
+        var settled: Set<String> = []
         for (to, sha) in newOnMac.sorted(by: { $0.key < $1.key }) {
-            if let from = uniqueKey(in: deleteOnPhone, sha: sha), base[from]?.sha == sha {
+            if let from = uniqueKey(in: deleteOnPhone.merging(moved) { a, _ in a }, sha: sha), base[from]?.sha == sha {
                 moves.append(.moveOnPhone(from: from, to: to))
                 deleteOnPhone.removeValue(forKey: from)
+                if moved.removeValue(forKey: from) != nil { settled.insert(from) }
             } else {
                 files.append(.toPhone(to))
+            }
+        }
+        // A folder is removed once nothing left for later is in it.
+        let waiting = pending.subtracting(settled)
+        dirs.removeAll { step in
+            switch step {
+            case .removeDirOnMac(let key), .removeDirOnPhone(let key):
+                return waiting.contains { $0.hasPrefix(key + "/") }
+            default:
+                return false
             }
         }
 

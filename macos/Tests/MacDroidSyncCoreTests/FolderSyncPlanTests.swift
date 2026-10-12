@@ -93,6 +93,28 @@ final class FolderSyncPlanTests: XCTestCase {
         XCTAssertEqual(plan.steps, [])
     }
 
+    func testMoveOnICloudDriveIsMovedAtOnce() {
+        let plan = FolderSyncPlan.plan(
+            base: base([("Notes", nil), ("Notes/a.md", "1"), ("Notes/b.md", "2")]),
+            phone: [dir("Notes"), file("Notes/a.md", "1"), file("Notes/b.md", "2")],
+            mac: [dir("Notes"), dir("Trash"), file("Trash/a.md", "1"), file("Notes/b.md", "2")],
+            pending: ["notes/a.md"],
+            settling: ["notes/a.md"]
+        )
+        XCTAssertEqual(plan.steps, [.makeDirOnPhone("trash"), .moveOnPhone(from: "notes/a.md", to: "trash/a.md")])
+    }
+
+    func testFolderWaitsForWhatIsLeftForLater() {
+        let plan = FolderSyncPlan.plan(
+            base: base([("Gone", nil), ("Gone/a.png", "1"), ("k.md", "k")]),
+            phone: [dir("Gone"), file("Gone/a.png", "1"), file("k.md", "k")],
+            mac: [file("k.md", "k")],
+            pending: ["gone/a.png"],
+            settling: ["gone/a.png"]
+        )
+        XCTAssertEqual(plan.steps, [])
+    }
+
     func testCaseAndCompositionMakeOneKey() {
         let decomposed = "Zaz\u{0301}o\u{0301}łc.md".decomposedStringWithCanonicalMapping
         let plan = FolderSyncPlan.plan(

@@ -66,6 +66,8 @@ public final class FolderSyncCoordinator {
     private var again: Set<String> = []
     private var allowDeletionsOnce: Set<String> = []
     private var pollTimer: Timer?
+    /// A cycle once the files gone from iCloud Drive have been gone long enough to count as deleted.
+    private var settleTimers: [String: Timer] = [:]
     /// What each Mac folder looked like after the last cycle, so a look can tell a change.
     private var signatures: [String: [String: String]] = [:]
 
@@ -140,6 +142,8 @@ public final class FolderSyncCoordinator {
     public func disconnected() {
         isConnected = false
         updatePolling()
+        settleTimers.values.forEach { $0.invalidate() }
+        settleTimers = [:]
         queued = []
         let pending = waiting
         waiting = [:]
@@ -242,6 +246,19 @@ public final class FolderSyncCoordinator {
         }
     }
 
+    /// A cycle `seconds` from now, when the first of the files gone from iCloud Drive counts as deleted.
+    private func settleLater(_ pair: FolderPair, in seconds: TimeInterval?) {
+        settleTimers.removeValue(forKey: pair.id)?.invalidate()
+        guard let seconds else { return }
+        let id = pair.id
+        settleTimers[id] = Timer.scheduledTimer(withTimeInterval: max(seconds, 0) + 1, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.settleTimers.removeValue(forKey: id)
+                self?.requestSync(pairId: id)
+            }
+        }
+    }
+
     private func signature(_ scan: LocalFolder.Scan) -> [String: String] {
         var signature = Dictionary(scan.entries.map { (FolderRules.key($0.p), $0.h ?? "/") }, uniquingKeysWith: { a, _ in a })
         for key in scan.pending { signature[key] = "pending" }
@@ -279,21 +296,30 @@ public final class FolderSyncCoordinator {
             // from a folder on iCloud Drive counts as gone only after a while.
             let now = clock()
             var missing: [String: Double] = [:]
+            var settling: Set<String> = []
             if scan.isUbiquitous {
                 let present = Set(scan.entries.map { FolderRules.key($0.p) })
                 for (key, base) in store.state.base where !base.isDirectory && !present.contains(key) && !pending.contains(key) {
                     let since = store.state.missingSince[key] ?? now.timeIntervalSince1970
                     missing[key] = since
-                    if now.timeIntervalSince1970 - since < settleDeletions { pending.insert(key) }
+                    if now.timeIntervalSince1970 - since < settleDeletions {
+                        pending.insert(key)
+                        settling.insert(key)
+                    }
                 }
             }
             store.setMissing(missing)
+            let settles = settling.compactMap { missing[$0] }.min().map { $0 + settleDeletions - now.timeIntervalSince1970 }
+            settleLater(pair, in: settles)
             // Too large, or not readable on the phone just now: an empty checksum.
             for entry in phoneEntries where entry.s > FolderRules.maxFileSize || entry.h == "" {
                 pending.insert(FolderRules.key(entry.p))
             }
             let allow = allowDeletionsOnce.remove(pair.id) != nil
-            let plan = FolderSyncPlan.plan(base: store.state.base, phone: phoneEntries, mac: scan.entries, pending: pending, allowDeletions: allow)
+            let plan = FolderSyncPlan.plan(
+                base: store.state.base, phone: phoneEntries, mac: scan.entries,
+                pending: pending, settling: settling, allowDeletions: allow
+            )
             if let blocked = plan.blocked {
                 let side = blocked == .phoneEmpty ? "the phone's folder" : "the Mac's folder"
                 report(pair, FolderConflict(at: millis(now), kind: FolderConflict.Kind.empty, path: blocked == .phoneEmpty ? pair.phonePath : pair.macPath))
