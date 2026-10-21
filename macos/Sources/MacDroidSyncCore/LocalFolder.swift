@@ -72,11 +72,13 @@ public final class LocalFolder: @unchecked Sendable {
             let url = root.appendingPathComponent(relative)
             let name = url.lastPathComponent
             var path = relative.precomposedStringWithCanonicalMapping
+            let values = try? url.resourceValues(forKeys: Set(keys))
             if FolderRules.isExcluded(name: name) {
-                walker.skipDescendants()
+                // Only a folder's contents are skipped: after a file, as the Finder's .DS_Store, the walker
+                // would skip the rest of its folder, whose notes then looked deleted.
+                if values?.isDirectory == true { walker.skipDescendants() }
                 continue
             }
-            let values = try? url.resourceValues(forKeys: Set(keys))
             if values?.isSymbolicLink == true { continue }
             // A file iCloud has not brought down yet: `.Name.icloud` in its place.
             if name.hasPrefix("."), name.hasSuffix(".icloud"), values?.isDirectory != true {
