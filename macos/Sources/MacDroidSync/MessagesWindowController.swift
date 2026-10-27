@@ -57,10 +57,18 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
     private var statusReset: DispatchWorkItem?
     private var scrollToBottomNext = false
     private var lastLayoutWidth: CGFloat = 0
+    private var composerHeight: NSLayoutConstraint!
+    private var fieldHeight: NSLayoutConstraint!
+    private var bottomFadeHeight: NSLayoutConstraint!
+    /// The composer's share of the conversation's bottom, more once it grows.
+    private var composerRoom = MessagesWindowController.composerInset
 
     /// Room the floating header and composer take over the conversation.
     private static let headerInset: CGFloat = 96
     private static let composerInset: CGFloat = 64
+    private static let fieldMinHeight: CGFloat = 36
+    /// Past this the field scrolls instead of growing.
+    private static let composerMaxLines: CGFloat = 6
 
     init(coordinator: SmsCoordinator, hooks: MessagesHooks) {
         self.coordinator = coordinator
@@ -161,6 +169,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
 
     func windowDidResize(_ notification: Notification) {
         relayoutMessagesIfNeeded()
+        updateComposerHeight()
     }
 
     // MARK: - Building
@@ -426,6 +435,10 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
         composer.target = self
         composer.action = #selector(send)
         composer.setAccessibilityLabel("Message")
+        composer.usesSingleLineMode = false
+        composer.lineBreakMode = .byWordWrapping
+        composer.cell?.wraps = true
+        composer.cell?.isScrollable = false
         composer.translatesAutoresizingMaskIntoConstraints = false
         sendButton.image = NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: "Send")
         sendButton.symbolConfiguration = .init(pointSize: 22, weight: .regular)
@@ -439,13 +452,16 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
         sendButton.translatesAutoresizingMaskIntoConstraints = false
         let field = NSView()
         [composer, sendButton].forEach(field.addSubview)
+        composerHeight = composer.heightAnchor.constraint(equalToConstant: Self.lineHeight)
+        fieldHeight = field.heightAnchor.constraint(equalToConstant: Self.fieldMinHeight)
         NSLayoutConstraint.activate([
+            composerHeight,
+            fieldHeight,
             composer.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 16),
             composer.centerYAnchor.constraint(equalTo: field.centerYAnchor),
             composer.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -40),
             sendButton.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -6),
-            sendButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
-            field.heightAnchor.constraint(equalToConstant: 36),
+            sendButton.bottomAnchor.constraint(equalTo: field.bottomAnchor, constant: -7),
         ])
         let fieldGlass = Self.glass(field, cornerRadius: 18)
         fieldGlass.translatesAutoresizingMaskIntoConstraints = false
@@ -486,6 +502,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
         conversationView.translatesAutoresizingMaskIntoConstraints = false
         let topFade = Self.edgeFade(top: true)
         let bottomFade = Self.edgeFade(top: false)
+        bottomFadeHeight = bottomFade.heightAnchor.constraint(equalToConstant: Self.composerInset)
         [messageScroll, topFade, bottomFade, header, refreshGlass, statusBubble, attachmentBubble,
          attachGlass, fieldGlass, emojiGlass].forEach(conversationView.addSubview)
 
@@ -527,7 +544,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
             bottomFade.bottomAnchor.constraint(equalTo: conversationView.bottomAnchor),
             bottomFade.leadingAnchor.constraint(equalTo: conversationView.leadingAnchor),
             bottomFade.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor),
-            bottomFade.heightAnchor.constraint(equalToConstant: Self.composerInset),
+            bottomFadeHeight,
 
             header.topAnchor.constraint(equalTo: conversationView.topAnchor, constant: 10),
             header.centerXAnchor.constraint(equalTo: conversationView.safeAreaLayoutGuide.centerXAnchor),
@@ -536,12 +553,12 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
             refreshGlass.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor, constant: -14),
 
             attachGlass.leadingAnchor.constraint(equalTo: conversationView.safeAreaLayoutGuide.leadingAnchor, constant: 16),
-            attachGlass.centerYAnchor.constraint(equalTo: fieldGlass.centerYAnchor),
+            attachGlass.bottomAnchor.constraint(equalTo: fieldGlass.bottomAnchor),
             fieldGlass.leadingAnchor.constraint(equalTo: attachGlass.trailingAnchor, constant: 10),
             fieldGlass.trailingAnchor.constraint(equalTo: emojiGlass.leadingAnchor, constant: -10),
             fieldGlass.bottomAnchor.constraint(equalTo: conversationView.bottomAnchor, constant: -14),
             emojiGlass.trailingAnchor.constraint(equalTo: conversationView.trailingAnchor, constant: -16),
-            emojiGlass.centerYAnchor.constraint(equalTo: fieldGlass.centerYAnchor),
+            emojiGlass.bottomAnchor.constraint(equalTo: fieldGlass.bottomAnchor),
             attachmentBubble.leadingAnchor.constraint(equalTo: fieldGlass.leadingAnchor),
             attachmentBubble.bottomAnchor.constraint(equalTo: fieldGlass.topAnchor, constant: -8),
             statusBubble.centerXAnchor.constraint(equalTo: fieldGlass.centerXAnchor),
@@ -569,6 +586,32 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
     func controlTextDidChange(_ notification: Notification) {
         guard (notification.object as? NSTextField) === composer else { return }
         updateSendButton()
+        updateComposerHeight()
+    }
+
+    private static let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 14)))
+
+    /// The field grows with what is typed, a line at a time, up to a few lines.
+    private func updateComposerHeight() {
+        guard composerHeight != nil, let font = composer.font else { return }
+        let width = composer.bounds.width - 4
+        guard width > 0 else { return }
+        var text = composer.stringValue
+        if text.isEmpty || text.hasSuffix("\n") { text += " " }
+        let measured = (text as NSString).boundingRect(
+            with: NSSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        ).height
+        let height = min(max(Self.lineHeight, ceil(measured)), Self.lineHeight * Self.composerMaxLines)
+        guard abs(height - composerHeight.constant) > 0.5 else { return }
+        let wasAtBottom = isScrolledToBottom
+        composerHeight.constant = height
+        fieldHeight.constant = max(Self.fieldMinHeight, height + 19)
+        composerRoom = Self.composerInset + fieldHeight.constant - Self.fieldMinHeight
+        bottomFadeHeight.constant = composerRoom
+        messageScroll.contentInsets.bottom = composerRoom
+        if wasAtBottom { scrollToBottom() }
     }
 
     private func updateSendButton() {
@@ -608,6 +651,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
         reloadMessages(keepPosition: false)
         coordinator.load(threadId: threadId)
         composer.stringValue = ""
+        updateComposerHeight()
         clearAttachment()
         updateConversation()
         if let index = threads.firstIndex(where: { $0.id == threadId }) {
@@ -666,14 +710,14 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.messageTable.layoutSubtreeIfNeeded()
-            let y = max(-Self.headerInset, self.messageTable.bounds.height - self.messageScroll.contentView.bounds.height + Self.composerInset)
+            let y = max(-Self.headerInset, self.messageTable.bounds.height - self.messageScroll.contentView.bounds.height + self.composerRoom)
             self.messageScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
             self.messageScroll.reflectScrolledClipView(self.messageScroll.contentView)
         }
     }
 
     private var isScrolledToBottom: Bool {
-        messageScroll.contentView.bounds.maxY >= messageTable.bounds.height + Self.composerInset - 8
+        messageScroll.contentView.bounds.maxY >= messageTable.bounds.height + composerRoom - 8
     }
 
     private func relayoutMessagesIfNeeded() {
@@ -800,6 +844,7 @@ final class MessagesWindowController: NSWindowController, NSWindowDelegate,
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachment != nil else { return }
         if coordinator.send(text, image: attachment, to: thread) {
             composer.stringValue = ""
+            updateComposerHeight()
             clearAttachment()
             updateSendButton()
             scrollToBottomNext = true
