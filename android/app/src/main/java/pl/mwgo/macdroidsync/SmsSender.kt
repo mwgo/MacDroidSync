@@ -31,7 +31,11 @@ class SmsSender(private val context: Context) {
             report("failed", "this phone cannot send text messages")
             return
         }
-        val parts = manager.divideMessage(text)
+        val parts = try {
+            manager.divideMessage(text)
+        } catch (error: SecurityException) {
+            ArrayList(SmsRules.divide(text))
+        }
         val id = sequence.incrementAndGet()
         val sentAction = "$ACTION_SENT.$id"
         val deliveredAction = "$ACTION_DELIVERED.$id"

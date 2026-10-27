@@ -83,5 +83,18 @@ class SmsTest {
         assertFalse(SmsRules.canReply("BANK"))
     }
 
+    @Test
+    fun `text is divided as the network counts it`() {
+        assertEquals(listOf("x".repeat(160)), SmsRules.divide("x".repeat(160)))
+        assertEquals(listOf("x".repeat(153), "x".repeat(47)), SmsRules.divide("x".repeat(200)))
+        assertEquals(2, SmsRules.divide("€".repeat(81)).size)
+        assertEquals(1, SmsRules.divide("ą".repeat(70)).size)
+        assertEquals(listOf("ą".repeat(67), "ą".repeat(4)), SmsRules.divide("ą".repeat(71)))
+        val emoji = "😀".repeat(40)
+        val parts = SmsRules.divide(emoji)
+        assertEquals(emoji, parts.joinToString(""))
+        assertTrue(parts.all { it.length <= 67 && !it.last().isHighSurrogate() })
+    }
+
     private fun message(id: String, date: Long) = SmsMessage(id = id, date = date, fromMe = false)
 }

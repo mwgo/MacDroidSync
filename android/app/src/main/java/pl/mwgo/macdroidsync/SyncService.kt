@@ -613,7 +613,12 @@ class SyncService : Service() {
         } catch (error: Exception) {
             Log.w(TAG, "Could not answer $type", error)
             runCatching {
-                peer.sendSms(type, reply, ok = false, reason = error.message ?: "the phone could not read its messages")
+                if (type == MessageType.SMS_SEND) {
+                    val status = SmsPayload(requestId = request.requestId, threadId = request.threadId, state = "failed")
+                    peer.sendSms(MessageType.SMS_STATUS, status, ok = false, reason = error.message ?: "the message could not be sent")
+                } else {
+                    peer.sendSms(type, reply, ok = false, reason = error.message ?: "the phone could not read its messages")
+                }
             }
         }
     }

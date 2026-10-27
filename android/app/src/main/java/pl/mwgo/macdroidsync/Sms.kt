@@ -240,6 +240,40 @@ object SmsRules {
 
     /** Whether a reply can go to [address]: a sender name like "BANK" cannot take one. */
     fun canReply(address: String): Boolean = address.count { it.isDigit() } >= 3
+
+    private const val GSM_BASIC = "@£\$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?" +
+        "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
+    private const val GSM_EXTENSION = "\u000C^{}\\[~]|€"
+
+    /**
+     * SMS parts the way the network counts them: 160 GSM 7-bit septets or 70
+     * UCS-2 units in one message, 153 or 67 per part once it is split. Used
+     * when SmsManager.divideMessage is refused, as on Android 17 without
+     * READ_PHONE_STATE.
+     */
+    fun divide(text: String): List<String> {
+        val gsm = text.all { it in GSM_BASIC || it in GSM_EXTENSION }
+        val cost: (Char) -> Int = if (gsm) { c -> if (c in GSM_EXTENSION) 2 else 1 } else { _ -> 1 }
+        if (text.sumOf(cost) <= if (gsm) 160 else 70) return listOf(text)
+        val limit = if (gsm) 153 else 67
+        val parts = mutableListOf<String>()
+        var start = 0
+        var used = 0
+        var index = 0
+        while (index < text.length) {
+            val step = if (text[index].isHighSurrogate() && index + 1 < text.length) 2 else 1
+            val size = (index until index + step).sumOf { cost(text[it]) }
+            if (used + size > limit) {
+                parts.add(text.substring(start, index))
+                start = index
+                used = 0
+            }
+            used += size
+            index += step
+        }
+        parts.add(text.substring(start))
+        return parts
+    }
 }
 
 private fun JSONObject.stringOrNull(key: String): String? =
