@@ -205,11 +205,19 @@ public final class SyncServer {
                 case .ready:
                     self.cancelRetry()
                     Log.info("Listening on port \(self.port), advertising \(Wire.bonjourServiceType)")
-                    if self.session == nil { self.state = .disconnected }
+                    // A phone that connected while the listener was failing is still there.
+                    self.state = self.session.map { $0.isAuthenticated ? .connected : .connecting } ?? .disconnected
                     let port = self.port
                     DispatchQueue.main.async { self.onListening?(port) }
                 case .failed(let error):
-                    self.report(failure: "Listener failed: \(error.localizedDescription)")
+                    // Bonjour going away, as right after a restart, leaves the
+                    // current session working; only a Mac with no phone is in error.
+                    let message = "Listener failed: \(error.localizedDescription)"
+                    if self.session == nil {
+                        self.report(failure: message)
+                    } else {
+                        Log.error(message)
+                    }
                     // A failed listener never recovers on its own.
                     if self.listener === listener {
                         listener.cancel()
