@@ -159,11 +159,14 @@ class FolderHost(
         }
         guard(file, baseHash)
         file.parentFile?.mkdirs()
-        if (!part.renameTo(file)) {
+        // The part's time, kept by the rename: an app saving the file right after gives it another one.
+        val modified = part.lastModified()
+        if (part.renameTo(file)) {
+            remember(file, total, modified, sha)
+        } else {
             part.copyTo(file, overwrite = true)
             part.delete()
         }
-        remember(file, sha)
         wrote(file)
     }
 
@@ -298,15 +301,18 @@ class FolderHost(
 
     private fun checksum(file: File): String {
         val key = file.absolutePath
+        val size = file.length()
+        val modified = file.lastModified()
         val known = checksums[key]
-        if (known != null && known.size == file.length() && known.modified == file.lastModified()) return known.sha
+        if (known != null && known.size == size && known.modified == modified) return known.sha
         val sha = FolderRules.sha256(file)
-        remember(file, sha)
+        // Saved again while it was read, the sum is of the older text and is not kept, or it would stand for the newer one.
+        if (file.length() == size && file.lastModified() == modified) remember(file, size, modified, sha)
         return sha
     }
 
-    private fun remember(file: File, sha: String) {
-        checksums[file.absolutePath] = Known(file.length(), file.lastModified(), sha)
+    private fun remember(file: File, size: Long, modified: Long, sha: String) {
+        checksums[file.absolutePath] = Known(size, modified, sha)
         checksumsDirty = true
     }
 
