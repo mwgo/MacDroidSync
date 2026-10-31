@@ -57,6 +57,16 @@ class Prefs(context: Context) {
         get() = prefs.getString(KEY_CAMERA_NAME, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_CAMERA_NAME, value).apply()
 
+    /** Whether the camera is sent the phone's location and the time while it is on. */
+    var cameraGeoEnabled: Boolean
+        get() = prefs.getBoolean(KEY_CAMERA_GEO, true)
+        set(value) = prefs.edit().putBoolean(KEY_CAMERA_GEO, value).apply()
+
+    /** Seconds between two rounds of location and time. */
+    var cameraGeoInterval: Int
+        get() = prefs.getInt(KEY_CAMERA_GEO_INTERVAL, FujifilmGeo.DEFAULT_INTERVAL)
+        set(value) = prefs.edit().putInt(KEY_CAMERA_GEO_INTERVAL, value).apply()
+
     /** Whether the background scan last saw the camera advertising, that is switched on. */
     var cameraNearby: Boolean
         get() = prefs.getBoolean(KEY_CAMERA_NEARBY, false)
@@ -100,5 +110,7 @@ class Prefs(context: Context) {
         private const val KEY_CAMERA_ADDRESS = "cameraAddress"
         private const val KEY_CAMERA_NAME = "cameraName"
         private const val KEY_CAMERA_NEARBY = "cameraNearby"
+        private const val KEY_CAMERA_GEO = "cameraGeo"
+        private const val KEY_CAMERA_GEO_INTERVAL = "cameraGeoInterval"
     }
 }

@@ -31,6 +31,15 @@ class CameraActivity : ScreenActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
 
+    private val locationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            // "All the time" can only be asked for once "while in use" is there.
+            if (Permissions.hasForegroundLocation(this)) requestLocation() else refresh()
+        }
+
+    private val backgroundLocationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
+
     /** Keeps the state line live while the screen is open. */
     private val linkReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -56,6 +65,28 @@ class CameraActivity : ScreenActivity() {
         }
         binding.bluetoothButton.setOnClickListener { requestBluetooth() }
         binding.notificationsButton.setOnClickListener { requestNotifications() }
+        binding.locationButton.setOnClickListener { requestLocation() }
+
+        binding.geoSwitch.isChecked = prefs.cameraGeoEnabled
+        binding.geoSwitch.setOnCheckedChangeListener { _, checked ->
+            prefs.cameraGeoEnabled = checked
+            if (checked && !Permissions.hasCameraLocation(this)) requestLocation()
+            if (!checked) CameraLinkService.stop(this)
+            FujifilmCamera.refresh(this)
+            binding.intervalLayout.isEnabled = checked
+        }
+        val labels = FujifilmGeo.INTERVALS.map { getString(R.string.camera_geo_interval_value, it) }
+        binding.intervalInput.setSimpleItems(labels.toTypedArray())
+        binding.intervalInput.setText(getString(R.string.camera_geo_interval_value, prefs.cameraGeoInterval), false)
+        binding.intervalInput.setOnItemClickListener { _, _, position, _ ->
+            prefs.cameraGeoInterval = FujifilmGeo.INTERVALS[position]
+            // The camera is told the interval when connecting, so a new one takes a new link.
+            if (CameraLinkService.running) {
+                CameraLinkService.stop(this)
+                binding.root.postDelayed({ FujifilmCamera.refresh(this) }, 500)
+            }
+        }
+        binding.intervalLayout.isEnabled = prefs.cameraGeoEnabled
     }
 
     override fun onResume() {
@@ -80,6 +111,10 @@ class CameraActivity : ScreenActivity() {
     private fun refresh() {
         row(hasBluetooth(), binding.bluetoothState, binding.bluetoothButton)
         row(Permissions.hasNotifications(this), binding.notificationsState, binding.notificationsButton)
+        row(Permissions.hasCameraLocation(this), binding.locationState, binding.locationButton)
+        if (Permissions.hasForegroundLocation(this) && !Permissions.hasCameraLocation(this)) {
+            binding.locationState.setText(R.string.permission_location_partial)
+        }
         fillCameras()
         FujifilmCamera.refresh(this)
         updateState()
@@ -145,6 +180,17 @@ class CameraActivity : ScreenActivity() {
     private fun hasBluetooth(): Boolean =
         Permissions.hasBluetoothConnect(this) &&
             (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || Permissions.hasBluetoothScan(this))
+
+    private fun requestLocation() {
+        when {
+            Permissions.hasCameraLocation(this) -> openAppSettings()
+            !Permissions.hasForegroundLocation(this) -> locationPermission.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            )
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                backgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        }
+    }
 
     private fun requestNotifications() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || Permissions.hasNotifications(this)) {

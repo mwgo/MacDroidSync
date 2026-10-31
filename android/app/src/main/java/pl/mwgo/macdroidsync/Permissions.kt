@@ -40,6 +40,18 @@ object Permissions {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             granted(context, Manifest.permission.BLUETOOTH_SCAN)
 
+    /**
+     * The location sent to the camera. It is read while no screen of this app
+     * is open, which takes the "all the time" grant from Android 10 on.
+     */
+    fun hasCameraLocation(context: Context): Boolean =
+        granted(context, Manifest.permission.ACCESS_FINE_LOCATION) &&
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                granted(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION))
+
+    fun hasForegroundLocation(context: Context): Boolean =
+        granted(context, Manifest.permission.ACCESS_FINE_LOCATION)
+
     /** Runtime permission from Android 13 on; before that notifications just work. */
     fun hasNotifications(context: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||

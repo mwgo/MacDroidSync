@@ -51,6 +51,11 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- Seeing the camera switched on even when no app connects to it. Only
          its advertising is matched, never used for location. -->
+    <!-- The location sent to the Fujifilm camera while it is on. It is read
+         with no screen of this app open, hence "all the time". -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
@@ -180,6 +185,12 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Connected to the Fujifilm camera only while it is on, see CameraLinkService. -->
+        <service
+            android:name=".CameraLinkService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <receiver
             android:name=".BootReceiver"

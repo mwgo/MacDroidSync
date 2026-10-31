@@ -67,10 +67,24 @@ object FujifilmCamera {
 
     fun isOn(context: Context): Boolean = Prefs(context).cameraNearby || isConnected(context)
 
-    /** Brings the notification in line with what is known about the camera now. */
-    fun refresh(context: Context) {
-        if (isWatched(context) && isOn(context)) show(context) else hide(context)
+    /**
+     * Brings the notification, and the link that sends the location and time,
+     * in line with what is known about the camera now.
+     */
+    fun refresh(context: Context, startLink: Boolean = true) {
+        if (isWatched(context) && isOn(context)) {
+            when {
+                startLink && sendsGeo(context) -> CameraLinkService.start(context)
+                !CameraLinkService.running -> show(context)
+            }
+        } else {
+            hide(context)
+            if (CameraLinkService.running) CameraLinkService.stop(context)
+        }
     }
+
+    fun sendsGeo(context: Context): Boolean =
+        Prefs(context).cameraGeoEnabled && Permissions.hasBluetoothConnect(context)
 
     /**
      * Starts the background scan for the chosen camera, or stops it when the
@@ -118,12 +132,19 @@ object FujifilmCamera {
 
     fun show(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
+        runCatching { manager.notify(NOTIFICATION_ID, notification(context, context.getString(R.string.camera_notification_text))) }
+            .onFailure { Log.w(Prefs.TAG, "Could not show the camera notification", it) }
+    }
+
+    /** The one camera notification, whether shown on its own or by the link service. */
+    fun notification(context: Context, text: String): android.app.Notification {
+        val manager = context.getSystemService(NotificationManager::class.java)
         createChannel(context, manager)
         val camera = Prefs(context).cameraName.ifEmpty { context.getString(R.string.camera_default_name) }
-        val notification = NotificationCompat.Builder(context, CHANNEL)
+        return NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_camera)
             .setContentTitle(context.getString(R.string.camera_notification_title, camera))
-            .setContentText(context.getString(R.string.camera_notification_text))
+            .setContentText(text)
             .setContentIntent(openIntent(context))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setOngoing(true)
@@ -132,8 +153,6 @@ object FujifilmCamera {
             .setWhen(System.currentTimeMillis())
             .setShowWhen(true)
             .build()
-        runCatching { manager.notify(NOTIFICATION_ID, notification) }
-            .onFailure { Log.w(Prefs.TAG, "Could not show the camera notification", it) }
     }
 
     fun hide(context: Context) {
