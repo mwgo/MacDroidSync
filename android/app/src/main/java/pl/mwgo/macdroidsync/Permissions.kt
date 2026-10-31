@@ -24,6 +24,22 @@ object Permissions {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE) ==
             PackageManager.PERMISSION_GRANTED
 
+    /**
+     * Seeing paired devices and their connections, for the Fujifilm camera; a
+     * runtime permission from Android 12 on, implied by BLUETOOTH before it.
+     */
+    fun hasBluetoothConnect(context: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            granted(context, Manifest.permission.BLUETOOTH_CONNECT)
+
+    /**
+     * Noticing the camera switched on, by its advertising, without any app
+     * connected to it. Only from Android 12: before it a scan needs the location.
+     */
+    fun hasBluetoothScan(context: Context): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            granted(context, Manifest.permission.BLUETOOTH_SCAN)
+
     /** Runtime permission from Android 13 on; before that notifications just work. */
     fun hasNotifications(context: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||

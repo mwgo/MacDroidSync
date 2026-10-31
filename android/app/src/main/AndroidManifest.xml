@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -46,6 +47,14 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
+    <!-- Which paired device is the Fujifilm camera, and when it connects. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Seeing the camera switched on even when no app connects to it. Only
+         its advertising is matched, never used for location. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
     <!-- The Mac's Messages window: reading conversations, sending replies typed
          on the Mac, and contact names instead of bare numbers (optional). -->
     <uses-permission android:name="android.permission.READ_SMS" />
@@ -96,6 +105,12 @@
             android:label="@string/title_settings"
             android:parentActivityName=".MainActivity"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".CameraActivity"
+            android:exported="false"
+            android:label="@string/title_camera"
+            android:parentActivityName=".MainActivity" />
 
         <activity
             android:name=".AboutActivity"
@@ -150,6 +165,19 @@
             <intent-filter>
                 <action android:name="pl.mwgo.macdroidsync.FOLDER_CHANGED" />
                 <action android:name="pl.mwgo.macdroidsync.FOLDER_EDITING" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Exported for the system's Bluetooth broadcasts, which a manifest
+             receiver still gets on every Android version. The background scan
+             reports here too, through an explicit PendingIntent. -->
+        <receiver
+            android:name=".FujifilmCameraReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

@@ -43,6 +43,25 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean(KEY_BEACON_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_BEACON_ENABLED, value).apply()
 
+    /** Whether the notification follows the Fujifilm camera's Bluetooth link. */
+    var cameraEnabled: Boolean
+        get() = prefs.getBoolean(KEY_CAMERA_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_CAMERA_ENABLED, value).apply()
+
+    /** The paired camera watched, by its Bluetooth address; empty until one is chosen. */
+    var cameraAddress: String
+        get() = prefs.getString(KEY_CAMERA_ADDRESS, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_CAMERA_ADDRESS, value).apply()
+
+    var cameraName: String
+        get() = prefs.getString(KEY_CAMERA_NAME, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_CAMERA_NAME, value).apply()
+
+    /** Whether the background scan last saw the camera advertising, that is switched on. */
+    var cameraNearby: Boolean
+        get() = prefs.getBoolean(KEY_CAMERA_NEARBY, false)
+        set(value) = prefs.edit().putBoolean(KEY_CAMERA_NEARBY, value).apply()
+
     // Photo sync has no settings here any more: the Mac holds all of them and
     // sends them at the start of every session. What is left on this phone is
     // the media permission, which is the one thing a Mac cannot grant.
@@ -77,5 +96,9 @@ class Prefs(context: Context) {
         private const val KEY_SYNC_ENABLED = "syncEnabled"
         private const val KEY_BEACON_ENABLED = "beaconEnabled"
         private const val KEY_DEVICE_ID = "deviceId"
+        private const val KEY_CAMERA_ENABLED = "cameraEnabled"
+        private const val KEY_CAMERA_ADDRESS = "cameraAddress"
+        private const val KEY_CAMERA_NAME = "cameraName"
+        private const val KEY_CAMERA_NEARBY = "cameraNearby"
     }
 }

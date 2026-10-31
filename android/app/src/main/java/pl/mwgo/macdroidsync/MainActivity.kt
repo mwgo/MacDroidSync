@@ -126,6 +126,10 @@ class MainActivity : ScreenActivity() {
             openSettings()
             true
         }
+        R.id.action_camera -> {
+            startActivity(Intent(this, CameraActivity::class.java))
+            true
+        }
         R.id.action_about -> {
             startActivity(Intent(this, AboutActivity::class.java))
             true
