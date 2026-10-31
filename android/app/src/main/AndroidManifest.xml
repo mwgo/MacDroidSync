@@ -56,6 +56,12 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- With the camera as a companion device, the link to it may start from
+         the background when the camera is switched on. -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
@@ -116,6 +122,12 @@
             android:exported="false"
             android:label="@string/title_camera"
             android:parentActivityName=".MainActivity" />
+
+        <activity
+            android:name=".ShutterActivity"
+            android:exported="false"
+            android:label="@string/title_shutter"
+            android:launchMode="singleTop" />
 
         <activity
             android:name=".AboutActivity"

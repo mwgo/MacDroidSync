@@ -37,6 +37,23 @@ object FujifilmNames {
  */
 object FujifilmCamera {
 
+    /**
+     * Whether the camera is this app's companion device. Only that lets the link
+     * start from the background, when the scan sees the camera switched on; the
+     * user confirms it once in a system dialog.
+     */
+    fun hasCompanion(context: Context): Boolean {
+        val address = Prefs(context).cameraAddress
+        val manager = context.getSystemService(android.companion.CompanionDeviceManager::class.java) ?: return false
+        return runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                manager.myAssociations.any { it.deviceMacAddress?.toString().equals(address, ignoreCase = true) }
+            } else {
+                @Suppress("DEPRECATION") manager.associations.any { it.equals(address, ignoreCase = true) }
+            }
+        }.getOrDefault(false)
+    }
+
     fun hasBluetooth(context: Context): Boolean =
         context.getSystemService(BluetoothManager::class.java)?.adapter != null
 
@@ -73,18 +90,16 @@ object FujifilmCamera {
      */
     fun refresh(context: Context, startLink: Boolean = true) {
         if (isWatched(context) && isOn(context)) {
-            when {
-                startLink && sendsGeo(context) -> CameraLinkService.start(context)
-                !CameraLinkService.running -> show(context)
-            }
+            val linked = CameraLinkService.running ||
+                (startLink && Permissions.hasBluetoothConnect(context) && CameraLinkService.start(context))
+            if (!linked) show(context)
         } else {
             hide(context)
             if (CameraLinkService.running) CameraLinkService.stop(context)
         }
     }
 
-    fun sendsGeo(context: Context): Boolean =
-        Prefs(context).cameraGeoEnabled && Permissions.hasBluetoothConnect(context)
+
 
     /**
      * Starts the background scan for the chosen camera, or stops it when the
@@ -173,16 +188,17 @@ object FujifilmCamera {
         manager.createNotificationChannel(channel)
     }
 
-    /** Straight into XApp when it is installed, since that is what the camera is on for. */
-    private fun openIntent(context: Context): PendingIntent {
-        val intent = context.packageManager.getLaunchIntentForPackage(XAPP_PACKAGE)
-            ?: Intent(context, CameraActivity::class.java)
-        return PendingIntent.getActivity(
-            context,
-            REQUEST_OPEN,
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+    private fun openIntent(context: Context): PendingIntent = PendingIntent.getActivity(
+        context,
+        REQUEST_OPEN,
+        Intent(context, ShutterActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    fun openXApp(context: Context): Boolean {
+        val intent = context.packageManager.getLaunchIntentForPackage(XAPP_PACKAGE) ?: return false
+        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        return true
     }
 
     const val CHANNEL = "fujifilm_camera"

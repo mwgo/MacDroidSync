@@ -23,6 +23,24 @@ object FujifilmGeo {
     val DATE_SYNC_STATE: UUID = UUID.fromString("F9150137-5D40-4801-A8DC-F7FC5B01DA50")
     val LOCATION_SYNC_SETTING: UUID = UUID.fromString("AAB609C4-94DD-4D89-BC60-665D5090B828")
     val LOCATION_SYNC_CYCLE: UUID = UUID.fromString("C95D91AE-B247-4D6D-8661-7DD5D6A0F85B")
+    /**
+     * XApp introduces itself on every connection, and the camera takes control
+     * requests only after that: this number read and written back with the
+     * XApp bit set, the phone's name, and the application information.
+     */
+    val IDENTIFICATION_NUMBER: UUID = UUID.fromString("F557D96B-8284-4667-8793-B971C1DECA2A")
+    val DEVICE_NAME: UUID = UUID.fromString("85B9163E-62D1-49FF-A6F5-054B4630D4A1")
+    val APPLICATION_INFORMATION: UUID = UUID.fromString("8B5ECF55-FC6B-40D0-B4C1-76F64E5453C7")
+    const val XAPP_IDENTIFIER = 0x20000000
+    /** XApp, protocol version 0x0101. */
+    val XAPP_INFORMATION = byteArrayOf(0x80.toByte(), 1, 1)
+    val POWER_KEY_STATE: UUID = UUID.fromString("F90F7D3A-3B64-45C6-AB21-933900184837")
+
+    /** In the Camera Control service: the shutter button, as a uint16 state. */
+    val SHOOTING_REQUEST: UUID = UUID.fromString("7FCF49C6-4FF0-4777-A03D-1A79166AF7A8")
+    const val SHUTTER_UP = 0
+    const val SHUTTER_HALF = 1
+    const val SHUTTER_FULL = 2
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
 
     /** The intervals XApp offers, in seconds; the camera is told the chosen one. */
@@ -65,6 +83,17 @@ object FujifilmGeo {
         val local = Calendar.getInstance(zone).apply { timeInMillis = now }
         return ByteBuffer.allocate(7).order(ByteOrder.LITTLE_ENDIAN).putDate(local).array()
     }
+
+    fun shutter(state: Int): ByteArray = interval(state)
+
+    /** The number read from the camera, with the XApp bit set, as XApp writes it back. */
+    fun identification(read: ByteArray): ByteArray? {
+        if (read.size != 4) return null
+        val number = ByteBuffer.wrap(read).order(ByteOrder.LITTLE_ENDIAN).int or XAPP_IDENTIFIER
+        return ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(number).array()
+    }
+
+    fun deviceName(name: String): ByteArray = name.toByteArray(Charsets.UTF_8) + 0
 
     fun interval(seconds: Int): ByteArray =
         ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(seconds.toShort()).array()

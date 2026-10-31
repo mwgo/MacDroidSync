@@ -53,6 +53,18 @@ class FujifilmGeoTest {
         assertArrayEquals(byteArrayOf(0xE0.toByte(), 1), FujifilmGeo.interval(480))
     }
 
+    @Test
+    fun `identification keeps the number and sets the xapp bit`() {
+        assertArrayEquals(le(0x2000_1234), FujifilmGeo.identification(le(0x1234)))
+        assertArrayEquals(le(0x2000_1234), FujifilmGeo.identification(le(0x2000_1234)))
+        assertEquals(null, FujifilmGeo.identification(byteArrayOf(1, 2)))
+    }
+
+    @Test
+    fun `device name ends with a zero`() {
+        assertArrayEquals(byteArrayOf(0x50, 0x69, 0), FujifilmGeo.deviceName("Pi"))
+    }
+
     private fun le(value: Int) = byteArrayOf(
         value.toByte(), (value shr 8).toByte(), (value shr 16).toByte(), (value shr 24).toByte(),
     )

@@ -37,6 +37,11 @@ class CameraActivity : ScreenActivity() {
             if (Permissions.hasForegroundLocation(this)) requestLocation() else refresh()
         }
 
+    private val companionLink =
+        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) {
+            refresh()
+        }
+
     private val backgroundLocationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
 
@@ -66,13 +71,17 @@ class CameraActivity : ScreenActivity() {
         binding.bluetoothButton.setOnClickListener { requestBluetooth() }
         binding.notificationsButton.setOnClickListener { requestNotifications() }
         binding.locationButton.setOnClickListener { requestLocation() }
+        binding.companionButton.setOnClickListener { requestCompanion() }
 
         binding.geoSwitch.isChecked = prefs.cameraGeoEnabled
         binding.geoSwitch.setOnCheckedChangeListener { _, checked ->
             prefs.cameraGeoEnabled = checked
             if (checked && !Permissions.hasCameraLocation(this)) requestLocation()
-            if (!checked) CameraLinkService.stop(this)
-            FujifilmCamera.refresh(this)
+            // What the link does is settled when it connects, so a change takes a new one.
+            if (CameraLinkService.running) {
+                CameraLinkService.stop(this)
+                binding.root.postDelayed({ FujifilmCamera.refresh(this) }, 500)
+            }
             binding.intervalLayout.isEnabled = checked
         }
         val labels = FujifilmGeo.INTERVALS.map { getString(R.string.camera_geo_interval_value, it) }
@@ -112,6 +121,9 @@ class CameraActivity : ScreenActivity() {
         row(hasBluetooth(), binding.bluetoothState, binding.bluetoothButton)
         row(Permissions.hasNotifications(this), binding.notificationsState, binding.notificationsButton)
         row(Permissions.hasCameraLocation(this), binding.locationState, binding.locationButton)
+        val companion = FujifilmCamera.hasCompanion(this)
+        binding.companionState.setText(if (companion) R.string.permission_granted else R.string.permission_missing)
+        binding.companionButton.visibility = if (companion) View.GONE else View.VISIBLE
         if (Permissions.hasForegroundLocation(this) && !Permissions.hasCameraLocation(this)) {
             binding.locationState.setText(R.string.permission_location_partial)
         }
@@ -180,6 +192,42 @@ class CameraActivity : ScreenActivity() {
     private fun hasBluetooth(): Boolean =
         Permissions.hasBluetoothConnect(this) &&
             (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || Permissions.hasBluetoothScan(this))
+
+    /** The system's own dialog that makes the camera this app's companion device. */
+    private fun requestCompanion() {
+        val manager = getSystemService(android.companion.CompanionDeviceManager::class.java) ?: return
+        if (prefs.cameraAddress.isEmpty()) return
+        // Matched among the paired devices, so the camera is found even while
+        // connected, when it no longer advertises.
+        val filter = android.companion.BluetoothDeviceFilter.Builder()
+            .setAddress(prefs.cameraAddress.uppercase())
+            .build()
+        val request = android.companion.AssociationRequest.Builder()
+            .addDeviceFilter(filter)
+            .setSingleDevice(true)
+            .build()
+        val pending = { sender: android.content.IntentSender ->
+            companionLink.launch(androidx.activity.result.IntentSenderRequest.Builder(sender).build())
+        }
+        val failed = { error: CharSequence? ->
+            android.util.Log.w(Prefs.TAG, "Companion link failed: $error")
+            android.widget.Toast.makeText(this, R.string.permission_companion_failed, android.widget.Toast.LENGTH_LONG).show()
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            manager.associate(request, mainExecutor, object : android.companion.CompanionDeviceManager.Callback() {
+                override fun onAssociationPending(intentSender: android.content.IntentSender) = pending(intentSender)
+                override fun onAssociationCreated(associationInfo: android.companion.AssociationInfo) = refresh()
+                override fun onFailure(error: CharSequence?) = failed(error)
+            })
+        } else {
+            @Suppress("DEPRECATION")
+            manager.associate(request, object : android.companion.CompanionDeviceManager.Callback() {
+                @Deprecated("Before Android 13")
+                override fun onDeviceFound(intentSender: android.content.IntentSender) = pending(intentSender)
+                override fun onFailure(error: CharSequence?) = failed(error)
+            }, null)
+        }
+    }
 
     private fun requestLocation() {
         when {

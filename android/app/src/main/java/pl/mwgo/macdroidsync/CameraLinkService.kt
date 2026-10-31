@@ -24,10 +24,10 @@ import java.util.Date
 import java.util.TimeZone
 
 /**
- * Keeps the camera's location and clock right while it is switched on: connects
- * to it over Bluetooth LE and, every configured interval, writes the time and a
- * fresh location fix. Runs only while the camera is around; without it there is
- * no connection, no write and no location request.
+ * The link to the camera while it is switched on: the shutter button, and, when
+ * enabled, the camera's location and clock kept right by writing the time and a
+ * fresh location fix every configured interval. Runs only while the camera is
+ * around; without it there is no connection, no write and no location request.
  *
  * The camera is told the same interval, and also asks for a location or the
  * time by notification; those are answered with what is already at hand.
@@ -56,23 +56,30 @@ class CameraLinkService : Service() {
         super.onCreate()
         prefs = Prefs(this)
         running = true
+        instance = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        startForegroundCompat(
-            when {
-                lastSync > 0 -> status()
-                connected -> getString(R.string.camera_sync_waiting)
-                else -> getString(R.string.camera_sync_connecting)
-            }
-        )
+        startForegroundCompat(status())
         if (gatt == null) connect()
         return START_NOT_STICKY
     }
+
+    /** Whether a shutter request would reach the camera right now. */
+    val ready: Boolean get() = connected && characteristic(FujifilmGeo.SHOOTING_REQUEST) != null
+
+    /**
+     * The shutter button held down or let go, as XApp sends it: half way first,
+     * then all the way down, or back to half way and then up. Held down, the
+     * camera keeps shooting in its continuous or bulb mode.
+     */
+    fun shutter(pressed: Boolean) {
+        val target = characteristic(FujifilmGeo.SHOOTING_REQUEST) ?: return
+        val steps = if (pressed) listOf(FujifilmGeo.SHUTTER_HALF, FujifilmGeo.SHUTTER_FULL)
+        else listOf(FujifilmGeo.SHUTTER_HALF, FujifilmGeo.SHUTTER_UP)
+        steps.forEach { step -> enqueue { write(target, FujifilmGeo.shutter(step)) } }
+    }
+
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
@@ -80,6 +87,8 @@ class CameraLinkService : Service() {
         gatt?.run { disconnect(); close() }
         gatt = null
         running = false
+        if (instance === this) instance = null
+        onChange?.invoke()
         // The camera may still be on: the plain notification takes over the same id.
         stopForeground(STOP_FOREGROUND_DETACH)
         FujifilmCamera.refresh(this, startLink = false)
@@ -127,6 +136,8 @@ class CameraLinkService : Service() {
             main.post {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     Log.w(Prefs.TAG, "Camera refused ${characteristic.uuid}: $status")
+                } else if (characteristic.uuid == FujifilmGeo.SHOOTING_REQUEST) {
+                    Log.i(Prefs.TAG, "Camera took a shutter request")
                 }
                 done()
             }
@@ -154,8 +165,18 @@ class CameraLinkService : Service() {
         }
     }
 
-    /** Subscribes to the camera's requests, tells it the interval, then the first sync. */
+    /**
+     * With location and time on: subscribes to the camera's requests, tells it
+     * the interval, then the first sync.
+     */
     private fun prepare() {
+        introduce()
+        onChange?.invoke()
+        if (!prefs.cameraGeoEnabled) {
+            Log.i(Prefs.TAG, "Connected to ${prefs.cameraName} for the shutter only")
+            startForegroundCompat(status())
+            return
+        }
         Log.i(Prefs.TAG, "Connected to ${prefs.cameraName}, sending location and time every ${prefs.cameraGeoInterval} s")
         characteristic(FujifilmGeo.LOCATION_SYNC_STATE)?.let { enqueue { subscribe(it) } }
         characteristic(FujifilmGeo.DATE_SYNC_STATE)?.let { enqueue { subscribe(it) } }
@@ -166,7 +187,27 @@ class CameraLinkService : Service() {
         sync()
     }
 
+    /** What XApp sends before the camera obeys its shutter, see FujifilmGeo.IDENTIFICATION_NUMBER. */
+    private fun introduce() {
+        characteristic(FujifilmGeo.IDENTIFICATION_NUMBER)?.let { enqueue { gatt?.readCharacteristic(it) == true } }
+        characteristic(FujifilmGeo.DEVICE_NAME)?.let { enqueue { write(it, FujifilmGeo.deviceName(phoneName())) } }
+        characteristic(FujifilmGeo.APPLICATION_INFORMATION)?.let { enqueue { write(it, FujifilmGeo.XAPP_INFORMATION) } }
+        characteristic(FujifilmGeo.POWER_KEY_STATE)?.let { enqueue { gatt?.readCharacteristic(it) == true } }
+    }
+
+    private fun phoneName(): String =
+        android.provider.Settings.Global.getString(contentResolver, android.provider.Settings.Global.DEVICE_NAME)
+            ?: Build.MODEL
+
     private fun read(characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+        when (characteristic.uuid) {
+            FujifilmGeo.IDENTIFICATION_NUMBER -> {
+                val number = FujifilmGeo.identification(value)
+                Log.i(Prefs.TAG, "Camera identification ${value.toHex()} -> ${number?.toHex()}")
+                number?.let { queue.addFirst { write(characteristic, it) } }
+            }
+            FujifilmGeo.POWER_KEY_STATE -> Log.i(Prefs.TAG, "Camera power key state ${value.toHex()}")
+        }
         if (characteristic.uuid == FujifilmGeo.LOCATION_SYNC_SETTING && value.firstOrNull()?.toInt() == 0) {
             // Off in the camera, it would ignore what is sent; this is the switch XApp turns on.
             Log.i(Prefs.TAG, "Turning the camera's location sync on")
@@ -174,6 +215,8 @@ class CameraLinkService : Service() {
         }
         done()
     }
+
+    private fun ByteArray.toHex(): String = joinToString(" ") { "%02x".format(it) }
 
     private fun asked(characteristic: BluetoothGattCharacteristic) {
         when (characteristic.uuid) {
@@ -265,6 +308,7 @@ class CameraLinkService : Service() {
     private fun lost(status: Int) {
         val wasConnected = connected
         connected = false
+        onChange?.invoke()
         main.removeCallbacks(tick)
         locating?.cancel()
         queue.clear()
@@ -337,6 +381,15 @@ class CameraLinkService : Service() {
     // endregion
 
     private fun status(): String {
+        if (lastSync == 0L) {
+            return getString(
+                when {
+                    !connected -> R.string.camera_sync_connecting
+                    prefs.cameraGeoEnabled -> R.string.camera_sync_waiting
+                    else -> R.string.camera_link_ready
+                }
+            )
+        }
         val time = DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(lastSync))
         return getString(
             if (lastSyncHadLocation) R.string.camera_sync_done else R.string.camera_sync_time_only,
@@ -354,7 +407,6 @@ class CameraLinkService : Service() {
     }
 
     companion object {
-        private const val ACTION_STOP = "pl.mwgo.macdroidsync.CAMERA_LINK_STOP"
         private const val MTU = 185
         private const val MAX_ATTEMPTS = 3
         private const val RETRY_DELAY_MS = 5_000L
@@ -365,10 +417,18 @@ class CameraLinkService : Service() {
         var running = false
             private set
 
-        fun start(context: Context) {
+        /** The running link, for the shutter screen in the same process. */
+        var instance: CameraLinkService? = null
+            private set
+
+        /** Called on the main thread when the link comes up or goes down. */
+        var onChange: (() -> Unit)? = null
+
+        /** False when Android does not let it start from the background, see FujifilmCamera.hasCompanion. */
+        fun start(context: Context): Boolean =
             runCatching { context.startForegroundService(Intent(context, CameraLinkService::class.java)) }
-                .onFailure { Log.w(Prefs.TAG, "Could not start the camera link", it) }
-        }
+                .onFailure { Log.w(Prefs.TAG, "Could not start the camera link: ${it.message}") }
+                .isSuccess
 
         fun stop(context: Context) {
             context.stopService(Intent(context, CameraLinkService::class.java))
