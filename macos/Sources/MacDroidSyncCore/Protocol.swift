@@ -93,6 +93,18 @@ public enum MessageType {
     public static let smsNew = "sms-new"
     /// Phone to Mac: something else changed; this Mac's copy is out of date.
     public static let smsChanged = "sms-changed"
+    /// Folder sync, see PROTOCOL.md section 10. Mac to phone inside the
+    /// handshake and after a change: the pairs of folders. The phone answers
+    /// with the same type, saying of each whether it can use the folder.
+    public static let foldersConfig = "folders-config"
+    /// Requests from the Mac, answered with the same type and `folder.requestId`.
+    public static let folderManifest = "folder-manifest"
+    public static let folderGet = "folder-get"
+    public static let folderPut = "folder-put"
+    public static let folderMove = "folder-move"
+    public static let folderDelete = "folder-delete"
+    /// Phone to Mac: something in a folder changed there.
+    public static let folderChanged = "folder-changed"
 }
 
 /// One protocol message. Absent fields are omitted from the JSON payload.
@@ -126,6 +138,8 @@ public struct Message: Codable {
     public var photo: PhotoPayload?
     /// Messages, see PROTOCOL.md section 9.
     public var sms: SmsPayload?
+    /// Folder sync, see PROTOCOL.md section 10.
+    public var folder: FolderPayload?
 
     public init(
         v: Int = Wire.version,
@@ -148,7 +162,8 @@ public struct Message: Codable {
         path: String? = nil,
         beacon: Bool? = nil,
         photo: PhotoPayload? = nil,
-        sms: SmsPayload? = nil
+        sms: SmsPayload? = nil,
+        folder: FolderPayload? = nil
     ) {
         self.v = v
         self.seq = seq
@@ -171,6 +186,7 @@ public struct Message: Codable {
         self.beacon = beacon
         self.photo = photo
         self.sms = sms
+        self.folder = folder
     }
 
     public static func now() -> Int64 {

@@ -12,6 +12,9 @@ public final class SyncServer {
     public var onFailure: ((String) -> Void)?
     /// Fired with the port once the listener is up and advertising itself.
     public var onListening: ((UInt16) -> Void)?
+    /// A phone reached the Mac but was turned away, in words for the menu: a
+    /// pairing code that does not match. Nil once a phone gets through.
+    public var onRejected: ((String?) -> Void)?
     /// Name, bytes received so far and the announced total of an incoming file.
     public var onFileProgress: ((String, Int64, Int64) -> Void)?
     /// A file arrived complete and is now sitting at this location.
@@ -35,6 +38,10 @@ public final class SyncServer {
     public var onPhotoPreview: ((String, Data?, String?) -> Void)?
     /// Anything the phone says about messages, on the main queue.
     public var onSms: ((SmsReply) -> Void)?
+    /// Anything the phone says about the synced folders, on the main queue.
+    public var onFolder: ((FolderReply) -> Void)?
+    /// The pairs of folders, told to the phone when a session starts.
+    public var folderConfig: (() -> FolderPayload?)?
     /// A gallery item arriving, kept apart from the ordinary file callbacks so a
     /// photo sync never shows up as the user's own transfer.
     public var onPhotoProgress: ((String, Int64, Int64) -> Void)?
@@ -198,11 +205,19 @@ public final class SyncServer {
                 case .ready:
                     self.cancelRetry()
                     Log.info("Listening on port \(self.port), advertising \(Wire.bonjourServiceType)")
-                    if self.session == nil { self.state = .disconnected }
+                    // A phone that connected while the listener was failing is still there.
+                    self.state = self.session.map { $0.isAuthenticated ? .connected : .connecting } ?? .disconnected
                     let port = self.port
                     DispatchQueue.main.async { self.onListening?(port) }
                 case .failed(let error):
-                    self.report(failure: "Listener failed: \(error.localizedDescription)")
+                    // Bonjour going away, as right after a restart, leaves the
+                    // current session working; only a Mac with no phone is in error.
+                    let message = "Listener failed: \(error.localizedDescription)"
+                    if self.session == nil {
+                        self.report(failure: message)
+                    } else {
+                        Log.error(message)
+                    }
                     // A failed listener never recovers on its own.
                     if self.listener === listener {
                         listener.cancel()
@@ -262,6 +277,7 @@ public final class SyncServer {
         session.fileSink = makeFileSink?(destinationDirectory)
             ?? FileReceiver(directory: destinationDirectory)
         session.photoConfigProvider = makePhotoConfig
+        session.folderConfigProvider = { [weak self] in self?.folderConfig?() }
         state = .connecting
 
         session.onAuthenticated = { [weak self, weak session] deviceName in
@@ -269,6 +285,7 @@ public final class SyncServer {
             self.connectedDeviceName = deviceName
             self.settings.pairedDeviceName = deviceName
             self.state = .connected
+            DispatchQueue.main.async { self.onRejected?(nil) }
         }
         session.onClipboard = { [weak self] text in
             DispatchQueue.main.async { self?.onClipboardReceived?(text) }
@@ -309,6 +326,9 @@ public final class SyncServer {
         session.onSms = { [weak self] reply in
             DispatchQueue.main.async { self?.onSms?(reply) }
         }
+        session.onFolder = { [weak self] reply in
+            DispatchQueue.main.async { self?.onFolder?(reply) }
+        }
         session.onPhotoProgress = { [weak self] name, received, total in
             DispatchQueue.main.async { self?.onPhotoProgress?(name, received, total) }
         }
@@ -318,7 +338,12 @@ public final class SyncServer {
         session.onLockRequested = { [weak self] in
             DispatchQueue.main.async { self?.onLockRequested?() }
         }
-        session.onEnd = { [weak self, weak session] _ in
+        session.onEnd = { [weak self, weak session] error in
+            if case .authenticationFailed? = error as? ProtocolError {
+                DispatchQueue.main.async {
+                    self?.onRejected?("A phone tried to connect with another pairing code")
+                }
+            }
             guard let self, self.session === session else { return }
             self.session = nil
             self.connectedDeviceName = nil
@@ -416,6 +441,20 @@ public final class SyncServer {
             guard let session, session.isAuthenticated else { return false }
             do {
                 try session.sendSmsRequest(type: type, payload: payload, image: image)
+                return true
+            } catch {
+                Log.error("Could not send \(type) to the phone: \(error.localizedDescription)")
+                return false
+            }
+        }
+    }
+
+    /// Sends one request about the synced folders; false when there is no phone to send it to.
+    public func requestFolder(type: String, payload: FolderPayload, data: Data? = nil) -> Bool {
+        queue.sync {
+            guard let session, session.isAuthenticated else { return false }
+            do {
+                try session.sendFolderRequest(type: type, payload: payload, data: data)
                 return true
             } catch {
                 Log.error("Could not send \(type) to the phone: \(error.localizedDescription)")

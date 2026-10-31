@@ -3,6 +3,7 @@ import MacDroidSyncCore
 
 /// Owns the status item, its menu and the wiring between the pasteboard, the
 /// server and the offline queue.
+@MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
     private let settings = Settings.shared
     private let server = SyncServer()
@@ -64,6 +65,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let photoWindowMenuItem = NSMenuItem(title: "Photo sync…", action: #selector(showPhotoSync(_:)), keyEquivalent: "")
     private let photoSyncNowMenuItem = NSMenuItem(title: "Sync photos now", action: #selector(syncPhotosNow), keyEquivalent: "")
     private let messagesMenuItem = NSMenuItem(title: "Messages…", action: #selector(showMessages(_:)), keyEquivalent: "m")
+    private let foldersMenuItem = NSMenuItem(title: "Synced folders…", action: #selector(showFolders(_:)), keyEquivalent: "")
+    private let syncFoldersMenuItem = NSMenuItem(title: "Sync folders now", action: #selector(syncFoldersNow), keyEquivalent: "")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
     private let quitMenuItem = NSMenuItem(title: "Quit MacDroidSync", action: #selector(quit), keyEquivalent: "q")
 
@@ -77,6 +80,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// operator asks for it from the menu or from a notification.
     private var photoSyncWindow: PhotoSyncWindowController?
     private var messagesWindow: MessagesWindowController?
+    private lazy var folders = FolderSyncCoordinator { [weak self] type, payload, data in
+        self?.server.requestFolder(type: type, payload: payload, data: data) ?? false
+    }
+    /// Hear of changes in the Mac folders of the pairs, from the apps and from iCloud.
+    private var folderMonitors: [String: FolderMonitor] = [:]
     /// Banners waiting a moment for the sender's photo, by photo id.
     private var bannersAwaitingPhoto: [String: (SmsThread, [SmsMessage])] = [:]
     private lazy var sms = SmsCoordinator(store: SmsStore()) { [weak self] type, payload, image in
@@ -96,6 +104,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private var displayState: PeerState = .disconnected
     private var failureMessage: String?
+    /// Why the last phone that reached the Mac was turned away, until one gets through.
+    private var rejection: String?
     private var suspendReason: String?
     private var lastReceivedFile: URL?
     /// A file arrived and nobody has looked at the menu since.
@@ -136,6 +146,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         notifier.requestAuthorization()
         wireUpdater()
         wireMessages()
+        wireFolders()
         updater.start()
 
         // Says in the log where the auto lock stands before anything else has
@@ -181,7 +192,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in [
             pingMenuItem, sendMenuItem, sendFilesMenuItem, downloadsMenuItem,
             autoLockMenuItem, snoozeMenuItem, settingsMenuItem, quitMenuItem,
-            photoWindowMenuItem, photoSyncNowMenuItem, messagesMenuItem,
+            photoWindowMenuItem, photoSyncNowMenuItem, messagesMenuItem, foldersMenuItem, syncFoldersMenuItem,
         ] {
             item.target = self
         }
@@ -211,6 +222,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(messagesMenuItem)
         menu.addItem(.separator())
+        menu.addItem(foldersMenuItem)
+        menu.addItem(syncFoldersMenuItem)
+        menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
         menu.addItem(.separator())
         menu.addItem(quitMenuItem)
@@ -234,7 +248,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         case .connecting:
             statusMenuItem.title = "Connecting…"
         case .disconnected:
-            statusMenuItem.title = "Listening on port \(settings.port)"
+            statusMenuItem.title = rejection.map { "\($0) - check the code on the phone" } ?? "Listening on port \(settings.port)"
         case .suspended:
             statusMenuItem.title = "Suspended, \(suspendReason ?? "the Mac is away")"
         case .error:
@@ -261,6 +275,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // Always open: the stored copy is worth reading without the phone.
         let unread = sms.unreadCount
         messagesMenuItem.title = unread == 0 ? "Messages…" : "Messages — \(unread) unread…"
+        let conflicts = folders.pairs.reduce(0) { $0 + folders.store(for: $1).state.conflicts.count }
+        foldersMenuItem.title = conflicts == 0 ? "Synced folders…" : "Synced folders — \(conflicts) conflicts…"
+        syncFoldersMenuItem.isEnabled = connected && folders.pairs.contains(where: \.enabled)
 
         downloadsMenuItem.title = "Open \(server.destinationDirectory.lastPathComponent) folder"
         // Nothing worth opening until the phone has actually delivered a file.
@@ -372,8 +389,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 // on the wire.
                 self.photoScheduler.connected()
                 self.sms.connected()
+                self.folders.connected()
             } else if state != .transferring {
                 self.sms.disconnected()
+                self.folders.disconnected()
             }
             self.messagesWindow?.connectionChanged()
         }
@@ -428,6 +447,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         server.onFileSendFailed = { [weak self] name, reason in
             self?.handleSendFailure(name: name, reason: reason)
+        }
+        server.onRejected = { [weak self] reason in
+            guard let self, self.rejection != reason else { return }
+            self.rejection = reason
+            self.refreshMenuTitles()
+            self.settingsWindow?.refresh()
         }
         server.onListening = { [weak self] _ in
             self?.failureMessage = nil
@@ -1054,6 +1079,78 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         notifier.onOpenMessages = { [weak self] threadId in self?.openMessages(threadId: threadId) }
     }
 
+    // MARK: - Folders
+
+    private func wireFolders() {
+        server.folderConfig = { [weak self] in self?.folders.config() }
+        server.onFolder = { [weak self] reply in self?.folders.handle(reply) }
+        folders.onChange = { [weak self] in
+            self?.settingsWindow?.refresh()
+            self?.refreshMenuTitles()
+        }
+        folders.onConflict = { [weak self] pair, conflict in self?.notifier.folderConflict(pair, conflict) }
+        folders.onMacWrote = { pair, paths in
+            // Notes MD, and any other app showing the folder, rereads what changed.
+            DistributedNotificationCenter.default().postNotificationName(
+                FolderEvents.filesChanged, object: pair.macURL.standardizedFileURL.path, userInfo: nil, deliverImmediately: true
+            )
+        }
+        notifier.onOpenFolderConflicts = { [weak self] in self?.showFolders(nil) }
+        DistributedNotificationCenter.default().addObserver(
+            forName: FolderEvents.folderChanged, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let path = note.object as? String else { return }
+            MainActor.assumeIsolated { self?.folders.macChanged(path: path) }
+        }
+        folders.setPairs(settings.folderPairs)
+        watchFolders()
+    }
+
+    /// Watches the Mac folder of each pair being synced.
+    private func watchFolders() {
+        folderMonitors.values.forEach { $0.stop() }
+        folderMonitors = [:]
+        for pair in folders.pairs where pair.enabled {
+            let id = pair.id
+            folderMonitors[id] = FolderMonitor(root: pair.macURL, interval: 30) { [weak self] in
+                Task { @MainActor in self?.folders.macChanged(pairId: id) }
+            }
+        }
+    }
+
+    private func setFolderPairs(_ pairs: [FolderPair]) {
+        settings.folderPairs = pairs
+        folders.setPairs(pairs)
+        watchFolders()
+        folders.requestSync()
+    }
+
+    @objc private func showFolders(_ sender: Any?) {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(hooks: makeSettingsHooks())
+        }
+        settingsWindow?.presentFolders()
+    }
+
+    @objc private func syncFoldersNow() {
+        folders.requestSync()
+    }
+
+    /// How a pair stands, for the settings window.
+    private func folderStatus(_ pair: FolderPair) -> String {
+        guard pair.enabled else { return "Off" }
+        guard server.isConnected else { return "Waiting for the phone" }
+        let status = folders.status(of: pair)
+        if status.isRunning { return "Syncing…" }
+        if let phone = status.phone, phone.ok == false { return "The phone cannot use it: \(phone.reason ?? "no reason")" }
+        if let error = status.lastError { return error }
+        guard let last = status.lastSync else { return "Not synced yet" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let files = folders.store(for: pair).state.base.values.filter { !$0.isDirectory }.count
+        return "Synced at \(formatter.string(from: last)), \(files) files"
+    }
+
     private func postBanner(photo: String, data: Data?) {
         guard let (thread, messages) = bannersAwaitingPhoto.removeValue(forKey: photo) else { return }
         notifier.messageReceived(thread: thread, messages: messages, photo: data.flatMap(NSImage.init(data:)))
@@ -1105,6 +1202,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             autoLockChanged: { [weak self] in self?.updatePresenceScanning() },
             toggleSnooze: { [weak self] in self?.toggleSnooze() },
             liveReading: { [weak self] in self?.autoLockSummary ?? "" },
+            pairingProblem: { [weak self] in self?.rejection },
             downloadsPath: { [weak self] in self?.server.destinationDirectory.path ?? "" },
             revealDownloads: { [weak self] in
                 guard let self else { return }
@@ -1165,7 +1263,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 self?.sms.store.removeAll()
                 self?.messagesWindow?.close()
                 self?.refreshMenuTitles()
-            }
+            },
+            folders: FoldersHooks(
+                pairs: { [weak self] in self?.folders.pairs ?? [] },
+                setPairs: { [weak self] pairs in self?.setFolderPairs(pairs) },
+                status: { [weak self] pair in self?.folderStatus(pair) ?? "" },
+                conflicts: { [weak self] pair in self?.folders.store(for: pair).state.conflicts ?? [] },
+                syncNow: { [weak self] pair in self?.folders.requestSync(pairId: pair.id) },
+                allowDeletions: { [weak self] pair in self?.folders.allowHeldDeletions(pair) },
+                dismissConflict: { [weak self] pair, id in self?.folders.dismissConflict(pair, id: id) }
+            )
         )
     }
 

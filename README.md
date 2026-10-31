@@ -19,6 +19,9 @@ Clipboard sharing between macOS and Android over Wi-Fi, in the spirit of KDE Con
 * **Text messages on the Mac.** A *Messages* window lists the phone's conversations, shows them with
   MMS pictures, and sends replies through the phone. A new message raises a notification on the Mac.
   See *Messages* below.
+* **Folders kept the same.** A folder on the phone and a folder on the Mac, a local one or one on iCloud
+  Drive, hold the same files, both ways - the notes of [Notes MD](https://github.com/mwgo/NotesMD) among
+  them. See *Synced folders* below.
 * **The status bar icon on Android only exists while a Mac is connected.** No connection, no icon.
 * **Ping** the phone straight from the Mac menu and get the round trip time.
 
@@ -283,6 +286,39 @@ The Mac's copy lives in `~/Library/Application Support/MacDroidSync/Messages` (r
 only) and the pictures in `~/Library/Caches/MacDroidSync/MessageImages`, up to 200 MB. *Delete Stored
 Messages…* in *Settings › General* removes both; so does regenerating the pairing code. The protocol is
 section 9 of [PROTOCOL.md](PROTOCOL.md).
+
+## Synced folders
+
+*Settings › Folders* on the Mac lists pairs of folders: one in the phone's shared storage, given
+relative to it (`Documents/Notes MD`), and one on the Mac, a local folder or one on iCloud Drive. Each
+pair is kept the same both ways while the phone is connected. The phone asks once for access to all
+files; until it has it, the pair says so on the Mac.
+
+* **Within seconds either way.** The phone watches its folders and tells the Mac a second after they
+  settle; the Mac hears of a change in its folder from the apps and from iCloud, and looks at every
+  pair every five minutes besides. While the two are apart nothing is synced, and everything is
+  compared again when they meet.
+* **Everything is copied the first time**, and nothing is deleted then. A file that differs on the two
+  sides counts as changed on both.
+* **A file changed on both sides** keeps the Mac's version at its name, and the phone's version is kept
+  next to it as *name (Android, Oct 11 14.05).ext* on both sides; the pair lists the conflict.
+* **Moves are moves.** A file renamed or moved on one side is moved on the other, not sent again.
+* **Deletions follow** into the Mac's Trash, and into the pair's trash on the phone,
+  `.macdroidsync/trash/`, for thirty days. A file deleted on one side but changed on the other is put
+  back. More than a fifth of the files (at least five) deleted at once wait on the Mac to be allowed,
+  and a side that suddenly shows no files deletes nothing.
+* **iCloud Drive takes its time.** A file not downloaded yet is fetched and waits, and one that has gone
+  counts as deleted only after two minutes, since iCloud may be in the middle of a rename.
+
+Notes apps tell MacDroidSync when they change a file, and hear from it when it wrote one: on the phone
+through broadcasts open only to apps signed with the same key, on the Mac through distributed
+notifications. A note open with changes not yet saved is left alone until it is saved. The pair of
+*Notes MD* is offered when its folder is chosen on the Mac; a sync of notes switched on in an older
+version becomes that pair.
+
+The Mac keeps what each pair held after the last cycle, and its conflicts, in
+`~/Library/Application Support/MacDroidSync/FolderSync`. The protocol is section 10 of
+[PROTOCOL.md](PROTOCOL.md).
 
 ## Photo sync
 
@@ -563,12 +599,12 @@ does not exist in release builds):
 
 ```bash
 adb shell am broadcast --include-stopped-packages \
-    -n pl.wojas.macdroidsync/.DebugConfigReceiver -a pl.wojas.macdroidsync.DEBUG_CONFIG \
+    -n pl.mwgo.macdroidsync/.DebugConfigReceiver -a pl.mwgo.macdroidsync.DEBUG_CONFIG \
     --es code PMNS-M99F-8KN8-U9EN --es host 10.0.2.2 --ei port 47831 --ez enabled true --ez beacon true
 adb shell am broadcast --include-stopped-packages \
-    -n pl.wojas.macdroidsync/.DebugConfigReceiver -a pl.wojas.macdroidsync.DEBUG_CONFIG --es bridge read
+    -n pl.mwgo.macdroidsync/.DebugConfigReceiver -a pl.mwgo.macdroidsync.DEBUG_CONFIG --es bridge read
 adb shell am broadcast --include-stopped-packages \
-    -n pl.wojas.macdroidsync/.DebugConfigReceiver -a pl.wojas.macdroidsync.DEBUG_CONFIG --ez lock true
+    -n pl.mwgo.macdroidsync/.DebugConfigReceiver -a pl.mwgo.macdroidsync.DEBUG_CONFIG --ez lock true
 adb logcat -s MacDroidSync
 ```
 
@@ -586,14 +622,14 @@ adb logcat -s MacDroidSync
 | After a rebuild the Mac asks for the keychain password again | The grant is tied to the app's code signature, and `build.sh` signs ad-hoc, so every rebuild is a different app as far as macOS is concerned. Answer once per build; an installed copy that is not rebuilt keeps it |
 | A rebuild changes nothing | `build.sh` always writes `macos/build/MacDroidSync.app`. If you moved the app to `/Applications`, copy the fresh bundle over it again: `cp -R macos/build/MacDroidSync.app /Applications/` |
 | The phone shows no icon although the Mac is awake | If the Mac runs docked with the lid closed, the sync is suspended by design; the Mac menu says `Suspended, the lid is closed`. Open the lid to resume |
-| After a rebuild the Mac cannot see the Photos library | The Photos grant is tied to the code signature too, so a rebuilt bundle is a new app to macOS. The settings tab says `authorized, but the library is not visible`; run `tccutil reset Photos pl.wojas.MacDroidSync`, relaunch, and grant it again |
+| After a rebuild the Mac cannot see the Photos library | The Photos grant is tied to the code signature too, so a rebuilt bundle is a new app to macOS. The settings tab says `authorized, but the library is not visible`; run `tccutil reset Photos pl.mwgo.MacDroidSync`, relaunch, and grant it again |
 | The Photos tab says the library is not visible although access was granted | Either the bundle was rebuilt (row above), or the *System Photo Library* points at a library that is not there. Open Photos holding Option, pick the library, then Settings, General, *Use as System Photo Library* |
 | A photo deleted on the phone is still in Photos | By design: the sync writes the deletion down and lists it in `Photo sync…` as **Remove**. Pick it there and press *Synchronise selected*; macOS shows its own confirmation when you do |
 | Nothing is being imported any more | Something is waiting for a decision: a plan that is not purely additions waits in full. Open `Photo sync…` and either synchronise or ignore what is listed. One item the phone will never send - a video over the size limit, say - holds up the rest until it is ignored |
 | macOS asks whether MacDroidSync may access the Downloads folder | Incoming files are saved there; allow it once. Denying it makes every transfer end with `Failed: …` in the menu and a refusal on the phone |
 | A shared photo differs from the original by a few bytes near the end | That is Android removing the GPS metadata, see *Android strips location metadata* above. The rest of the file is identical |
 | *Send to Mac* does not appear in the share sheet | Some apps only share a preview instead of the file. Try sharing from the gallery or a file manager |
-| Sharing from Finder appears to do nothing | Requests are dropped in `~/Library/Application Support/MacDroidSync/share-requests/`. If they pile up there, the app is not running; if they show up under `~/Library/Containers/pl.wojas.MacDroidSync.ShareExtension/…` instead, the extension is an old build that resolved the path inside its sandbox container: rebuild and re-run `pluginkit -a` |
+| Sharing from Finder appears to do nothing | Requests are dropped in `~/Library/Application Support/MacDroidSync/share-requests/`. If they pile up there, the app is not running; if they show up under `~/Library/Containers/pl.mwgo.MacDroidSync.ShareExtension/…` instead, the extension is an old build that resolved the path inside its sandbox container: rebuild and re-run `pluginkit -a` |
 | MacDroidSync is missing from the Share menu | The extension has to be registered and enabled once, see *The Share menu needs one setup step*. Until then use *Send to Android* in the Services menu or *Send files to phone…* in the menu bar |
 | *Send to Android* is missing from the Services menu | Run `/System/Library/CoreServices/pbs -flush` and open the app once. Services are indexed per app bundle, so a bundle that moved has to be picked up again |
 | The menu says `Missing: <file>` | The file was moved or deleted while it waited in the queue. Only paths are queued, so share it again from its new location |

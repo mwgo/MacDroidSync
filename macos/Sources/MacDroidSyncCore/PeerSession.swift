@@ -57,12 +57,16 @@ public final class PeerSession {
     public var onPhotoPreview: ((String, Data?, String?) -> Void)?
     /// Anything the phone says about messages, see PROTOCOL.md section 9.
     public var onSms: ((SmsReply) -> Void)?
+    /// Anything the phone says about the synced folders, see PROTOCOL.md section 10.
+    public var onFolder: ((FolderReply) -> Void)?
 
     /// Where incoming files are written; without a sink they are refused.
     public var fileSink: FileSink?
     /// Asked for the photo configuration to send during the handshake. Read at
     /// that moment rather than held, so it is always the current settings.
     public var photoConfigProvider: (() -> PhotoPayload?)?
+    /// Asked for the pairs of folders, for the handshake, read at that moment.
+    public var folderConfigProvider: (() -> FolderPayload?)?
 
     public private(set) var remoteDeviceName: String?
     public private(set) var isAuthenticated = false
@@ -334,6 +338,13 @@ public final class PeerSession {
                     photo: config
                 ))
             }
+            if let folders = folderConfigProvider?() {
+                try send(Message(
+                    seq: codec.nextSequence(),
+                    type: MessageType.foldersConfig,
+                    folder: folders
+                ))
+            }
             Log.info("Authenticated with \(remoteDeviceName!) (\(remoteDescription))")
             onAuthenticated?(remoteDeviceName!)
             if let beacon = message.beacon {
@@ -396,6 +407,16 @@ public final class PeerSession {
                 reason: message.reason,
                 image: ok ? message.data.flatMap { Data(base64Encoded: $0) } : nil
             ))
+        case MessageType.foldersConfig, MessageType.folderManifest, MessageType.folderGet, MessageType.folderPut,
+             MessageType.folderMove, MessageType.folderDelete, MessageType.folderChanged:
+            let ok = message.ok ?? true
+            onFolder?(FolderReply(
+                type: message.type,
+                payload: message.folder ?? FolderPayload(),
+                ok: ok,
+                reason: message.reason,
+                data: ok ? message.data.flatMap { Data(base64Encoded: $0) } : nil
+            ))
         case MessageType.bye:
             Log.info("Peer said goodbye: \(message.reason ?? "no reason")")
             connection.cancel()
@@ -455,6 +476,20 @@ public final class PeerSession {
             mime: image == nil ? nil : "image/jpeg",
             data: image?.base64EncodedString(),
             sms: payload
+        ))
+    }
+
+    // MARK: - Folders
+
+    /// One request about the synced folders; the answer comes back through
+    /// `onFolder`. `data` is a piece of a file for `folder-put`.
+    public func sendFolderRequest(type: String, payload: FolderPayload, data: Data? = nil) throws {
+        guard isAuthenticated else { return }
+        try send(Message(
+            seq: codec.nextSequence(),
+            type: type,
+            data: data?.base64EncodedString(),
+            folder: payload
         ))
     }
 

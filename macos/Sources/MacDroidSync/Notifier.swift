@@ -24,6 +24,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var onOpenPhotoSync: (() -> Void)?
     /// A message banner was clicked: open that conversation.
     var onOpenMessages: ((Int64) -> Void)?
+    /// A folder conflict banner was clicked.
+    var onOpenFolderConflicts: (() -> Void)?
+
+    private static let folderConflictCategory = "folder-conflict"
 
     private static let messageCategory = "sms-received"
     private static let showMessage = "show-message"
@@ -72,6 +76,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             UNNotificationCategory(
                 identifier: Self.decisionCategory,
                 actions: [review],
+                intentIdentifiers: [],
+                options: []
+            ),
+            UNNotificationCategory(
+                identifier: Self.folderConflictCategory,
+                actions: [],
                 intentIdentifiers: [],
                 options: []
             ),
@@ -161,6 +171,32 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         post(content, identifier: Self.decisionIdentifier)
     }
 
+    /// Something the folder sync could not settle alone; nothing was lost, so no sound.
+    func folderConflict(_ pair: FolderPair, _ conflict: FolderConflict) {
+        let content = UNMutableNotificationContent()
+        let name = (conflict.path as NSString).lastPathComponent
+        switch conflict.kind {
+        case FolderConflict.Kind.edited:
+            content.title = "\(pair.name): changed on both sides"
+            content.body = "\(name): the phone's version was kept next to it."
+        case FolderConflict.Kind.deletions:
+            content.title = "\(pair.name): deletions waiting"
+            content.body = "\(conflict.count ?? 0) files were deleted at once. Allow it in Settings › Folders."
+        case FolderConflict.Kind.empty:
+            content.title = "\(pair.name): a folder is empty"
+            content.body = "\(conflict.path) shows no files. Nothing was deleted on the other side."
+        case FolderConflict.Kind.tooBig:
+            content.title = "\(pair.name): file too large"
+            content.body = "\(name) is not synced."
+        default:
+            content.title = "\(pair.name): deleted file put back"
+            content.body = "\(name) was changed on the other side, so it was kept."
+        }
+        content.categoryIdentifier = Self.folderConflictCategory
+        content.sound = nil
+        post(content)
+    }
+
     private func post(_ content: UNMutableNotificationContent, identifier: String = UUID().uuidString) {
         guard isAvailable, isAuthorized else { return }
         let request = UNNotificationRequest(
@@ -200,6 +236,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 let thread = response.notification.request.content.userInfo[Self.threadKey] as? NSNumber
             else { return }
             DispatchQueue.main.async { [weak self] in self?.onOpenMessages?(thread.int64Value) }
+            return
+        }
+        if response.notification.request.content.categoryIdentifier == Self.folderConflictCategory {
+            DispatchQueue.main.async { [weak self] in self?.onOpenFolderConflicts?() }
             return
         }
         if response.notification.request.content.categoryIdentifier == Self.decisionCategory {

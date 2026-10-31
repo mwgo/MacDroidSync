@@ -1,0 +1,217 @@
+package pl.mwgo.macdroidsync
+
+import org.json.JSONObject
+
+/** Wire constants shared with the macOS app, see PROTOCOL.md. */
+object Wire {
+    const val VERSION = 1
+    const val DEFAULT_PORT = 47831
+    const val SERVICE_TYPE = "_macdroidsync._tcp"
+
+    const val MAX_FRAME_SIZE = 4 * 1024 * 1024
+    const val MAX_CLIPBOARD_BYTES = 512 * 1024
+
+    /** Raw bytes per file-chunk; base64 grows it by a third. */
+    const val FILE_CHUNK_BYTES = 192 * 1024
+    /** The Mac refuses anything bigger, so there is no point in starting. */
+    const val MAX_FILE_BYTES = 512L * 1024 * 1024
+
+    /** Items in one photo-manifest page; chosen for retransmission cost, not to fit. */
+    const val PHOTO_MANIFEST_PAGE_ITEMS = 500
+    /** Bytes one page may encode to, so very long names split a page early. */
+    const val PHOTO_MANIFEST_PAGE_BYTES = 512 * 1024
+    /**
+     * A gallery item may be larger than a shared file, because the photo path
+     * streams straight from MediaStore. It is still capped: there is no resume,
+     * so an interrupted transfer starts again from zero.
+     */
+    const val MAX_PHOTO_BYTES = 2L * 1024 * 1024 * 1024
+
+    const val HEARTBEAT_INTERVAL_MS = 15_000L
+    const val RECEIVE_TIMEOUT_MS = 30_000L
+
+    const val KIND_PLAINTEXT: Byte = 0x01
+    const val KIND_ENCRYPTED: Byte = 0x02
+}
+
+object MessageType {
+    const val CHALLENGE = "challenge"
+    const val HELLO = "hello"
+    const val HELLO_ACK = "hello-ack"
+    const val CLIPBOARD = "clipboard"
+    const val CLIPBOARD_ACK = "clipboard-ack"
+    const val REQUEST_CLIPBOARD = "request-clipboard"
+    const val PING = "ping"
+    const val PONG = "pong"
+    const val HEARTBEAT = "heartbeat"
+    const val BYE = "bye"
+    const val FILE_OFFER = "file-offer"
+    const val FILE_CHUNK = "file-chunk"
+    const val FILE_END = "file-end"
+    const val FILE_ACK = "file-ack"
+    const val PRESENCE = "presence"
+    const val LOCK = "lock"
+    /** Photo sync, see PROTOCOL.md section 8. */
+    const val PHOTO_MANIFEST = "photo-manifest"
+    const val PHOTO_PULL = "photo-pull"
+
+    /** Mac to phone: how this phone should describe its camera folder. */
+    const val PHOTO_CONFIG = "photo-config"
+
+    /**
+     * Both ways. From the Mac with one key in photo.keys: "show me what this
+     * is". Back from this phone: the same key, a small JPEG in data, or ok:false
+     * and a reason. The Mac does not have the bytes of an item it is still
+     * deciding about, so a picture of it has to come from here.
+     */
+    const val PHOTO_PREVIEW = "photo-preview"
+
+    /** Messages, see PROTOCOL.md section 9. Requests from the Mac, answered with the same type. */
+    const val SMS_THREADS = "sms-threads"
+    const val SMS_THREAD = "sms-thread"
+    const val SMS_IMAGE = "sms-image"
+    const val SMS_SEND = "sms-send"
+
+    /** A contact photo, by sms.address; answered with the JPEG in data. */
+    const val SMS_AVATAR = "sms-avatar"
+
+    /** Phone to Mac: how a message sent for the Mac is getting on. */
+    const val SMS_STATUS = "sms-status"
+
+    /** Phone to Mac: messages that have just arrived, for a notification. */
+    const val SMS_NEW = "sms-new"
+
+    /** Phone to Mac: something else changed, the Mac's copy is out of date. */
+    const val SMS_CHANGED = "sms-changed"
+
+    /**
+     * Folder sync, see PROTOCOL.md section 10. The pairs come from the Mac in the
+     * handshake, and the phone answers with the same type; every other request
+     * comes from the Mac too and is answered with the same type.
+     */
+    const val FOLDERS_CONFIG = "folders-config"
+    const val FOLDER_MANIFEST = "folder-manifest"
+    const val FOLDER_GET = "folder-get"
+    const val FOLDER_PUT = "folder-put"
+    const val FOLDER_MOVE = "folder-move"
+    const val FOLDER_DELETE = "folder-delete"
+
+    /** Phone to Mac: something in a synced folder changed here, the Mac should look again. */
+    const val FOLDER_CHANGED = "folder-changed"
+}
+
+/** One protocol message; absent fields are left out of the JSON payload. */
+data class Message(
+    val type: String,
+    val seq: Long = 0,
+    val v: Int = Wire.VERSION,
+    val ts: Long = System.currentTimeMillis(),
+    val text: String? = null,
+    val device: String? = null,
+    val deviceId: String? = null,
+    val challenge: String? = null,
+    val token: Long? = null,
+    val reason: String? = null,
+    // File transfer, see PROTOCOL.md section 6.
+    val fileId: String? = null,
+    val name: String? = null,
+    val size: Long? = null,
+    val mime: String? = null,
+    val sha256: String? = null,
+    /** Base64 of one file-chunk payload. */
+    val data: String? = null,
+    val ok: Boolean? = null,
+    val path: String? = null,
+    /**
+     * Presence beacon, see PROTOCOL.md section 7: whether this phone is
+     * broadcasting it. Carried by hello and by presence.
+     */
+    val beacon: Boolean? = null,
+    /**
+     * Photo sync, see PROTOCOL.md section 8. One nested object rather than the
+     * ten flat fields it holds, because every field of this class costs three
+     * edits here and three more in Protocol.swift.
+     */
+    val photo: PhotoPayload? = null,
+    /** Messages, see PROTOCOL.md section 9. */
+    val sms: SmsPayload? = null,
+    /** Folder sync, see PROTOCOL.md section 10. */
+    val folder: FolderPayload? = null,
+) {
+    fun toBytes(): ByteArray {
+        val json = JSONObject()
+        json.put("v", v)
+        json.put("seq", seq)
+        json.put("type", type)
+        json.put("ts", ts)
+        text?.let { json.put("text", it) }
+        device?.let { json.put("device", it) }
+        deviceId?.let { json.put("deviceId", it) }
+        challenge?.let { json.put("challenge", it) }
+        token?.let { json.put("token", it) }
+        reason?.let { json.put("reason", it) }
+        fileId?.let { json.put("fileId", it) }
+        name?.let { json.put("name", it) }
+        size?.let { json.put("size", it) }
+        mime?.let { json.put("mime", it) }
+        sha256?.let { json.put("sha256", it) }
+        data?.let { json.put("data", it) }
+        ok?.let { json.put("ok", it) }
+        path?.let { json.put("path", it) }
+        beacon?.let { json.put("beacon", it) }
+        photo?.let { json.put("photo", it.toJson()) }
+        sms?.let { json.put("sms", it.toJson()) }
+        folder?.let { json.put("folder", it.toJson()) }
+        return json.toString().toByteArray(Charsets.UTF_8)
+    }
+
+    companion object {
+        fun parse(bytes: ByteArray): Message {
+            val json = JSONObject(String(bytes, Charsets.UTF_8))
+            return Message(
+                type = json.optString("type"),
+                seq = json.optLong("seq"),
+                v = json.optInt("v", Wire.VERSION),
+                ts = json.optLong("ts"),
+                text = json.optStringOrNull("text"),
+                device = json.optStringOrNull("device"),
+                deviceId = json.optStringOrNull("deviceId"),
+                challenge = json.optStringOrNull("challenge"),
+                token = if (json.has("token")) json.optLong("token") else null,
+                reason = json.optStringOrNull("reason"),
+                fileId = json.optStringOrNull("fileId"),
+                name = json.optStringOrNull("name"),
+                size = if (json.has("size")) json.optLong("size") else null,
+                mime = json.optStringOrNull("mime"),
+                sha256 = json.optStringOrNull("sha256"),
+                data = json.optStringOrNull("data"),
+                ok = if (json.has("ok")) json.optBoolean("ok") else null,
+                path = json.optStringOrNull("path"),
+                beacon = if (json.has("beacon")) json.optBoolean("beacon") else null,
+                photo = json.optJSONObject("photo")?.let { PhotoPayload.fromJson(it) },
+                sms = json.optJSONObject("sms")?.let { SmsPayload.fromJson(it) },
+                folder = json.optJSONObject("folder")?.let { FolderPayload.fromJson(it) },
+            )
+        }
+
+        private fun JSONObject.optStringOrNull(key: String): String? =
+            if (has(key) && !isNull(key)) optString(key) else null
+    }
+}
+
+/** `[4 byte big endian length][1 byte kind][body]` framing. */
+object Framing {
+    fun frame(kind: Byte, body: ByteArray): ByteArray {
+        val length = body.size + 1
+        val out = ByteArray(4 + length)
+        out[0] = (length ushr 24 and 0xFF).toByte()
+        out[1] = (length ushr 16 and 0xFF).toByte()
+        out[2] = (length ushr 8 and 0xFF).toByte()
+        out[3] = (length and 0xFF).toByte()
+        out[4] = kind
+        body.copyInto(out, 5)
+        return out
+    }
+}
+
+class ProtocolException(message: String) : Exception(message)

@@ -16,6 +16,8 @@ struct SettingsHooks {
     var toggleSnooze: () -> Void = {}
     /// The live `Phone: -58 dBm (near)` line, computed by the menu controller.
     var liveReading: () -> String = { "" }
+    /// A phone turned away for a pairing code that does not match, or nil.
+    var pairingProblem: () -> String? = { nil }
     var downloadsPath: () -> String = { "" }
     var revealDownloads: () -> Void = {}
 
@@ -45,6 +47,9 @@ struct SettingsHooks {
 
     /// Deletes this Mac's copy of the phone's messages.
     var clearMessages: () -> Void = {}
+
+    /// Folder sync: the pairs, how each stands, and what can be done about it.
+    var folders = FoldersHooks()
 }
 
 /// The settings window: everything that is configured once and then left alone.
@@ -61,6 +66,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     // General
     private let pairingField = NSTextField(labelWithString: "")
+    private let pairingProblemLabel = NSTextField(labelWithString: "")
     private let portField = NSTextField(string: "")
     private let launchAtLoginBox = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
     private let autoUpdateBox = NSButton(checkboxWithTitle: "Install updates automatically", target: nil, action: nil)
@@ -128,10 +134,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         Page(id: .init("autoLock"), title: "Auto lock", symbols: ["lock.laptopcomputer", "lock"]),
         Page(id: .init("safeNetworks"), title: "Safe networks", symbols: ["wifi"]),
         Page(id: .init("photos"), title: "Photos", symbols: ["photo.on.rectangle", "photo"]),
+        Page(id: .init("folders"), title: "Folders", symbols: ["folder.badge.gearshape", "folder"]),
         Page(id: .init("about"), title: "About", symbols: ["info.circle"]),
     ]
 
     private var tabs: NSTabView?
+    private lazy var foldersPage = FoldersPage(hooks: hooks.folders) { [weak self] in
+        guard let self, let item = self.tabs?.selectedTabViewItem else { return }
+        self.fitWindow(to: item, animated: false)
+    }
     /// Width of the roomiest tab, so the window never jumps sideways.
     private var bodyWidth: CGFloat = 0
 
@@ -161,6 +172,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     required init?(coder: NSCoder) { fatalError("not used") }
 
     // MARK: - Showing
+
+    /// Opens on the page of the synced folders.
+    func presentFolders() {
+        present()
+        tabs?.selectTabViewItem(withIdentifier: "folders")
+    }
 
     func present() {
         // An accessory app has no Dock icon to click, so it has to ask for the
@@ -271,6 +288,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         // bug as a switch that quietly saves a text field.
         write(String(settings.port), into: portField)
         pairingField.stringValue = settings.knownPairingCode ?? "Loading…"
+        let problem = hooks.pairingProblem()
+        pairingProblemLabel.stringValue = problem.map { "\($0). Enter this code on the phone." } ?? ""
+        pairingProblemLabel.isHidden = problem == nil
         launchAtLoginBox.state = settings.launchAtLoginEnabled ? .on : .off
         autoUpdateBox.state = settings.autoUpdateEnabled ? .on : .off
         messageNotificationsBox.state = settings.messageNotificationsEnabled ? .on : .off
@@ -308,6 +328,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         refreshNetworks()
         refreshPhotos()
+        foldersPage.refresh()
     }
 
     /// Refresh after a change made **here**. The field editor is dismissed
@@ -575,7 +596,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         let bodies = [
             pad(buildGeneralTab()), pad(buildAutoLockTab()), pad(buildSafeNetworksTab()),
-            pad(buildPhotosTab()), pad(buildAboutTab()),
+            pad(buildPhotosTab()), pad(foldersPage.build()), pad(buildAboutTab()),
         ]
 
         // No strip of tab buttons and no border: the toolbar does the switching,
@@ -625,6 +646,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         updateStatusLabel.lineBreakMode = .byTruncatingTail
 
         pairingField.isSelectable = true
+        pairingProblemLabel.font = .systemFont(ofSize: 11)
+        pairingProblemLabel.textColor = .systemRed
+        pairingProblemLabel.isHidden = true
         pairingField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         downloadsLabel.font = .systemFont(ofSize: 11)
         downloadsLabel.textColor = .secondaryLabelColor
@@ -636,6 +660,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
                 button("Copy", #selector(copyPairingCode)),
                 button("Regenerate…", #selector(regeneratePairingCode)),
             ])],
+            [NSGridCell.emptyContentView, pairingProblemLabel],
             [NSGridCell.emptyContentView, hint("The shared secret both apps derive their keys from. Enter the same code in the Android app.")],
             [label("Port:"), row([sized(portField, width: 90), button("Apply", #selector(applyPort))])],
             [NSGridCell.emptyContentView, hint("Both apps must use the same port. Default is \(Wire.defaultPort).")],

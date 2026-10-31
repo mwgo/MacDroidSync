@@ -34,11 +34,11 @@ val canSignRelease = releaseStore != null &&
     releaseKeyPassword != null
 
 android {
-    namespace = "pl.wojas.macdroidsync"
+    namespace = "pl.mwgo.macdroidsync"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "pl.wojas.macdroidsync"
+        applicationId = "pl.mwgo.macdroidsync"
         minSdk = 28
         targetSdk = 36
         versionCode = 2
@@ -90,6 +90,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
+    // Already pulled in by Material; named here because the notes list uses it directly.
+    implementation("androidx.recyclerview:recyclerview:1.1.0")
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 

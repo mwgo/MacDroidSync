@@ -1,0 +1,1133 @@
+package pl.mwgo.macdroidsync
+
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Build
+import android.os.Environment
+import android.os.IBinder
+import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Long lived foreground service that owns the connection to the Mac.
+ *
+ * While disconnected it stays alive on a silent IMPORTANCE_MIN notification (no
+ * status bar icon) and retries with a backoff; the retry is also woken up the
+ * moment a network becomes available. Once the handshake succeeds the visible
+ * notification with the status bar icon and the clipboard action is posted.
+ */
+class SyncService : Service() {
+
+    private lateinit var prefs: Prefs
+    private lateinit var notifications: NotificationCenter
+    private lateinit var discovery: Discovery
+    private lateinit var connectivity: ConnectivityManager
+    private lateinit var ringer: Ringer
+    private lateinit var outbox: Outbox
+    private lateinit var incomingFiles: IncomingFiles
+    private lateinit var beacon: PresenceAdvertiser
+    private lateinit var photos: PhotoSyncEngine
+    private lateinit var smsReader: SmsReader
+    private lateinit var smsSender: SmsSender
+    private lateinit var smsWatcher: SmsWatcher
+
+    /**
+     * The newest received SMS and MMS row ids already reported, so a change in
+     * the database turns into sms-new for exactly the messages that just arrived.
+     * Set when a session starts: what came in before is not news to the Mac.
+     */
+    @Volatile
+    private var smsMarks: Pair<Long, Long>? = null
+    private val smsLock = Mutex()
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val retryTrigger = Channel<Unit>(Channel.CONFLATED)
+
+    /** file-ack the Mac still owes us, keyed by the id used on the wire. */
+    private val pendingAcks = ConcurrentHashMap<String, CompletableDeferred<FileVerdict>>()
+    /** How often a queued file has been tried, so a stuck one cannot loop forever. */
+    private val attempts = ConcurrentHashMap<String, Int>()
+
+    private var loopJob: Job? = null
+    private var drainJob: Job? = null
+    private var photoJob: Job? = null
+    /**
+     * What the Mac told this phone to do about photos, for as long as this
+     * session lasts. Null means it has said nothing yet, and nothing is what
+     * this phone then describes.
+     */
+    @Volatile
+    private var photoConfig: PhotoConfig? = null
+    /**
+     * One sender at a time. A photo cycle holds this while it streams, and a
+     * shared file takes it from the photos: explicit intent beats background work,
+     * and the cycle picks up where it left off next time round.
+     */
+    private val photoSendLock = Mutex()
+    private var lastPhotoProgressAt = 0L
+
+    /**
+     * The folders the Mac keeps the same as its own. Like the photo
+     * configuration the pairs belong to the session and are never written down.
+     */
+    private lateinit var folders: FolderHost
+    private val foldersLock = Mutex()
+    private lateinit var folderWatcher: FolderWatcher
+    /** The pairs something changed in, waiting to be told to the Mac. */
+    private val changedPairs = ConcurrentHashMap.newKeySet<String>()
+    private var folderChangedJob: Job? = null
+    private var filesChangedJob: Job? = null
+
+    @Volatile
+    private var connection: PeerConnection? = null
+
+    @Volatile
+    private var connectedMac: String? = null
+
+    private var foregroundId = NotificationCenter.ID_IDLE
+
+    /** Last beacon state the Mac was told about, so only changes are sent. */
+    private var announcedBeacon: Boolean? = null
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            Log.i(TAG, "Network available, retrying now")
+            retryTrigger.trySend(Unit)
+        }
+
+        override fun onLost(network: Network) {
+            Log.i(TAG, "Network lost, dropping the connection")
+            connection?.close()
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        prefs = Prefs(this)
+        notifications = NotificationCenter(this)
+        discovery = Discovery(this)
+        connectivity = getSystemService(ConnectivityManager::class.java)
+        ringer = Ringer(this)
+        outbox = Outbox(this)
+        incomingFiles = IncomingFiles(this)
+        beacon = PresenceAdvertiser(this)
+        photos = PhotoSyncEngine(this, prefs)
+        smsReader = SmsReader(this)
+        smsSender = SmsSender(this)
+        smsWatcher = SmsWatcher(this) { onSmsDatabaseChanged() }
+        folders = FolderHost(
+            storage = Environment.getExternalStorageDirectory(),
+            cacheFile = File(filesDir, "folder-sha.json"),
+            hasAccess = ::hasStorageAccess,
+        )
+        folderWatcher = FolderWatcher { path -> scope.launch { localFolderChange(path) } }
+        running = this
+        announcedBeacon = beaconWanted
+        scope.launch { outbox.sweepIncomplete() }
+
+        notifications.createChannels()
+        showIdle()
+
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        runCatching { connectivity.registerNetworkCallback(request, networkCallback) }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The beacon is independent of the clipboard sync, so it is settled
+        // before anything else and survives a "stop the sync" request.
+        updateBeacon()
+
+        when (intent?.action) {
+            ACTION_STOP -> {
+                Log.i(TAG, "Stop requested")
+                prefs.syncEnabled = false
+                stopWithGoodbye()
+                return START_NOT_STICKY
+            }
+            ACTION_RECONNECT -> {
+                connection?.close()
+                retryTrigger.trySend(Unit)
+            }
+            ACTION_SEND_CLIPBOARD -> sendClipboardToMac(intent.getStringExtra(EXTRA_TEXT).orEmpty())
+            ACTION_SEND_FILES -> {
+                // The files are already staged in the cache by ShareActivity.
+                retryTrigger.trySend(Unit)
+                drainOutbox()
+            }
+            ACTION_LOCK_MAC -> lockTheMac()
+            ACTION_QUERY_STATUS -> broadcastStatus()
+            ACTION_SILENCE -> silenceRing()
+            ACTION_FOLDERS_ACCESS -> scope.launch { recheckFolders() }
+        }
+
+        // A shared file keeps the service connecting even with clipboard sync off:
+        // the user asked for that transfer explicitly. The beacon on its own
+        // never opens a connection - it needs no Mac on the network.
+        if (prefs.syncEnabled || hasQueuedFiles()) startConnectionLoop() else showIdle()
+        announceBeaconIfChanged()
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        running = null
+        folderWatcher.stop()
+        smsWatcher.stop()
+        beacon.stop()
+        ringer.stop()
+        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        connection?.close()
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    // region Connection loop
+
+    private fun startConnectionLoop() {
+        if (loopJob?.isActive == true) return
+        loopJob = scope.launch {
+            var failures = 0
+            while (isActive) {
+                if (!prefs.syncEnabled && !hasQueuedFiles()) break
+                val connected = attemptConnection()
+                failures = if (connected) 0 else failures + 1
+                val wait = BACKOFF_MS[minOf(failures, BACKOFF_MS.lastIndex)]
+                Log.d(TAG, "Next attempt in ${wait / 1000}s")
+                withTimeoutOrNull(wait) { retryTrigger.receive() }
+            }
+        }
+    }
+
+    /** Returns true when the session was actually established. */
+    private suspend fun attemptConnection(): Boolean {
+        val pairingCode = prefs.pairingCode
+        if (pairingCode.isBlank()) {
+            broadcastStatus(message = getString(R.string.status_missing_code))
+            return false
+        }
+
+        val port = prefs.port
+        val manualHost = prefs.manualHost
+        val endpoint = if (manualHost.isNotEmpty()) {
+            Discovery.Endpoint(manualHost, port, null)
+        } else {
+            discovery.findMac(DISCOVERY_TIMEOUT_MS)?.copy(port = port)
+        }
+        if (endpoint == null) {
+            Log.d(TAG, "No Mac found on this network")
+            broadcastStatus()
+            return false
+        }
+
+        Log.i(TAG, "Connecting to ${endpoint.host}:${endpoint.port}")
+        var established = false
+        val socket = Socket()
+        try {
+            socket.connect(InetSocketAddress(endpoint.host, endpoint.port), CONNECT_TIMEOUT_MS)
+            socket.soTimeout = Wire.RECEIVE_TIMEOUT_MS.toInt()
+            socket.keepAlive = true
+            socket.tcpNoDelay = true
+
+            val peer = PeerConnection(
+                socket = socket,
+                pairingCode = pairingCode,
+                deviceName = deviceName(),
+                deviceId = prefs.deviceId,
+                beaconEnabled = beaconWanted,
+            )
+            peer.fileSink = incomingFiles
+            connection = peer
+
+            val heartbeat = scope.launch {
+                while (isActive) {
+                    delay(HEARTBEAT_CHECK_MS)
+                    runCatching { peer.sendHeartbeatIfIdle() }
+                }
+            }
+            try {
+                peer.runLoop(listener)
+                established = peer.isAuthenticated
+            } finally {
+                heartbeat.cancel()
+            }
+        } catch (error: Exception) {
+            Log.i(TAG, "Connection to ${endpoint.host} failed: ${error.message}")
+        } finally {
+            runCatching { socket.close() }
+            connection = null
+            connectedMac = null
+            // The configuration belongs to the session that carried it. Keeping
+            // it would let this phone work to instructions from a Mac that is no
+            // longer here, and possibly no longer issues them at all.
+            photoConfig = null
+            folderWatcher.stop()
+            folderChangedJob?.cancel()
+            scope.launch { foldersLock.withLock { folders.configure(emptyList()) } }
+            stopWatchingSms()
+            pendingAcks.values.forEach { it.complete(FileVerdict(ok = false, detail = null, delivered = false)) }
+            pendingAcks.clear()
+            // A file that was still arriving is thrown away, so Download never
+            // keeps a half written item; the Mac queues it again.
+            incomingFiles.abort()
+            notifications.cancel(NotificationCenter.ID_TRANSFER)
+            notifications.cancel(NotificationCenter.ID_INCOMING)
+            showIdle()
+        }
+        return established
+    }
+
+    private val listener = object : PeerConnection.Listener {
+        override fun onAuthenticated(macName: String) {
+            Log.i(TAG, "Authenticated with $macName")
+            connectedMac = macName
+            showConnected(macName)
+            drainOutbox()
+            startWatchingSms()
+        }
+
+        override fun onClipboard(text: String) {
+            applyClipboard(text)
+        }
+
+        override fun onClipboardRequested() {
+            openBridgeToRead()
+        }
+
+        override fun onPing(macName: String) {
+            // A ping is a "find my phone", so it rings instead of blipping once.
+            notifications.showPing(macName)
+            ringer.start()
+        }
+
+        override fun onFileAck(fileId: String, ok: Boolean, path: String?, reason: String?) {
+            Log.i(TAG, "File $fileId ${if (ok) "saved as $path" else "refused: $reason"}")
+            pendingAcks.remove(fileId)?.complete(FileVerdict(ok = ok, detail = reason ?: path))
+        }
+
+        override fun onIncomingProgress(name: String, received: Long, total: Long) {
+            notifications.showIncomingTransfer(name, received, total)
+        }
+
+        override fun onFileReceived(name: String, saved: IncomingFiles.Saved) {
+            notifications.cancel(NotificationCenter.ID_INCOMING)
+            notifications.showFileReceived(saved)
+        }
+
+        override fun onFileRefused(name: String, reason: String) {
+            notifications.cancel(NotificationCenter.ID_INCOMING)
+            notifications.showFileResult(name, ok = false, detail = reason)
+        }
+
+        override fun onPhotoConfig(config: PhotoConfig) {
+            Log.i(
+                TAG,
+                "Photo configuration from the Mac: " +
+                    if (config.enabled) {
+                        "on, ${config.lastDays} day(s) back, " +
+                            "at most ${config.maxItemBytes / (1024 * 1024)} MB per item"
+                    } else {
+                        "off"
+                    },
+            )
+            photoConfig = config
+        }
+
+        override fun onPhotoPreview(key: String) {
+            // Off the socket thread, but deliberately not behind the send lock:
+            // the whole point is to answer while the operator is looking, and a
+            // video in flight would otherwise hold the answer for minutes.
+            scope.launch {
+                val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+                val jpeg = runCatching { photos.preview(key) }
+                    .onFailure { Log.w(TAG, "Could not draw a preview of $key", it) }
+                    .getOrNull()
+                runCatching {
+                    peer.sendPhotoPreview(key, jpeg, reason = "this phone has no picture of it")
+                }.onFailure { Log.w(TAG, "Could not send the preview of $key", it) }
+            }
+        }
+
+        override fun onSmsRequest(type: String, request: SmsPayload, image: ByteArray?) {
+            scope.launch { answerSms(type, request, image) }
+        }
+
+        override fun onFolderRequest(type: String, request: FolderPayload, data: ByteArray?) {
+            scope.launch { answerFolder(type, request, data) }
+        }
+
+        override fun onPhotoPull(keys: List<String>?, manifestId: String?) {
+            val config = photoConfig?.takeIf { it.enabled }
+            if (config == null) {
+                // Said out loud rather than ignored. An empty manifest would mean
+                // "everything was deleted"; ok:false is the documented way to say
+                // "I am not describing anything", and it gives the Mac a reason to
+                // show instead of leaving a feature silently doing nothing.
+                Log.i(TAG, "Photo pull ignored: no configuration from the Mac")
+                refusePhotos()
+                return
+            }
+            if (keys == null) {
+                describePhotos(config)
+            } else {
+                sendPhotos(config, keys)
+            }
+        }
+    }
+
+    /** Tells the Mac why nothing is being described. */
+    private fun refusePhotos() {
+        scope.launch {
+            val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+            runCatching {
+                peer.sendPhotoManifest(
+                    PhotoPayload(),
+                    ok = false,
+                    reason = "this phone has no photo configuration from the Mac",
+                )
+            }.onFailure { Log.w(TAG, "Could not answer the photo pull", it) }
+        }
+    }
+
+    // endregion
+
+    // region Folders
+
+    /**
+     * Answers one request of the Mac about the synced folders, one at a time.
+     * Every request is answered, a refusal included, with the request's own
+     * type and id.
+     */
+    private suspend fun answerFolder(type: String, request: FolderPayload, data: ByteArray?) = foldersLock.withLock {
+        val peer = connection?.takeIf { it.isAuthenticated } ?: return@withLock
+        val reply = FolderPayload(requestId = request.requestId, pair = request.pair, path = request.path)
+        try {
+            val answer = when (type) {
+                MessageType.FOLDERS_CONFIG -> {
+                    val answers = folders.configure(request.pairs.orEmpty())
+                    answers.forEach { Log.i(TAG, "Synced folder ${it.id}: ${if (it.ok == true) "ready" else it.reason}") }
+                    folderWatcher.watch(folders.pairs.values)
+                    FolderPayload(pairs = answers)
+                }
+                MessageType.FOLDER_MANIFEST -> folders.manifest(request.pair, request.cursor).copy(requestId = request.requestId)
+                MessageType.FOLDER_GET -> {
+                    val offset = request.offset ?: 0
+                    val (bytes, total) = folders.read(request.pair, request.path, offset)
+                    peer.sendFolder(type, reply.copy(offset = offset, total = total), data = bytes)
+                    return@withLock
+                }
+                MessageType.FOLDER_PUT -> {
+                    if (request.dir == true) {
+                        folders.makeDirectory(request.pair, request.path)
+                    } else {
+                        folders.write(
+                            request.pair,
+                            request.path,
+                            request.offset ?: 0,
+                            request.total ?: 0,
+                            data ?: ByteArray(0),
+                            request.sha256,
+                            request.baseHash,
+                        )
+                    }
+                    reply.copy(offset = request.offset)
+                }
+                MessageType.FOLDER_MOVE -> {
+                    folders.move(request.pair, request.path, request.to, request.baseHash)
+                    reply
+                }
+                MessageType.FOLDER_DELETE -> {
+                    folders.delete(request.pair, request.path, request.baseHash, request.dir == true)
+                    reply
+                }
+                else -> return@withLock
+            }
+            peer.sendFolder(type, answer)
+            if (type != MessageType.FOLDER_MANIFEST && type != MessageType.FOLDERS_CONFIG) scheduleFilesChanged()
+        } catch (refused: FolderHost.Refused) {
+            Log.i(TAG, "Refused $type ${request.path.orEmpty()}: ${refused.reason}")
+            runCatching { peer.sendFolder(type, reply, ok = false, reason = refused.reason) }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not answer $type", error)
+            runCatching { peer.sendFolder(type, reply, ok = false, reason = error.message ?: "error") }
+        }
+    }
+
+    /**
+     * Once access to the storage is granted, pairs refused for the want of it
+     * become usable; the Mac hears of it as it heard of the refusal.
+     */
+    private suspend fun recheckFolders() = foldersLock.withLock {
+        val peer = connection?.takeIf { it.isAuthenticated } ?: return@withLock
+        val answers = folders.recheck() ?: return@withLock
+        folderWatcher.watch(folders.pairs.values)
+        runCatching { peer.sendFolder(MessageType.FOLDERS_CONFIG, FolderPayload(pairs = answers)) }
+    }
+
+    /** Whether the synced folders can be read and written at all. */
+    private fun hasStorageAccess(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+
+    /** Something changed in a synced folder, seen by the watcher. */
+    private suspend fun localFolderChange(path: String) {
+        val pair = foldersLock.withLock {
+            if (folders.isEcho(path)) null else folders.locate(path)?.first
+        } ?: return
+        scheduleFolderChanged(pair)
+    }
+
+    /** A notes app says it changed these files. */
+    fun folderChangedByApp(paths: List<String>) {
+        scope.launch {
+            val pairs = foldersLock.withLock { paths.mapNotNull { folders.locate(it)?.first }.toSet() }
+            pairs.forEach(::scheduleFolderChanged)
+        }
+    }
+
+    /** A notes app says a file is open with changes not yet saved, or no longer. */
+    fun folderEditing(path: String, dirty: Boolean) {
+        scope.launch {
+            val saved = foldersLock.withLock {
+                val pair = folders.locate(path)?.first ?: return@withLock null
+                folders.setEditing(path, dirty)
+                pair.takeIf { !dirty }
+            }
+            saved?.let(::scheduleFolderChanged)
+        }
+    }
+
+    /** Tells the Mac a second after the folder stops changing, so a burst of changes is one message. */
+    private fun scheduleFolderChanged(pair: String) {
+        changedPairs.add(pair)
+        folderChangedJob?.cancel()
+        folderChangedJob = scope.launch {
+            delay(FOLDER_CHANGED_DELAY_MS)
+            val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+            val pairs = changedPairs.toList()
+            changedPairs.removeAll(pairs.toSet())
+            for (id in pairs) {
+                runCatching { peer.sendFolder(MessageType.FOLDER_CHANGED, FolderPayload(pair = id)) }
+                    .onFailure { Log.w(TAG, "Could not tell the Mac a folder changed", it) }
+            }
+        }
+    }
+
+    /**
+     * Tells the apps showing the synced folders what the Mac wrote into them,
+     * a moment after the last write, so a note open on screen is read again.
+     */
+    private fun scheduleFilesChanged() {
+        filesChangedJob?.cancel()
+        filesChangedJob = scope.launch {
+            delay(FOLDER_CHANGED_DELAY_MS)
+            val paths = foldersLock.withLock { folders.takeWritten() }
+            if (paths.isEmpty()) return@launch
+            val intent = Intent(FolderEvents.FILES_CHANGED).putExtra(FolderEvents.EXTRA_PATHS, paths.toTypedArray())
+            sendBroadcast(intent, FolderEvents.PERMISSION)
+        }
+    }
+
+    // endregion
+
+    // region Messages
+
+    /**
+     * Answers one request of the Mac. Every request gets an answer, a refusal
+     * included, so the Mac never waits for its timeout on a phone that is there.
+     */
+    private suspend fun answerSms(type: String, request: SmsPayload, image: ByteArray? = null) {
+        val peer = connection?.takeIf { it.isAuthenticated } ?: return
+        val reply = SmsPayload(requestId = request.requestId, threadId = request.threadId, partId = request.partId)
+        val refusal = Permissions.smsRefusal(this)
+        try {
+            when {
+                refusal != null -> peer.sendSms(type, reply, ok = false, reason = refusal)
+                type == MessageType.SMS_THREADS -> {
+                    smsReader.forgetNames()
+                    peer.sendSms(type, reply.copy(threads = smsReader.threads()))
+                }
+                type == MessageType.SMS_THREAD -> {
+                    val threadId = request.threadId
+                    if (threadId == null) {
+                        peer.sendSms(type, reply, ok = false, reason = "no conversation was named")
+                        return
+                    }
+                    val (messages, more) = smsReader.messages(
+                        threadId,
+                        request.after,
+                        request.before,
+                        SmsRules.clampLimit(request.limit),
+                    )
+                    peer.sendSms(type, reply.copy(messages = messages, more = more))
+                }
+                type == MessageType.SMS_IMAGE -> {
+                    val jpeg = request.partId?.let { smsReader.image(it) }
+                    if (jpeg == null) {
+                        peer.sendSms(type, reply, ok = false, reason = "this phone has no such picture")
+                    } else {
+                        peer.sendSms(type, reply, image = jpeg)
+                    }
+                }
+                type == MessageType.SMS_AVATAR -> {
+                    val jpeg = request.address?.let { smsReader.avatar(it) }
+                    val answer = reply.copy(address = request.address, photo = request.photo)
+                    if (jpeg == null) {
+                        peer.sendSms(type, answer, ok = false, reason = "this contact has no photo")
+                    } else {
+                        peer.sendSms(type, answer, image = jpeg)
+                    }
+                }
+                type == MessageType.SMS_SEND -> sendSmsForMac(peer, request, image)
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not answer $type", error)
+            runCatching {
+                if (type == MessageType.SMS_SEND) {
+                    val status = SmsPayload(requestId = request.requestId, threadId = request.threadId, state = "failed")
+                    peer.sendSms(MessageType.SMS_STATUS, status, ok = false, reason = error.message ?: "the message could not be sent")
+                } else {
+                    peer.sendSms(type, reply, ok = false, reason = error.message ?: "the phone could not read its messages")
+                }
+            }
+        }
+    }
+
+    /** A picture makes it an MMS; words alone go as an SMS. */
+    private fun sendSmsForMac(peer: PeerConnection, request: SmsPayload, image: ByteArray?) {
+        val status = SmsPayload(requestId = request.requestId, threadId = request.threadId)
+        val address = request.address?.trim().orEmpty()
+        val text = request.text.orEmpty()
+        val refusal = when {
+            !Permissions.hasSmsSend(this) -> "MacDroidSync has no permission to send messages on the phone"
+            address.isEmpty() || !SmsRules.canReply(address) -> "this conversation cannot take a reply"
+            text.isBlank() && image == null -> "the message is empty"
+            else -> null
+        }
+        if (refusal != null) {
+            peer.sendSms(MessageType.SMS_STATUS, status.copy(state = "failed"), ok = false, reason = refusal)
+            return
+        }
+        val report: (String, String?) -> Unit = { state, reason ->
+            scope.launch {
+                val current = connection?.takeIf { it.isAuthenticated } ?: return@launch
+                runCatching {
+                    current.sendSms(MessageType.SMS_STATUS, status.copy(state = state), ok = state != "failed", reason = reason)
+                }
+            }
+        }
+        if (image != null) {
+            // Decoding and shrinking a photo is not work for the socket's thread.
+            scope.launch { smsSender.sendMms(address, text.ifBlank { null }, image, report) }
+        } else {
+            smsSender.send(address, text, report)
+        }
+    }
+
+    private fun startWatchingSms() {
+        if (!Permissions.hasSmsRead(this)) return
+        scope.launch {
+            smsLock.withLock {
+                smsMarks = runCatching { smsReader.inboxMarks() }
+                    .onFailure { Log.w(TAG, "Could not read the message database", it) }
+                    .getOrNull()
+                reportUnread()
+            }
+            withContext(Dispatchers.Main) { smsWatcher.start() }
+        }
+    }
+
+    /**
+     * What is still unread here goes out as sms-new at the start of a session.
+     * The Mac remembers what it already announced, so a reconnect every few
+     * minutes does not repeat a notification.
+     */
+    private fun reportUnread() {
+        val peer = connection?.takeIf { it.isAuthenticated } ?: return
+        try {
+            val since = System.currentTimeMillis() - SmsRules.UNREAD_WINDOW_MS
+            val unread = smsReader.unread(since, SmsRules.MAX_UNREAD)
+            if (unread.isEmpty()) return
+            val threads = smsReader.threads().associateBy { it.id }
+            for ((threadId, messages) in unread) {
+                val thread = threads[threadId] ?: SmsThread(
+                    id = threadId,
+                    addresses = listOfNotNull(messages.last().address),
+                    date = messages.last().date,
+                )
+                peer.sendSms(MessageType.SMS_NEW, SmsPayload(threadId = threadId, thread = thread, messages = messages))
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not report the unread messages", error)
+        }
+    }
+
+    private fun stopWatchingSms() {
+        scope.launch(Dispatchers.Main) { smsWatcher.stop() }
+        smsMarks = null
+    }
+
+    /** New received messages become sms-new; anything else only says "changed". */
+    private fun onSmsDatabaseChanged() {
+        scope.launch {
+            smsLock.withLock {
+                val peer = connection?.takeIf { it.isAuthenticated } ?: return@withLock
+                val marks = smsMarks ?: return@withLock
+                try {
+                    val (found, next) = smsReader.newSince(marks)
+                    smsMarks = next
+                    if (found.isEmpty()) {
+                        peer.sendSms(MessageType.SMS_CHANGED, SmsPayload())
+                        return@withLock
+                    }
+                    val threads = smsReader.threads().associateBy { it.id }
+                    for ((threadId, messages) in found) {
+                        val thread = threads[threadId] ?: SmsThread(
+                            id = threadId,
+                            addresses = listOfNotNull(messages.last().address),
+                            date = messages.last().date,
+                        )
+                        peer.sendSms(MessageType.SMS_NEW, SmsPayload(threadId = threadId, thread = thread, messages = messages))
+                    }
+                } catch (error: Exception) {
+                    Log.w(TAG, "Could not report the change in messages", error)
+                }
+            }
+        }
+    }
+
+    // endregion
+
+    // region Photos
+
+    /**
+     * Describes the camera folder, on the Mac's request.
+     *
+     * Runs on its own job so that a scan of five thousand rows never sits on the
+     * thread that reads the socket - which is now the only thread this can be
+     * reached from, since the phone no longer keeps a cycle of its own.
+     */
+    private fun describePhotos(config: PhotoConfig) {
+        if (photoJob?.isActive == true) return
+        photoJob = scope.launch {
+            val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+            photoSendLock.withLock {
+                runCatching { photos.describe(peer, config) }
+                    .onFailure { Log.w(TAG, "Could not describe the camera folder", it) }
+            }
+        }
+    }
+
+    /**
+     * Sends the batch the Mac asked for.
+     *
+     * Photos hold the send lock, which a share can take from them: an explicit
+     * "send this file" beats background work, and the photo cycle simply picks up
+     * where it left off next time.
+     */
+    private fun sendPhotos(config: PhotoConfig, keys: List<String>) {
+        if (keys.isEmpty()) return
+        scope.launch {
+            val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+            photoSendLock.withLock {
+                val failed = photos.send(
+                    connection = peer,
+                    config = config,
+                    keys = keys,
+                    awaitAck = { fileId, name -> awaitPhotoAck(fileId, name) },
+                    onProgress = { name, sent, total ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastPhotoProgressAt >= PROGRESS_INTERVAL_MS || sent == total) {
+                            lastPhotoProgressAt = now
+                            notifications.showTransfer(name, sent, total, keys.size - 1)
+                        }
+                    },
+                )
+                notifications.cancel(NotificationCenter.ID_TRANSFER)
+                if (failed.isNotEmpty()) {
+                    Log.i(TAG, "${failed.size} photo(s) could not be sent this time")
+                }
+            }
+        }
+    }
+
+    /** Waits for the Mac's verdict on one photo, on the same terms as a file. */
+    private suspend fun awaitPhotoAck(fileId: String, name: String): Boolean {
+        val ack = CompletableDeferred<FileVerdict>()
+        pendingAcks[fileId] = ack
+        val verdict = withTimeoutOrNull(ACK_TIMEOUT_MS) { ack.await() }
+        pendingAcks.remove(fileId)
+        if (verdict == null || !verdict.delivered) {
+            Log.i(TAG, "No answer from the Mac about $name")
+            return false
+        }
+        return verdict.ok
+    }
+
+    // endregion
+
+    // region Files
+
+    /** What the Mac said about one file; [delivered] is false when nothing came back. */
+    private data class FileVerdict(val ok: Boolean, val detail: String?, val delivered: Boolean = true)
+
+    private fun hasQueuedFiles(): Boolean = !outbox.isEmpty()
+
+    /**
+     * Sends the queued files one by one. Only one drain runs at a time; it stops
+     * as soon as the queue is empty or the connection is gone, and whatever is
+     * left stays in the cache for the next connection.
+     */
+    private fun drainOutbox() {
+        if (drainJob?.isActive == true) return
+        drainJob = scope.launch {
+            while (isActive) {
+                val peer = connection?.takeIf { it.isAuthenticated } ?: break
+                val item = outbox.items().firstOrNull() ?: break
+                if (!sendFile(peer, item)) break
+            }
+            notifications.cancel(NotificationCenter.ID_TRANSFER)
+            // Without clipboard sync the connection only existed for the queue.
+            if (!prefs.syncEnabled && outbox.isEmpty()) {
+                Log.i(TAG, "Queue is empty and sync is off, disconnecting")
+                connection?.close()
+            }
+        }
+    }
+
+    /** Returns false when the drain should stop, for example a dead connection. */
+    private suspend fun sendFile(peer: PeerConnection, item: Outbox.Item): Boolean {
+        val fileId = UUID.randomUUID().toString()
+        val ack = CompletableDeferred<FileVerdict>()
+        pendingAcks[fileId] = ack
+        val queued = (outbox.items().size - 1).coerceAtLeast(0)
+        var lastShownAt = 0L
+
+        try {
+            notifications.showTransfer(item.name, 0, item.size, queued)
+            peer.sendFile(item, fileId) { sent, total ->
+                val now = System.currentTimeMillis()
+                if (now - lastShownAt >= PROGRESS_INTERVAL_MS || sent == total) {
+                    lastShownAt = now
+                    notifications.showTransfer(item.name, sent, total, queued)
+                }
+            }
+        } catch (error: Exception) {
+            pendingAcks.remove(fileId)
+            Log.w(TAG, "Sending ${item.name} failed, it stays in the queue", error)
+            return false
+        }
+
+        val verdict = withTimeoutOrNull(ACK_TIMEOUT_MS) { ack.await() }
+        pendingAcks.remove(fileId)
+
+        if (verdict == null || !verdict.delivered) {
+            val tries = attempts.merge(item.file.path, 1, Int::plus) ?: 1
+            if (tries >= MAX_ATTEMPTS) {
+                Log.w(TAG, "Giving up on ${item.name} after $tries attempts")
+                attempts.remove(item.file.path)
+                outbox.remove(item)
+                notifications.showFileResult(item.name, ok = false, detail = getString(R.string.file_error_no_answer))
+                return true
+            }
+            Log.i(TAG, "No answer for ${item.name}, keeping it queued (attempt $tries)")
+            return false
+        }
+
+        attempts.remove(item.file.path)
+        // Either it landed on the Mac or the Mac refused it; both are final, so
+        // the staged copy goes away and the queue keeps moving.
+        outbox.remove(item)
+        notifications.showFileResult(item.name, verdict.ok, verdict.detail)
+        return true
+    }
+
+    // endregion
+
+    // region Presence beacon
+
+    /**
+     * Whether this phone should be broadcasting at all. The beacon rides along
+     * with the clipboard sync: switching the sync off switches the radio off too.
+     */
+    private val beaconWanted: Boolean
+        get() = prefs.beaconEnabled && prefs.syncEnabled
+
+    /** Starts or stops the radio to match the switches. */
+    private fun updateBeacon() {
+        if (beaconWanted) beacon.start(prefs.pairingCode) else beacon.stop()
+    }
+
+    /**
+     * Tells the Mac that the switch moved. That message matters: a beacon which
+     * simply disappears looks exactly like the user walking away, and the Mac
+     * would lock the screen of someone sitting right in front of it.
+     *
+     * Called at the end of the command, after any reconnect has already dropped
+     * the session: sending into a socket that the same command is closing would
+     * only ever fail, and the handshake of the next connection carries the state
+     * anyway.
+     */
+    private fun announceBeaconIfChanged() {
+        val enabled = beaconWanted
+        if (announcedBeacon == enabled) return
+        announcedBeacon = enabled
+
+        val peer = connection?.takeIf { it.isAuthenticated }
+        if (peer == null) {
+            Log.i(TAG, "Presence beacon ${if (enabled) "on" else "off"}, no Mac connected to tell")
+            return
+        }
+        scope.launch {
+            runCatching { peer.sendPresence(enabled) }
+                .onFailure { Log.w(TAG, "Could not tell the Mac about the beacon: ${it.message}") }
+        }
+    }
+
+    /**
+     * Sends the manual lock. Deliberately unrelated to [Prefs.beaconEnabled]: the
+     * user pressed a button, which is a clearer signal than any measurement.
+     */
+    private fun lockTheMac() {
+        val peer = connection?.takeIf { it.isAuthenticated }
+        if (peer == null) {
+            Log.i(TAG, "No Mac connected, cannot lock it")
+            broadcastStatus(message = getString(R.string.status_lock_no_mac))
+            return
+        }
+        // onStartCommand runs on the main thread, socket writes must not.
+        scope.launch {
+            runCatching { peer.sendLockRequest() }
+                .onSuccess { Log.i(TAG, "Asked the Mac to lock its screen") }
+                .onFailure { Log.w(TAG, "Could not ask the Mac to lock", it) }
+        }
+    }
+
+    // endregion
+
+    // region Clipboard
+
+    /**
+     * Hands the text to the transparent window, which is the only way to write
+     * the clipboard on Android 10 and newer. Starting an activity from the
+     * background needs the "display over other apps" permission; without it the
+     * user gets a tappable notification instead.
+     */
+    private fun applyClipboard(text: String) {
+        if (Permissions.canDrawOverlays(this)) {
+            runCatching { startActivity(ClipboardBridgeActivity.writeIntent(this, text)) }
+                .onFailure {
+                    Log.w(TAG, "Could not open the clipboard window", it)
+                    notifications.showPendingClipboard(connectedMac ?: "Mac", text)
+                }
+        } else {
+            Log.w(TAG, "Overlay permission missing, falling back to a notification")
+            notifications.showPendingClipboard(connectedMac ?: "Mac", text)
+        }
+    }
+
+    private fun openBridgeToRead() {
+        if (!Permissions.canDrawOverlays(this)) return
+        runCatching { startActivity(ClipboardBridgeActivity.readIntent(this)) }
+    }
+
+    private fun sendClipboardToMac(text: String) {
+        if (text.isEmpty()) return
+        if (text.toByteArray(Charsets.UTF_8).size > Wire.MAX_CLIPBOARD_BYTES) {
+            Log.i(TAG, "Clipboard is larger than ${Wire.MAX_CLIPBOARD_BYTES} bytes, not sending it")
+            return
+        }
+        val peer = connection
+        if (peer == null || !peer.isAuthenticated) {
+            Log.i(TAG, "No Mac connected, clipboard not sent")
+            return
+        }
+        // onStartCommand runs on the main thread, socket writes must not.
+        scope.launch {
+            runCatching { peer.sendClipboard(text) }
+                .onFailure { Log.w(TAG, "Sending the clipboard failed", it) }
+        }
+    }
+
+    // endregion
+
+    // region Notifications and status
+
+    private fun showConnected(macName: String) {
+        val notification = notifications.activeNotification(macName)
+        startForegroundCompat(NotificationCenter.ID_ACTIVE, notification)
+        notifications.cancel(NotificationCenter.ID_IDLE)
+        foregroundId = NotificationCenter.ID_ACTIVE
+        broadcastStatus()
+    }
+
+    private fun showIdle() {
+        val notification = notifications.idleNotification()
+        startForegroundCompat(NotificationCenter.ID_IDLE, notification)
+        notifications.cancel(NotificationCenter.ID_ACTIVE)
+        foregroundId = NotificationCenter.ID_IDLE
+        broadcastStatus()
+    }
+
+    private fun startForegroundCompat(id: Int, notification: android.app.Notification) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            } else {
+                startForeground(id, notification)
+            }
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not go foreground", error)
+        }
+    }
+
+    /**
+     * Shuts down, but not before the Mac has been told that the beacon is going
+     * away. Skipping that message would leave the Mac watching for a beacon that
+     * is never coming back, which is indistinguishable from the user walking
+     * off - and it would lock the screen of someone sitting right there.
+     *
+     * The write cannot happen on this thread, so the teardown waits for it, with
+     * a short timeout in case the socket is already dead.
+     */
+    private fun stopWithGoodbye() {
+        val peer = connection?.takeIf { it.isAuthenticated }
+        if (peer == null || announcedBeacon != true) {
+            stopEverything()
+            return
+        }
+        announcedBeacon = false
+        scope.launch {
+            withTimeoutOrNull(GOODBYE_TIMEOUT_MS) {
+                runCatching { peer.sendPresence(false) }
+                    .onSuccess { Log.i(TAG, "Told the Mac the beacon is going away") }
+                    .onFailure { Log.w(TAG, "Could not tell the Mac: ${it.message}") }
+            }
+            withContext(Dispatchers.Main) { stopEverything() }
+        }
+    }
+
+    private fun stopEverything() {
+        smsWatcher.stop()
+        beacon.stop()
+        ringer.stop()
+        drainJob?.cancel()
+        drainJob = null
+        photoJob?.cancel()
+        photoJob = null
+        photoConfig = null
+        loopJob?.cancel()
+        loopJob = null
+        connection?.close()
+        connection = null
+        connectedMac = null
+        broadcastStatus()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        notifications.cancel(NotificationCenter.ID_IDLE)
+        notifications.cancel(NotificationCenter.ID_ACTIVE)
+        notifications.cancel(NotificationCenter.ID_PING)
+        notifications.cancel(NotificationCenter.ID_TRANSFER)
+        notifications.cancel(NotificationCenter.ID_INCOMING)
+        stopSelf()
+    }
+
+    private fun broadcastStatus(message: String? = null) {
+        val intent = Intent(BROADCAST_STATUS)
+            .setPackage(packageName)
+            .putExtra(EXTRA_CONNECTED, connectedMac != null)
+            .putExtra(EXTRA_DEVICE, connectedMac)
+            .putExtra(EXTRA_MESSAGE, message)
+        sendBroadcast(intent)
+    }
+
+    private fun silenceRing() {
+        Log.i(TAG, "Ring silenced")
+        ringer.stop()
+        notifications.cancel(NotificationCenter.ID_PING)
+    }
+
+    private fun deviceName(): String {
+        val manufacturer = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
+        return if (Build.MODEL.startsWith(manufacturer, ignoreCase = true)) {
+            Build.MODEL
+        } else {
+            "$manufacturer ${Build.MODEL}"
+        }
+    }
+
+    // endregion
+
+    companion object {
+        private const val TAG = Prefs.TAG
+        private const val FOLDER_CHANGED_DELAY_MS = 1000L
+
+        /** The service while it runs, for the broadcasts of the notes apps. */
+        @Volatile
+        var running: SyncService? = null
+            private set
+
+        const val ACTION_START = "pl.mwgo.macdroidsync.START"
+        const val ACTION_STOP = "pl.mwgo.macdroidsync.STOP"
+        const val ACTION_RECONNECT = "pl.mwgo.macdroidsync.RECONNECT"
+        const val ACTION_SEND_CLIPBOARD = "pl.mwgo.macdroidsync.SEND_CLIPBOARD"
+        const val ACTION_SEND_FILES = "pl.mwgo.macdroidsync.SEND_FILES"
+        const val ACTION_QUERY_STATUS = "pl.mwgo.macdroidsync.QUERY_STATUS"
+        const val ACTION_SILENCE = "pl.mwgo.macdroidsync.SILENCE"
+        const val ACTION_LOCK_MAC = "pl.mwgo.macdroidsync.LOCK_MAC"
+        /** Access to the shared storage may have been granted: the Mac is told of the pairs it can now have. */
+        const val ACTION_FOLDERS_ACCESS = "pl.mwgo.macdroidsync.FOLDERS_ACCESS"
+
+        const val BROADCAST_STATUS = "pl.mwgo.macdroidsync.STATUS"
+        const val EXTRA_TEXT = "text"
+        const val EXTRA_CONNECTED = "connected"
+        const val EXTRA_DEVICE = "device"
+        const val EXTRA_MESSAGE = "message"
+
+        private const val CONNECT_TIMEOUT_MS = 5_000
+        private const val DISCOVERY_TIMEOUT_MS = 6_000L
+        private const val HEARTBEAT_CHECK_MS = 5_000L
+        private const val ACK_TIMEOUT_MS = 60_000L
+        private const val PROGRESS_INTERVAL_MS = 500L
+        private const val GOODBYE_TIMEOUT_MS = 2_000L
+        private const val MAX_ATTEMPTS = 3
+        private val BACKOFF_MS = longArrayOf(1_000, 2_000, 5_000, 10_000, 30_000)
+
+        fun start(context: Context, action: String = ACTION_START) {
+            val intent = Intent(context, SyncService::class.java).setAction(action)
+            runCatching { context.startForegroundService(intent) }
+                .onFailure { Log.w(TAG, "Could not start the service", it) }
+        }
+
+        fun stop(context: Context) = start(context, ACTION_STOP)
+    }
+}

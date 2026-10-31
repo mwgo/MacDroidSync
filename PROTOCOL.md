@@ -70,12 +70,14 @@ The plaintext of every sealed frame is a JSON object. Absent fields are omitted.
 | `beacon` | bool | whether the phone broadcasts its presence beacon (`hello`, `presence`) |
 | `photo` | object | photo sync, see section 8 |
 | `sms` | object | messages, see section 9 |
+| `folder` | object | folder sync, see section 10 |
 
 Message types: `challenge`, `hello`, `hello-ack`, `clipboard`, `clipboard-ack`,
 `request-clipboard`, `ping`, `pong`, `heartbeat`, `bye`, `file-offer`, `file-chunk`,
 `file-end`, `file-ack`, `presence`, `lock`, `photo-manifest`, `photo-pull`,
 `photo-config`, `photo-preview`, `sms-threads`, `sms-thread`, `sms-image`, `sms-avatar`,
-`sms-send`, `sms-status`, `sms-new`, `sms-changed`.
+`sms-send`, `sms-status`, `sms-new`, `sms-changed`, `folders-config`, `folder-manifest`,
+`folder-get`, `folder-put`, `folder-move`, `folder-delete`, `folder-changed`.
 
 A receiver drops any message whose `seq` is not greater than the highest `seq` seen on
 that connection (replay and reordering protection).
@@ -507,21 +509,6 @@ would read as a deletion.
   disagreement between the two is not an error: the file changed in between, the
   transfer is accepted, and the next manifest sees the difference and asks again.
 
-### What the Mac does with it
-
-Nothing, until it is told. The first complete manifest produces a report and
-imports nothing; a batch over the configured threshold parks and waits. So does
-any plan that is not purely additions - a replaced version, a deletion, or an
-item the phone listed but will not send parks the whole plan in the sync window,
-where the operator decides row by row.
-
-Deletions are recorded and carried out only when the operator asks, in one batch.
-The single exception is the copy an edit replaced: it exists because the operator
-approved that edit, so it is taken out with it rather than asked about again.
-That is not caution for its own sake: macOS shows a confirmation alert before an
-app removes anything from the Photos library, so a sync that deleted by itself
-would put that alert on screen unasked, twice an hour.
-
 ## 9. Messages
 
 The Mac shows the phone's text messages and sends replies typed there. The phone
@@ -645,3 +632,102 @@ Settings and when the pairing code is regenerated.
 * Nothing can be marked as read on the phone: only the default messaging app may
   write there. The Mac clears its own unread mark once a conversation was opened.
 
+## 10. Folder sync
+
+Folders on the phone are kept the same as folders on the Mac, each pair both ways. The pairs are set up
+on the Mac: a folder in the phone's shared storage, given relative to it (`Documents/Notes MD`), and a
+folder on the Mac, a local one or one on iCloud Drive. As with the photos the Mac decides: it remembers
+what both folders held after the last cycle, asks the phone what its folder holds now, looks at its own,
+and works out what to do. The phone describes its folders, hands out files, takes in what it is given
+and says when something changed; it keeps no state of the sync.
+
+```
+  Mac                                                phone
+   |-- folders-config {pairs: [{id, path}]} --------->|  in the handshake, after photo-config
+   |<- folders-config {pairs: [{id, ok, reason?}]} ---|  and again once access is granted
+   |-- folder-manifest {requestId, pair, cursor?} --->|  everything in the folder
+   |<- folder-manifest {requestId, entries, cursor?} -|  a page at a time
+   |-- folder-get {pair, path, offset} -------------->|  1 MiB of a file
+   |<- folder-get {offset, total} + data -------------|
+   |-- folder-put {pair, path, offset, total, sha256, baseHash?} + data ->|
+   |<- folder-put {offset} ---------------------------|  or ok:false, reason
+   |-- folder-put {pair, path, dir: true} ----------->|  a folder
+   |-- folder-move {pair, path, to, baseHash} ------->|  renamed or moved on the Mac
+   |-- folder-delete {pair, path, baseHash} --------->|  into the folder's trash
+   |-- folder-delete {pair, path, dir: true} -------->|  an empty folder
+   |<- folder-changed {pair} -------------------------|  a second after the folder settles
+```
+
+Every request carries a `requestId` and is answered with the same type and id, a refusal included:
+`ok: false` with `reason`. The reasons are plain words, not an enum: `off` (no such pair this session),
+`no access`, `bad path`, `missing`, `changed`, `editing`, `exists`, `not empty`, `bad offset`,
+`checksum`, `too big`.
+
+### The `folder` object
+
+| field | on | meaning |
+|-------|----|---------|
+| `requestId` | every request and its answer | correlation, chosen by the Mac |
+| `pairs` | `folders-config` | from the Mac `{id, path}` per pair; from the phone `{id, ok, reason?}` |
+| `pair` | every request, `folder-changed` | which pair |
+| `cursor` | `folder-manifest` | where the next page starts; absent on the last page |
+| `entries` | `folder-manifest` answer | `{p, s, m, h?, d?}` per file or folder: path, size, modified (ms), SHA-256, `d: true` for a folder |
+| `path` | `folder-get`, `folder-put`, `folder-move`, `folder-delete` | the file, relative to the pair's folder, `/` between the parts |
+| `to` | `folder-move` | the new path |
+| `offset`, `total`, `sha256` | `folder-get`, `folder-put` | where in the file, its size, and the checksum of the whole |
+| `baseHash` | `folder-put`, `folder-move`, `folder-delete` | what the file must still be; absent on `folder-put` for a file that must not exist yet. Anything else is refused as `changed` |
+| `dir` | `folder-put`, `folder-delete` | a folder rather than a file |
+
+* Paths are untrusted both ways. Neither side accepts an absolute path, `..`, or a path through a name
+  that does not travel: `.DS_Store`, `._*`, `Icon\r`, `.Trash*`, `*.part`, `.macdroidsync`. The phone
+  accepts a pair only in its shared storage, outside `Android/`, and only with access to all files.
+* The phone writes a file aside, in `.macdroidsync/parts/` of the pair, and puts it in place once the
+  last piece is in and `sha256` matches; `baseHash` is checked on the first piece and again then. A
+  deleted file goes to `.macdroidsync/trash/<yyyyMMdd>/` of the pair, kept for thirty days.
+* A file larger than 512 MiB is listed with an empty `h` and left alone. So is one the phone cannot
+  read just now.
+* A file open in a notes app with changes not yet saved is refused as `editing`. The app tells the phone
+  when it saves it, and the phone sends `folder-changed`.
+
+### What the Mac does
+
+A cycle runs for a pair when the phone connects, when it sends `folder-changed`, when the Mac's folder
+changes - apps and iCloud write through `NSFileCoordinator`, which the Mac hears, and an app may also
+post `pl.mwgo.MacDroidSync.folderChanged` - and every five minutes besides. Paths are compared composed
+(NFC) and regardless of case, as both the Mac's disks and the phone's storage treat them. Against what
+both held after the last cycle:
+
+* changed on one side only: copied to the other;
+* changed on both sides, or different on both before the first cycle: the Mac's version keeps the path,
+  and the phone's is moved aside to `name (Android, Oct 11 14.05).ext` and comes to the Mac as a new
+  file; the Mac lists the conflict;
+* gone from one place and new in another with the same checksum: moved on the other side too, not sent
+  again;
+* deleted on one side: deleted on the other - into the Mac's Trash, into the pair's trash on the phone -
+  unless the other side changed it, in which case it is put back and the Mac lists it;
+* more than `max(5, files / 5)` deletions at once wait until allowed on the Mac, and a side that shows
+  no files at all where the last cycle left some deletes nothing on the other;
+* a folder new on one side is made on the other; one deleted on one side goes on the other once empty.
+
+A folder on iCloud Drive brings its own delays. A file not yet downloaded is asked for and left out of
+the cycle until it is there; one that has gone counts as deleted only after two minutes, since iCloud
+may bring a rename as a deletion first; one written in the last three seconds waits for the next cycle.
+
+Each pair's state is kept in `~/Library/Application Support/MacDroidSync/FolderSync/<pair>.json`, and
+is started afresh when either of its folders changes.
+
+### Telling the apps
+
+The notes apps and MacDroidSync tell each other what they changed, so that a change goes over at once
+and an open note is read again.
+
+* **Android.** Both apps declare the permission `pl.mwgo.permission.FOLDER_EVENTS` with
+  `protectionLevel="signature"`, so only apps signed with the same key hear each other. An app sends
+  MacDroidSync `pl.mwgo.macdroidsync.FOLDER_CHANGED` with `paths` (absolute paths, a string array)
+  after saving, and `pl.mwgo.macdroidsync.FOLDER_EDITING` with `path` and `dirty` while a file is open
+  with changes not yet saved - again within a minute while it stays so, and with `dirty: false` once
+  saved. After writing into a folder MacDroidSync broadcasts `pl.mwgo.macdroidsync.FILES_CHANGED` with
+  `paths`, to receivers holding the permission. Besides, the phone watches the folders itself.
+* **Mac.** Through the distributed notification centre, the object of each being a path:
+  `pl.mwgo.MacDroidSync.folderChanged` from an app after saving, `pl.mwgo.MacDroidSync.filesChanged`
+  from MacDroidSync after a cycle wrote into a folder.

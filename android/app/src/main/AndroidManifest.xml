@@ -11,11 +11,18 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Only Android 9 needs a permission to write into the public Download folder;
-         from Android 10 on the same job goes through MediaStore without one. -->
+    <!-- The synced folders, anywhere in the shared storage: all files from
+         Android 11 on, the old storage permission before it. Android 9 needs
+         the latter for the public Download folder too. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
+        android:maxSdkVersion="29" />
+    <!-- The notes apps signed with the same key tell the sync what they changed. -->
+    <permission
+        android:name="pl.mwgo.permission.FOLDER_EVENTS"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="pl.mwgo.permission.FOLDER_EVENTS" />
     <!-- Lets the service open the transparent clipboard window from the background. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Reading the camera folder for the photo sync. Three eras of Android:
@@ -55,6 +62,7 @@
 
     <application
         android:allowBackup="false"
+        android:requestLegacyExternalStorage="true"
         android:icon="@drawable/ic_app"
         android:label="@string/app_name"
         android:supportsRtl="true"
@@ -134,6 +142,16 @@
             android:name=".SyncService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <receiver
+            android:name=".FolderEventsReceiver"
+            android:exported="true"
+            android:permission="pl.mwgo.permission.FOLDER_EVENTS">
+            <intent-filter>
+                <action android:name="pl.mwgo.macdroidsync.FOLDER_CHANGED" />
+                <action android:name="pl.mwgo.macdroidsync.FOLDER_EDITING" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".BootReceiver"

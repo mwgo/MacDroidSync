@@ -22,6 +22,7 @@
         <item name="android:textColor">?attr/colorPrimary</item>
     </style>
 
+
     <!-- ShareActivity has no UI of its own: it stages the shared files and shows
          a toast, so its window stays invisible. -->
     <style name="Theme.ShareTarget" parent="@android:style/Theme.Translucent.NoTitleBar">

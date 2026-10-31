@@ -171,6 +171,29 @@
 
             <TextView
                 style="@style/SectionHeading"
+                android:text="@string/section_folders" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingVertical="4dp"
+                android:text="@string/folders_managed_by_mac"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?android:attr/textColorSecondary" />
+
+            <TextView
+                android:id="@+id/foldersHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingVertical="4dp"
+                android:text="@string/folders_needs_permission"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?attr/colorError"
+                android:visibility="gone"
+                tools:visibility="visible" />
+
+            <TextView
+                style="@style/SectionHeading"
                 android:text="@string/section_autolock" />
 
             <com.google.android.material.materialswitch.MaterialSwitch

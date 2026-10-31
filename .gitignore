@@ -32,3 +32,4 @@ android/keystore.properties
 .idea/
 .junie/
 *.iml
+xcuserdata/

@@ -4,7 +4,6 @@
 
     <string name="status_heading">Status</string>
 
-    <string name="section_pairing">Pairing</string>
     <string name="pairing_code_label">Pairing code</string>
     <string name="pairing_code_helper">Shown in the Mac menu under Pairing code</string>
     <string name="host_label">Mac address</string>
@@ -77,6 +76,9 @@
     <string name="autolock_needs_sync">Turn the clipboard sync on: the beacon only broadcasts while it is running.</string>
     <string name="autolock_needs_permission">Grant Nearby devices in Settings, otherwise the phone cannot broadcast. Tap here to open it.</string>
     <string name="section_photos">Photos</string>
+    <string name="section_folders">Folders</string>
+    <string name="folders_managed_by_mac">Folders on this phone are kept the same as folders on the Mac. The pairs are set up on the Mac, in Settings › Folders.</string>
+    <string name="folders_needs_permission">Allow access to all files, otherwise the synced folders cannot be read. Tap here to open it.</string>
     <string name="section_messages">Messages</string>
     <string name="permission_sms">Messages and contacts</string>
     <string name="permission_sms_explanation">Lets the Mac show the conversations on this phone and send replies typed there. Messages are read on request and sent only when you press Send on the Mac. Contacts are optional; without them the Mac shows numbers.</string>
