@@ -109,6 +109,7 @@ class SyncService : Service() {
     private var connectedMac: String? = null
 
     private var foregroundId = NotificationCenter.ID_IDLE
+    private var foregroundMac: String? = null
 
     /** Last beacon state the Mac was told about, so only changes are sent. */
     private var announcedBeacon: Boolean? = null
@@ -150,6 +151,7 @@ class SyncService : Service() {
         scope.launch { outbox.sweepIncomplete() }
 
         notifications.createChannels()
+        FujifilmCamera.onShownChange = { showForeground() }
         showIdle()
 
         val request = NetworkRequest.Builder()
@@ -198,6 +200,7 @@ class SyncService : Service() {
 
     override fun onDestroy() {
         running = null
+        FujifilmCamera.onShownChange = null
         folderWatcher.stop()
         smsWatcher.stop()
         beacon.stop()
@@ -984,19 +987,33 @@ class SyncService : Service() {
     // region Notifications and status
 
     private fun showConnected(macName: String) {
-        val notification = notifications.activeNotification(macName)
-        startForegroundCompat(NotificationCenter.ID_ACTIVE, notification)
-        notifications.cancel(NotificationCenter.ID_IDLE)
-        foregroundId = NotificationCenter.ID_ACTIVE
+        foregroundMac = macName
+        showForeground()
         broadcastStatus()
     }
 
     private fun showIdle() {
-        val notification = notifications.idleNotification()
-        startForegroundCompat(NotificationCenter.ID_IDLE, notification)
-        notifications.cancel(NotificationCenter.ID_ACTIVE)
-        foregroundId = NotificationCenter.ID_IDLE
+        foregroundMac = null
+        showForeground()
         broadcastStatus()
+    }
+
+    /**
+     * One ongoing notification, not two: while the Fujifilm camera is on, the
+     * service stands behind the camera's notification instead of its own.
+     */
+    private fun showForeground() {
+        val camera = FujifilmCamera.shown
+        val (id, notification) = when {
+            camera != null -> FujifilmCamera.NOTIFICATION_ID to camera
+            foregroundMac != null -> NotificationCenter.ID_ACTIVE to notifications.activeNotification(foregroundMac!!)
+            else -> NotificationCenter.ID_IDLE to notifications.idleNotification()
+        }
+        startForegroundCompat(id, notification)
+        listOf(NotificationCenter.ID_IDLE, NotificationCenter.ID_ACTIVE)
+            .filter { it != id }
+            .forEach { notifications.cancel(it) }
+        foregroundId = id
     }
 
     private fun startForegroundCompat(id: Int, notification: android.app.Notification) {
@@ -1052,7 +1069,8 @@ class SyncService : Service() {
         connection = null
         connectedMac = null
         broadcastStatus()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        // The camera's notification stays for as long as the camera is on.
+        stopForeground(if (foregroundId == FujifilmCamera.NOTIFICATION_ID) STOP_FOREGROUND_DETACH else STOP_FOREGROUND_REMOVE)
         notifications.cancel(NotificationCenter.ID_IDLE)
         notifications.cancel(NotificationCenter.ID_ACTIVE)
         notifications.cancel(NotificationCenter.ID_PING)

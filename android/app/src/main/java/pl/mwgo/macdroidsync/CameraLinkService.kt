@@ -399,6 +399,7 @@ class CameraLinkService : Service() {
 
     private fun startForegroundCompat(text: String) {
         val notification = FujifilmCamera.notification(this, text)
+        FujifilmCamera.posted(notification)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(FujifilmCamera.NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {

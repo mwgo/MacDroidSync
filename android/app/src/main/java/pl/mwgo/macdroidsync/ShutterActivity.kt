@@ -22,7 +22,16 @@ class ShutterActivity : ScreenActivity() {
         binding = ActivityShutterBinding.inflate(layoutInflater)
         setContentView(binding.root)
         useToolbar(binding.toolbar, showUp = false)
-        supportActionBar?.title = Prefs(this).cameraName.ifEmpty { getString(R.string.camera_default_name) }
+        val prefs = Prefs(this)
+        supportActionBar?.title = prefs.cameraName.ifEmpty { getString(R.string.camera_default_name) }
+
+        // The same switch as on the camera settings screen: off, nothing runs at all.
+        binding.linkCheck.isChecked = prefs.cameraEnabled
+        binding.linkCheck.setOnCheckedChangeListener { _, checked ->
+            prefs.cameraEnabled = checked
+            FujifilmCamera.watch(this)
+            update()
+        }
 
         binding.shutterButton.setOnTouchListener { view, event ->
             when (event.actionMasked) {
@@ -45,6 +54,7 @@ class ShutterActivity : ScreenActivity() {
     override fun onResume() {
         super.onResume()
         CameraLinkService.onChange = { update() }
+        binding.linkCheck.isChecked = Prefs(this).cameraEnabled
         if (!CameraLinkService.running) FujifilmCamera.refresh(this)
         update()
     }
@@ -68,6 +78,7 @@ class ShutterActivity : ScreenActivity() {
         binding.shutterButton.isEnabled = ready
         binding.stateText.setText(
             when {
+                !Prefs(this).cameraEnabled -> R.string.shutter_link_off
                 ready -> R.string.shutter_ready
                 FujifilmCamera.isOn(this) -> R.string.camera_sync_connecting
                 else -> R.string.camera_state_disconnected

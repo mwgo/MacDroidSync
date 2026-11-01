@@ -135,6 +135,8 @@
     <string name="title_shutter">Shutter</string>
     <string name="shutter_button">Shutter button</string>
     <string name="shutter_ready">Ready</string>
+    <string name="shutter_link">Communicate with the camera</string>
+    <string name="shutter_link_off">Off: the camera is not watched, connected to or sent anything</string>
     <string name="shutter_hint">Tap for one photo. Hold for as long as the camera\'s own button would be held: continuous shooting or bulb.</string>
     <string name="shutter_open_xapp">Open FUJIFILM XApp</string>
     <string name="camera_sync_waiting">Connected, sending location and time…</string>

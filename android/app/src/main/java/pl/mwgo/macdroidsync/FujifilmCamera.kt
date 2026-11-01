@@ -147,8 +147,24 @@ object FujifilmCamera {
 
     fun show(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        runCatching { manager.notify(NOTIFICATION_ID, notification(context, context.getString(R.string.camera_notification_text))) }
+        val notification = notification(context, context.getString(R.string.camera_notification_text))
+        runCatching { manager.notify(NOTIFICATION_ID, notification) }
             .onFailure { Log.w(Prefs.TAG, "Could not show the camera notification", it) }
+        posted(notification)
+    }
+
+    /** The camera notification on screen now, which the sync service shows in place of its own. */
+    @Volatile
+    var shown: android.app.Notification? = null
+        private set
+
+    /** Called on the main thread when the camera notification appears or goes. */
+    var onShownChange: (() -> Unit)? = null
+
+    fun posted(notification: android.app.Notification) {
+        val appeared = shown == null
+        shown = notification
+        if (appeared) onShownChange?.invoke()
     }
 
     /** The one camera notification, whether shown on its own or by the link service. */
@@ -163,14 +179,20 @@ object FujifilmCamera {
             .setContentIntent(openIntent(context))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setOngoing(true)
+            // Not marked silent: Android hides the status bar icon of a silent
+            // notification. The channel itself makes no sound.
             .setOnlyAlertOnce(true)
-            .setSilent(true)
             .setWhen(System.currentTimeMillis())
             .setShowWhen(true)
             .build()
     }
 
     fun hide(context: Context) {
+        // The sync service lets go of it first, a foreground notification cannot be cancelled.
+        if (shown != null) {
+            shown = null
+            onShownChange?.invoke()
+        }
         context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
     }
 

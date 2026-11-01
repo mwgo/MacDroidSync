@@ -20,6 +20,16 @@
             tools:title="X-E5" />
     </com.google.android.material.appbar.AppBarLayout>
 
+    <com.google.android.material.checkbox.MaterialCheckBox
+        android:id="@+id/linkCheck"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="8dp"
+        android:minHeight="48dp"
+        android:text="@string/shutter_link"
+        android:textAppearance="?attr/textAppearanceBodyLarge" />
+
     <LinearLayout
         android:id="@+id/content"
         android:layout_width="match_parent"
