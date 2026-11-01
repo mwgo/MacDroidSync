@@ -167,7 +167,8 @@ class PhotoViewerActivity : ScreenActivity() {
         main.post(linkCheck)
         CameraPhotos.held = true
         refresh()
-        if (CameraLinkService.instance?.ready == true) CameraPhotos.connect(this) { refresh() }
+        // Joined means bringing down what is still only on the camera.
+        if (CameraLinkService.instance?.ready == true) importRemaining()
     }
 
     override fun onPause() {
@@ -223,6 +224,14 @@ class PhotoViewerActivity : ScreenActivity() {
      * The camera's Wi-Fi joined or left by hand, since while joined the phone
      * is off its own Wi-Fi and the Mac. Shown only with the camera on.
      */
+    private fun importRemaining() {
+        if (CameraPhotos.downloading) return
+        CameraPhotos.importNew(this) { _, stopped ->
+            if (stopped) CameraPhotos.close()
+            refresh()
+        }
+    }
+
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     /** The camera notification comes and goes with no word to this screen; looked at now and then. */
     private val linkCheck: Runnable = object : Runnable {
@@ -247,12 +256,10 @@ class PhotoViewerActivity : ScreenActivity() {
         binding.cameraLink.setOnClickListener {
             when {
                 // Stopped at the end of the chunk being read, then left; a cut mid-transfer upsets the camera.
-                CameraPhotos.importing != null -> CameraPhotos.stopImport()
-                joined -> CameraPhotos.close()
-                else -> CameraPhotos.importNew(this) { _, stopped ->
-                    if (stopped) CameraPhotos.close()
-                    refresh()
-                }
+                CameraPhotos.downloading -> CameraPhotos.stopImport()
+                // Joined when the viewer opened, with pictures still to bring down: those first.
+                joined && photos.none { it.uri == null } -> CameraPhotos.close()
+                else -> importRemaining()
             }
             refresh()
         }
