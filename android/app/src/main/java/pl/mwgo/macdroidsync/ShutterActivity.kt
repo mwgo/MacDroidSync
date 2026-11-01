@@ -22,6 +22,8 @@ class ShutterActivity : ScreenActivity() {
         binding = ActivityShutterBinding.inflate(layoutInflater)
         setContentView(binding.root)
         useToolbar(binding.toolbar, showUp = false)
+        // Clear of the navigation bar, which in landscape would cut into the shutter.
+        padFromInsets(binding.root)
         val prefs = Prefs(this)
         supportActionBar?.title = prefs.cameraName.ifEmpty { getString(R.string.camera_default_name) }
 
@@ -51,6 +53,14 @@ class ShutterActivity : ScreenActivity() {
         }
         binding.browseButton.setOnClickListener {
             startActivity(android.content.Intent(this, PhotoViewerActivity::class.java))
+        }
+        // Held, it opens straight onto the tiles.
+        binding.browseButton.setOnLongClickListener {
+            it.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            startActivity(
+                android.content.Intent(this, PhotoViewerActivity::class.java).putExtra(PhotoViewerActivity.EXTRA_GRID, true)
+            )
+            true
         }
         binding.xappButton.setOnClickListener { FujifilmCamera.openXApp(this) }
         if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_CONNECT, false)) {
@@ -103,12 +113,17 @@ class ShutterActivity : ScreenActivity() {
         binding.shutterButton.isEnabled = ready
         val importing = CameraPhotos.importing
         val photos = CameraPhotos.state
-        val reachable = ready || Prefs(this).cameraWifi.isNotEmpty()
+        // Grey with the camera off: only Bluetooth, or a session already open, can reach it.
+        val reachable = ready || photos is CameraPhotos.State.Ready
         val busy = photos is CameraPhotos.State.Busy && importing == null
         val downloading = CameraPhotos.downloading
         binding.downloadButton.isEnabled = downloading || (reachable && !busy)
         // From the tap on, the green button is a red stop inside a ring of progress.
-        val color = if (downloading) R.color.camera_stop else R.color.camera_download
+        val color = when {
+            downloading -> R.color.camera_stop
+            !binding.downloadButton.isEnabled -> R.color.camera_off
+            else -> R.color.camera_download
+        }
         binding.downloadButton.backgroundTintList = androidx.core.content.ContextCompat.getColorStateList(this, color)
         binding.downloadButton.setIconResource(if (downloading) R.drawable.ic_stop else R.drawable.ic_download)
         binding.downloadButton.contentDescription =
@@ -123,7 +138,7 @@ class ShutterActivity : ScreenActivity() {
             binding.downloadProgress.visibility = View.VISIBLE
         }
         // A tint of its own hides the disabled look, so it is faded here.
-        listOf(binding.shutterButton, binding.downloadButton).forEach { it.alpha = if (it.isEnabled) 1f else 0.38f }
+        binding.shutterButton.alpha = if (binding.shutterButton.isEnabled) 1f else 0.38f
         binding.downloadText.text = when {
             importing != null -> getString(R.string.photos_progress, importing.first + 1, importing.second)
             busy -> getString((photos as CameraPhotos.State.Busy).step)

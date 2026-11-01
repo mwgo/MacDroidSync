@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Landscape: the switch and XApp move into the bar, so the row of buttons
+     keeps the rest of the height. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <com.google.android.material.appbar.AppBarLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fitsSystemWindows="true">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            app:titleTextAppearance="?attr/textAppearanceTitleLarge"
+            tools:title="X-E5">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/xappButton"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end|center_vertical"
+                android:text="@string/shutter_open_xapp" />
+
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@+id/linkCheck"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end|center_vertical"
+                android:text="@string/shutter_link" />
+        </com.google.android.material.appbar.MaterialToolbar>
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <TextView
+        android:id="@+id/stateText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        android:textColor="?android:attr/textColorSecondary"
+        tools:text="@string/shutter_ready" />
+
+    <!-- Landscape: download, shutter and browse in one row, the shutter in the middle. -->
+    <LinearLayout
+        android:id="@+id/content"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:baselineAligned="false"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingHorizontal="24dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <!-- As tall as the label below, so the button's centre is the shutter's. -->
+            <Space
+                android:layout_width="1dp"
+                android:layout_height="24dp" />
+
+            <FrameLayout
+                android:layout_width="88dp"
+                android:layout_height="88dp">
+
+                <com.google.android.material.progressindicator.CircularProgressIndicator
+                    android:id="@+id/downloadProgress"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:visibility="invisible"
+                    app:indicatorColor="@color/camera_stop"
+                    app:indicatorInset="0dp"
+                    app:indicatorSize="86dp"
+                    app:trackThickness="4dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/downloadButton"
+                    style="@style/Widget.Material3.Button"
+                    android:layout_width="72dp"
+                    android:layout_height="72dp"
+                    android:layout_gravity="center"
+                    android:backgroundTint="@color/camera_download"
+                    android:contentDescription="@string/photos_download_new"
+                    android:insetLeft="0dp"
+                    android:insetTop="0dp"
+                    android:insetRight="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    app:cornerRadius="36dp"
+                    app:icon="@drawable/ic_download"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconSize="32dp"
+                    app:iconTint="@color/camera_on_button" />
+            </FrameLayout>
+
+            <TextView
+                android:id="@+id/downloadText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:text="@string/photos_download_short"
+                android:textAppearance="?attr/textAppearanceLabelLarge" />
+        </LinearLayout>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/shutterButton"
+            style="@style/Widget.Material3.Button"
+            android:layout_width="140dp"
+            android:layout_height="140dp"
+            android:layout_marginHorizontal="24dp"
+            android:backgroundTint="@color/camera_shutter"
+            android:contentDescription="@string/shutter_button"
+            android:insetLeft="0dp"
+            android:insetTop="0dp"
+            android:insetRight="0dp"
+            android:insetBottom="0dp"
+            android:padding="0dp"
+            app:cornerRadius="70dp"
+            app:icon="@drawable/ic_stat_camera"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="56dp"
+            app:iconTint="@color/camera_on_button"
+            app:strokeColor="?attr/colorOutline"
+            app:strokeWidth="4dp" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <!-- As tall as the label below, so the button's centre is the shutter's. -->
+            <Space
+                android:layout_width="1dp"
+                android:layout_height="24dp" />
+
+            <FrameLayout
+                android:layout_width="88dp"
+                android:layout_height="88dp">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/browseButton"
+                    style="@style/Widget.Material3.Button"
+                    android:layout_width="72dp"
+                    android:layout_height="72dp"
+                    android:layout_gravity="center"
+                    android:backgroundTint="@color/camera_browse"
+                    android:contentDescription="@string/title_photos"
+                    android:insetLeft="0dp"
+                    android:insetTop="0dp"
+                    android:insetRight="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    app:cornerRadius="36dp"
+                    app:icon="@drawable/ic_gallery"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconSize="32dp"
+                    app:iconTint="@color/camera_on_button" />
+            </FrameLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/title_photos"
+                android:textAppearance="?attr/textAppearanceLabelLarge" />
+        </LinearLayout>
+    </LinearLayout>
+
+</LinearLayout>

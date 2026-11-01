@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="1dp">
+
+    <pl.mwgo.macdroidsync.SquareImageView
+        android:id="@+id/tile"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FF1C1C1C"
+        android:contentDescription="@string/title_photos"
+        android:scaleType="centerCrop" />
+
+    <View
+        android:id="@+id/dim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#66000000"
+        android:visibility="gone" />
+
+    <ImageView
+        android:id="@+id/check"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="top|start"
+        android:layout_margin="6dp"
+        android:contentDescription="@string/photos_selected_one"
+        android:src="@drawable/ic_check_circle"
+        android:visibility="gone" />
+
+    <ImageView
+        android:id="@+id/onCamera"
+        android:layout_width="18dp"
+        android:layout_height="18dp"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="4dp"
+        android:contentDescription="@string/photos_on_camera_only"
+        android:src="@drawable/ic_stat_camera"
+        android:visibility="gone"
+        app:tint="#E6FFFFFF"
+        xmlns:app="http://schemas.android.com/apk/res-auto" />
+</FrameLayout>

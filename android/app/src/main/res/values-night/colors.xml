@@ -12,4 +12,5 @@
     <color name="camera_stop">#EF5350</color>
     <color name="camera_shutter">#E8EAED</color>
     <color name="camera_on_button">#FF202124</color>
+    <color name="camera_off">#5F6368</color>
 </resources>

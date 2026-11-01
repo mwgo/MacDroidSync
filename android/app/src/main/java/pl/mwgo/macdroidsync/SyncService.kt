@@ -1147,5 +1147,10 @@ class SyncService : Service() {
         }
 
         fun stop(context: Context) = start(context, ACTION_STOP)
+
+        /** Starts the sync if the user has it on and nothing has started it yet. */
+        fun ensureRunning(context: Context) {
+            if (running == null && Prefs(context).syncEnabled) start(context)
+        }
     }
 }

@@ -57,6 +57,7 @@ class CameraLinkService : Service() {
         prefs = Prefs(this)
         running = true
         instance = this
+        SyncService.ensureRunning(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -204,6 +205,7 @@ class CameraLinkService : Service() {
     data class Wifi(val ssid: String, val passphrase: String, val bssid: String)
 
     private var wifiWanted: ((Wifi?) -> Unit)? = null
+    private var launchAttempts = 0
     private var wifiSsid = ""
     private var wifiPassphrase = ""
     private val wifiTimeout = Runnable { finishWifi(null) }
@@ -223,6 +225,7 @@ class CameraLinkService : Service() {
         main.postDelayed(wifiTimeout, WIFI_TIMEOUT_MS)
         Log.i(Prefs.TAG, "Asking ${prefs.cameraName} to start its Wi-Fi")
         enqueue { subscribe(state) }
+        launchAttempts = 0
         enqueue { write(launch, FujifilmGeo.shutter(FujifilmGeo.FUNCTION_IN_CAMERA_VIEWING)) }
     }
 
@@ -234,7 +237,17 @@ class CameraLinkService : Service() {
             FujifilmGeo.AP_LAUNCHED, FujifilmGeo.AP_LAUNCHED + 2 -> listOf(
                 FujifilmGeo.WIFI_SSID, FujifilmGeo.WIFI_PASSPHRASE, FujifilmGeo.WIFI_MAC,
             ).forEach { uuid -> characteristic(uuid)?.let { enqueue { gatt?.readCharacteristic(it) == true } } }
-            FujifilmGeo.AP_FAILED -> finishWifi(null)
+            // Right after a session the camera may still be busy; XApp asks again too.
+            FujifilmGeo.AP_FAILED -> {
+                val launch = characteristic(FujifilmGeo.FUNCTION_LAUNCH_REQUEST)
+                if (launch != null && ++launchAttempts < WIFI_LAUNCH_ATTEMPTS) {
+                    main.postDelayed({
+                        enqueue { write(launch, FujifilmGeo.shutter(FujifilmGeo.FUNCTION_IN_CAMERA_VIEWING)) }
+                    }, WIFI_RETRY_MS)
+                } else {
+                    finishWifi(null)
+                }
+            }
         }
     }
 
@@ -489,6 +502,8 @@ class CameraLinkService : Service() {
         private const val LOCATE_TIMEOUT_MS = 30_000L
         private const val WIFI_TIMEOUT_MS = 20_000L
         private const val WIFI_RECONNECT_MS = 15_000L
+        private const val WIFI_LAUNCH_ATTEMPTS = 3
+        private const val WIFI_RETRY_MS = 1_500L
 
         @Volatile
         var running = false

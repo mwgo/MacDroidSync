@@ -100,7 +100,6 @@ class FujiPtp private constructor(private val socket: Socket) {
 
     fun objectInfo(handle: Int): ObjectInfo = parseObjectInfo(handle, call(OC_GET_OBJECT_INFO, handle).data)
 
-    fun thumbnail(handle: Int): ByteArray = call(OC_GET_THUMB, handle).data
 
     fun partial(handle: Int, offset: Long, size: Int): ByteArray =
         call(OC_GET_PARTIAL_OBJECT, handle, offset.toInt(), size).data
@@ -128,7 +127,7 @@ class FujiPtp private constructor(private val socket: Socket) {
         const val OC_OPEN_SESSION = 0x1002
         const val OC_CLOSE_SESSION = 0x1003
         const val OC_GET_OBJECT_INFO = 0x1008
-        const val OC_GET_THUMB = 0x100A
+        const val OC_DELETE_OBJECT = 0x100B
         const val OC_GET_DEVICE_PROP_VALUE = 0x1015
         const val OC_SET_DEVICE_PROP_VALUE = 0x1016
         const val OC_GET_PARTIAL_OBJECT = 0x101B
@@ -196,6 +195,20 @@ class FujiPtp private constructor(private val socket: Socket) {
                 throw PtpException("OpenSession answered 0x%04X".format(session.code), session.code)
             }
             return ptp
+        }
+
+        /**
+         * The small JPEG inside the EXIF segment at the head of a camera JPEG, cut
+         * out by its own start and end markers; ExifInterface finds none in a file
+         * that stops after its head.
+         */
+        fun embeddedJpeg(head: ByteArray): ByteArray? {
+            if (head.size < 4 || head[0] != 0xFF.toByte() || head[1] != 0xD8.toByte()) return null
+            val start = (2 until head.size - 1).firstOrNull { head[it] == 0xFF.toByte() && head[it + 1] == 0xD8.toByte() }
+                ?: return null
+            val end = (start + 2 until head.size - 1).firstOrNull { head[it] == 0xFF.toByte() && head[it + 1] == 0xD9.toByte() }
+                ?: return null
+            return head.copyOfRange(start, end + 2)
         }
 
         fun initPacket(name: String): ByteArray {

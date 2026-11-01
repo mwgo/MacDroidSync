@@ -58,6 +58,14 @@ class FujiPtpTest {
         assertEquals(true, info.isJpeg)
     }
 
+    @Test
+    fun `the thumbnail is cut out of the exif head`() {
+        val thumb = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 1, 2, 3, 0xFF.toByte(), 0xD9.toByte())
+        val head = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE1.toByte(), 9, 9) + thumb + byteArrayOf(7, 7)
+        assertArrayEquals(thumb, FujiPtp.embeddedJpeg(head))
+        assertEquals(null, FujiPtp.embeddedJpeg(byteArrayOf(1, 2, 3)))
+    }
+
     private fun string(buffer: ByteBuffer, text: String) {
         buffer.put((text.length + 1).toByte())
         text.forEach { buffer.putChar(it) }

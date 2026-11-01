@@ -85,6 +85,7 @@
         android:required="false" />
 
     <application
+        android:name=".MacDroidSyncApp"
         android:allowBackup="false"
         android:requestLegacyExternalStorage="true"
         android:icon="@drawable/ic_app"
@@ -204,7 +205,6 @@
             <intent-filter>
                 <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
                 <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
@@ -220,6 +220,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>

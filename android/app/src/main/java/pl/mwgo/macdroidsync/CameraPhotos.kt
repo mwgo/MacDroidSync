@@ -18,7 +18,6 @@ import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.concurrent.Executors
 
 /**
  * The pictures on the Fujifilm camera: lists them over the camera's own Wi-Fi,
@@ -55,7 +54,33 @@ object CameraPhotos {
         get() = importing != null || state is State.Busy || state is State.Ready
 
     private val main = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor { Thread(it, "camera-photos") }
+    /**
+     * One PTP transaction at a time, on this thread. The picture on screen goes
+     * before the previews of the grid around it.
+     */
+    private val worker = java.util.concurrent.ThreadPoolExecutor(
+        1, 1, 0, java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.PriorityBlockingQueue(),
+    ) { Thread(it, "camera-photos") }
+    private val order = java.util.concurrent.atomic.AtomicLong()
+
+    private class Job(val later: Boolean, val number: Long, val block: () -> Unit) : Runnable, Comparable<Job> {
+        override fun run() = block()
+        override fun compareTo(other: Job): Int =
+            compareValuesBy(this, other, { it.later }, { if (it.later) -it.number else it.number })
+    }
+
+    /** Previews last and newest first: the ones just scrolled to matter most. */
+    private fun onWorker(later: Boolean = false, block: () -> Unit) {
+        worker.execute(Job(later, order.incrementAndGet()) {
+            try {
+                block()
+            } catch (error: java.net.SocketTimeoutException) {
+                // A reply that never came leaves the stream out of step: start over next time.
+                Log.w(Prefs.TAG, "The camera stopped answering", error)
+                main.post { fail(appContext?.getString(R.string.photos_camera_silent) ?: "") }
+            }
+        })
+    }
     private var ptp: FujiPtp? = null
     private var network: Network? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -128,7 +153,7 @@ object CameraPhotos {
             override fun onAvailable(available: Network) {
                 Log.i(Prefs.TAG, "Joined the camera's Wi-Fi")
                 network = available
-                worker.execute { open(context, available) }
+                onWorker { open(context, available) }
             }
 
             override fun onUnavailable() {
@@ -175,6 +200,8 @@ object CameraPhotos {
             Log.i(Prefs.TAG, "Camera events ${session.events()}")
             session.timeoutMs = REPLY_TIMEOUT_MS
             list(session)
+            deleteTrashed(context, session)
+            remember(context)
         } catch (error: Exception) {
             Log.w(Prefs.TAG, "Listing the camera's pictures failed", error)
             main.post { fail(context.getString(R.string.photos_session_failed, error.message ?: "")) }
@@ -219,6 +246,47 @@ object CameraPhotos {
         Log.i(Prefs.TAG, "Camera JPEGs: ${cameraPhotos.size}, newest ${cameraPhotos.maxByOrNull { it.captureDate }}")
     }
 
+    /**
+     * The camera's list as it was, so the next look shows what is still only
+     * on the camera at once, before any session: name and date, with the
+     * previews already cached.
+     */
+    private fun remember(context: Context) {
+        val address = Prefs(context).cameraAddress
+        val json = JSONObject()
+        cameraPhotos.forEach { info ->
+            json.put(key(address, info), JSONObject().put("name", info.filename).put("taken", taken(info.captureDate)))
+        }
+        runCatching { File(context.filesDir, LISTING_FILE).writeText(json.toString()) }
+    }
+
+    private fun remembered(context: Context): List<Photo> {
+        val json = runCatching { JSONObject(File(context.filesDir, LISTING_FILE).readText()) }.getOrNull() ?: return emptyList()
+        return json.keys().asSequence().map { key ->
+            val entry = json.getJSONObject(key)
+            Photo(key, null, entry.optString("name"), entry.optLong("taken"), null)
+        }.toList()
+    }
+
+    /** Whether a picture on the camera can be fetched now, without waiting on a camera that is off. */
+    val reachable: Boolean
+        get() = state is State.Ready || state is State.Busy || CameraLinkService.instance?.ready == true
+
+    /** What was thrown away while the camera was off goes off its card now. */
+    private fun deleteTrashed(context: Context, session: FujiPtp) {
+        val history = History(context)
+        val trashed = history.trashed()
+        if (trashed.isEmpty()) return
+        val address = Prefs(context).cameraAddress
+        val gone = cameraPhotos.filter { key(address, it) in trashed }
+        gone.forEach { info ->
+            val code = runCatching { session.transact(FujiPtp.OC_DELETE_OBJECT, info.handle).code }.getOrNull()
+            Log.i(Prefs.TAG, "Deleted ${info.filename} on the camera, thrown away before: ${code?.let { "0x%04X".format(it) }}")
+            if (code == FujiPtp.RC_OK) history.remove(key(address, info))
+        }
+        cameraPhotos = cameraPhotos - gone.toSet()
+    }
+
     private fun ready(context: Context) {
         update(State.Ready(photos(context)))
         val run = waiting
@@ -253,7 +321,7 @@ object CameraPhotos {
         main.removeCallbacks(rest)
         val session = ptp
         ptp = null
-        worker.execute { session?.close() }
+        onWorker { session?.close() }
         networkCallback?.let { callback ->
             runCatching { appContext?.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback) }
         }
@@ -298,10 +366,16 @@ object CameraPhotos {
     fun photos(context: Context): List<Photo> {
         val store = History(context)
         val address = Prefs(context).cameraAddress
-        val onCamera = cameraPhotos.map { info ->
-            val key = key(address, info)
-            Photo(key, info.handle, info.filename, taken(info.captureDate), store.uri(key))
+        val listed = if (state is State.Ready) {
+            cameraPhotos.map { info ->
+                val key = key(address, info)
+                Photo(key, info.handle, info.filename, taken(info.captureDate), store.uri(key))
+            }
+        } else {
+            remembered(context).map { it.copy(uri = store.uri(it.key)) }
         }
+        val onCamera = listed
+            .filter { it.key !in store.trashed() }
         val keys = onCamera.map { it.key }.toSet()
         val onlyHere = store.all().filterKeys { it !in keys }.map { (key, entry) ->
             Photo(key, null, entry.optString("name"), entry.optLong("taken"), Uri.parse(entry.optString("uri")))
@@ -382,8 +456,15 @@ object CameraPhotos {
             return
         }
         val app = context.applicationContext
+        if (!reachable) {
+            done(null)
+            return
+        }
         connect(app) {
-            fetchOnWorker(app, photo) { uri ->
+            // Remembered from an earlier session, it gets its handle from this one.
+            val current = photo.takeIf { it.handle != null } ?: photos(app).firstOrNull { it.key == photo.key }
+                ?: return@connect done(null)
+            fetchOnWorker(app, current) { uri ->
                 if (importing == null) update(State.Ready(photos(app)))
                 scheduleRest()
                 done(uri)
@@ -391,26 +472,81 @@ object CameraPhotos {
         }
     }
 
+    /**
+     * Into the phone's trash, from which the gallery can still bring it back,
+     * and off the camera's card for good. The camera's copy goes only while the
+     * session is open; with the camera off just the phone's is thrown away.
+     */
+    fun trash(context: Context, photo: Photo) {
+        val app = context.applicationContext
+        photo.uri?.let { uri ->
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_TRASHED, 1) }
+                    app.contentResolver.update(uri, values, null, null)
+                } else {
+                    app.contentResolver.delete(uri, null, null)
+                }
+            }.onFailure { Log.w(Prefs.TAG, "Could not trash ${photo.filename}", it) }
+        }
+        val handle = photo.handle
+        // Remembered either way: not imported again, and off the card at the next session.
+        History(app).trash(photo.key, photo.filename, photo.taken)
+        if (handle != null && state is State.Ready) {
+            cameraPhotos = cameraPhotos.filter { it.handle != handle }
+            onWorker {
+                val answer = runCatching { ptp?.transact(FujiPtp.OC_DELETE_OBJECT, handle)?.code }
+                Log.i(Prefs.TAG, "Deleted ${photo.filename} on the camera: ${answer.getOrNull()?.let { "0x%04X".format(it) } ?: answer.exceptionOrNull()}")
+                if (answer.getOrNull() == FujiPtp.RC_OK) History(app).remove(photo.key)
+            }
+            scheduleRest()
+        }
+        update(if (state is State.Ready) State.Ready(photos(app)) else state)
+    }
+
     /** The camera's small preview, cached, or null; the result on the main thread. */
-    fun thumbnail(context: Context, photo: Photo, done: (ByteArray?) -> Unit) {
+    fun thumbnail(context: Context, photo: Photo, urgent: Boolean = false, done: (ByteArray?) -> Unit) {
         val file = File(File(context.cacheDir, "camera-thumbs").apply { mkdirs() }, "${photo.key.hashCode()}.jpg")
         if (file.exists()) {
             done(file.readBytes())
             return
         }
         val handle = photo.handle ?: return done(null)
-        worker.execute {
-            val bytes = runCatching { ptp?.thumbnail(handle) }.getOrNull()
+        if (state !is State.Ready) return done(null)
+        // The picture on screen's preview goes first; the grid's after everything else.
+        onWorker(later = !urgent) {
+            val bytes = runCatching { ptp?.let { exifThumbnail(it, handle) } }
+                .onFailure { if (it is java.net.SocketTimeoutException) throw it }
+                .getOrNull()
             if (bytes != null) runCatching { file.writeBytes(bytes) }
             main.post { done(bytes) }
         }
     }
 
+    /**
+     * The preview in the JPEG's own EXIF, read from the head of the file. While
+     * the camera serves XApp's gallery, GetThumb gets no answer and Fuji's own
+     * thumbnail operation takes only the newest picture.
+     */
+    private fun exifThumbnail(session: FujiPtp, handle: Int): ByteArray? {
+        // As for a download: the camera serves a file only once asked for its info in this mode.
+        session.setProperty16(FujiPtp.DPC_COMPRESS, 2)
+        try {
+            session.objectInfo(handle)
+            return FujiPtp.embeddedJpeg(session.partial(handle, 0, THUMBNAIL_HEAD))
+        } finally {
+            session.setProperty16(FujiPtp.DPC_COMPRESS, 0)
+        }
+    }
+
     private fun fetchOnWorker(context: Context, photo: Photo, stoppable: Boolean = false, done: (Uri?) -> Unit) {
         val handle = photo.handle ?: return done(null)
-        worker.execute {
+        onWorker {
             val uri = if (stoppable && stopping) null else runCatching { download(context, handle, stoppable) }
-                .onFailure { Log.w(Prefs.TAG, "Download of ${photo.filename} failed", it) }
+                .onFailure {
+                    Log.w(Prefs.TAG, "Download of ${photo.filename} failed", it)
+                    if (it is java.net.SocketTimeoutException) throw it
+                }
                 .getOrNull()
             main.post { done(uri) }
         }
@@ -473,9 +609,22 @@ object CameraPhotos {
         private val file = File(context.filesDir, "camera-photos.json")
         private val json = runCatching { JSONObject(file.readText()) }.getOrDefault(JSONObject())
 
-        fun uri(key: String): Uri? = json.optJSONObject(key)?.optString("uri")?.let(Uri::parse)
+        fun uri(key: String): Uri? =
+            json.optJSONObject(key)?.takeUnless { it.optBoolean("trashed") }?.optString("uri")?.let(Uri::parse)
 
         fun all(): Map<String, JSONObject> = json.keys().asSequence().associateWith { json.getJSONObject(it) }
+            .filterValues { !it.optBoolean("trashed") }
+
+        fun trashed(): Set<String> = json.keys().asSequence().filter { json.getJSONObject(it).optBoolean("trashed") }.toSet()
+
+        fun trash(key: String, name: String, taken: Long) {
+            json.put(key, JSONObject().put("trashed", true).put("name", name).put("taken", taken))
+            synchronized(CameraPhotos) { file.writeText(json.toString()) }
+        }
+
+        fun remove(key: String) {
+            if (json.remove(key) != null) synchronized(CameraPhotos) { file.writeText(json.toString()) }
+        }
 
         fun add(key: String, uri: Uri, name: String, taken: Long) {
             json.put(key, JSONObject().put("uri", uri.toString()).put("name", name).put("taken", taken))
@@ -489,6 +638,8 @@ object CameraPhotos {
     private const val SAVED_JOIN_TIMEOUT_MS = 60_000
     private const val CONNECT_WINDOW_MS = 30_000L
     private const val REST_MS = 10_000L
+    private const val LISTING_FILE = "camera-listing.json"
+    private const val THUMBNAIL_HEAD = 128 * 1024
     private const val CONNECT_LIMIT_MS = 90_000L
     private const val ACCEPT_TIMEOUT_MS = 60_000
     private const val REPLY_TIMEOUT_MS = 15_000

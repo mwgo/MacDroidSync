@@ -262,8 +262,10 @@ object FujifilmCamera {
  */
 class FujifilmCameraReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        // Samsung may hold back the update broadcast that brings the sync back;
+        // any wake-up of the process is a chance to start it.
+        SyncService.ensureRunning(context)
         when (intent.action) {
-            Intent.ACTION_MY_PACKAGE_REPLACED -> FujifilmCamera.watch(context)
             FujifilmCamera.ACTION_SCAN -> scanned(context, intent)
             BluetoothDevice.ACTION_ACL_CONNECTED, BluetoothDevice.ACTION_ACL_DISCONNECTED -> linked(context, intent)
         }

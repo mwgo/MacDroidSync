@@ -13,6 +13,16 @@ import androidx.core.view.updatePadding
 abstract class ScreenActivity : AppCompatActivity() {
 
     /**
+     * After an update the system may bring back whichever screen was open
+     * before the broadcast that restarts the sync arrives, so every screen
+     * makes sure of it.
+     */
+    override fun onResume() {
+        super.onResume()
+        SyncService.ensureRunning(this)
+    }
+
+    /**
      * Android 15 and newer draw every window edge to edge. The app bar takes care
      * of the status bar through fitsSystemWindows; this keeps the scrolling content
      * clear of the navigation bar and, more importantly, of the keyboard.

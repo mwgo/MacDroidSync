@@ -14,7 +14,8 @@ import androidx.appcompat.widget.AppCompatImageView
 /**
  * A picture that fits the screen and zooms with two fingers or a double tap.
  * Zoomed in, it keeps the swipe to itself for panning; at the fitted size the
- * swipe goes to the pager around it.
+ * sideways swipe goes to the pager around it, an upward one throws the picture
+ * away, and pinching further in asks for the grid.
  */
 class ZoomImageView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) :
     AppCompatImageView(context, attrs) {
@@ -23,26 +24,88 @@ class ZoomImageView @JvmOverloads constructor(context: Context, attrs: Attribute
     private var fitScale = 1f
     private var scale = 1f
 
+    /** A single tap, told apart from the first half of a double tap. */
+    var onTap: (() -> Unit)? = null
+
+    /** The picture flicked or dragged upwards at its fitted size. */
+    var onSwipeUp: (() -> Unit)? = null
+
+    /** Two fingers pinched in while the whole picture already shows. */
+    var onPinchOut: (() -> Unit)? = null
+
+    private var pinchBelowFit = 1f
+    /** Only a pinch begun on the whole picture leads to the grid, not one zooming back out. */
+    private var pinchFromFit = false
+    private var dragging = false
+
     private val scaler = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+            pinchBelowFit = 1f
+            pinchFromFit = scale <= 1.01f
+            return true
+        }
+
         override fun onScale(detector: ScaleGestureDetector): Boolean {
+            if (pinchFromFit && scale <= 1.01f && detector.scaleFactor < 1f) {
+                pinchBelowFit *= detector.scaleFactor
+                if (pinchBelowFit < PINCH_TO_GRID) {
+                    pinchBelowFit = 0f
+                    onPinchOut?.invoke()
+                }
+                if (pinchBelowFit != 0f) return true
+            }
             zoomBy(detector.scaleFactor, detector.focusX, detector.focusY)
             return true
         }
     })
 
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onSingleTapConfirmed(event: MotionEvent): Boolean {
+            onTap?.invoke()
+            return true
+        }
+
         override fun onDoubleTap(event: MotionEvent): Boolean {
             if (scale > 1.05f) reset() else zoomBy(DOUBLE_TAP_ZOOM, event.x, event.y)
             return true
         }
 
         override fun onScroll(first: MotionEvent?, event: MotionEvent, dx: Float, dy: Float): Boolean {
-            if (scale <= 1.01f) return false
+            if (scale <= 1.01f) {
+                // Upwards only, and clearly more up than sideways, which is the pager's.
+                val start = first ?: return false
+                val up = start.y - event.y
+                if (!dragging && (up < touchSlop || up < kotlin.math.abs(start.x - event.x) * 1.5f)) return false
+                dragging = true
+                translationY = -maxOf(0f, up)
+                alpha = 1f - (translationY / -height).coerceIn(0f, 0.6f)
+                return true
+            }
             drawMatrix.postTranslate(-dx, -dy)
             clamp()
             return true
         }
+
+        override fun onFling(first: MotionEvent?, event: MotionEvent, vx: Float, vy: Float): Boolean {
+            if (scale > 1.01f || vy > -FLING_UP || kotlin.math.abs(vy) < kotlin.math.abs(vx) * 1.5f) return false
+            throwUp()
+            return true
+        }
     })
+
+    private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+
+    /** Up and out of sight, then the owner decides what that means. */
+    private fun throwUp() {
+        dragging = false
+        animate().translationY(-height.toFloat()).alpha(0f).setDuration(180).withEndAction { onSwipeUp?.invoke() }.start()
+    }
+
+    /** Back into place, after an undo or a drag that did not go far enough. */
+    fun settle() {
+        dragging = false
+        animate().translationY(0f).alpha(1f).setDuration(180).start()
+    }
 
     init {
         scaleType = ScaleType.MATRIX
@@ -61,8 +124,13 @@ class ZoomImageView @JvmOverloads constructor(context: Context, attrs: Attribute
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaler.onTouchEvent(event)
-        gestures.onTouchEvent(event)
-        parent?.requestDisallowInterceptTouchEvent(scale > 1.01f || event.pointerCount > 1)
+        val handled = gestures.onTouchEvent(event)
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            if (dragging && !handled) {
+                if (-translationY > height * THROW_FRACTION) throwUp() else settle()
+            }
+        }
+        parent?.requestDisallowInterceptTouchEvent(scale > 1.01f || event.pointerCount > 1 || dragging)
         return true
     }
 
@@ -112,5 +180,8 @@ class ZoomImageView @JvmOverloads constructor(context: Context, attrs: Attribute
     private companion object {
         const val MAX_ZOOM = 8f
         const val DOUBLE_TAP_ZOOM = 3f
+        const val PINCH_TO_GRID = 0.75f
+        const val FLING_UP = 2500f
+        const val THROW_FRACTION = 0.3f
     }
 }
