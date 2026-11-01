@@ -46,7 +46,10 @@ class PhotoViewerActivity : ScreenActivity() {
     private val pages = Pages()
     private val tiles = Tiles()
     private val decoder = Executors.newFixedThreadPool(2)
-    private val thumbs = LruCache<String, Bitmap>(THUMB_CACHE)
+    /** Tiles' pictures by key, counted in kilobytes: the camera's previews are larger than the gallery's. */
+    private val thumbs = object : LruCache<String, Bitmap>(THUMB_CACHE_KB) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount / 1024
+    }
     private val pageLayout by lazy { LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false) }
     private val gridLayout by lazy { GridLayoutManager(this, TILE_SIZES.first()) }
     private var photos: List<CameraPhotos.Photo> = emptyList()
@@ -61,6 +64,7 @@ class PhotoViewerActivity : ScreenActivity() {
         photos.firstOrNull { it.uri == written }?.let { overwritten ->
             stale = overwritten.key
             thumbs.remove(overwritten.key)
+            thumbs.remove(overwritten.key + LARGE_SUFFIX)
             pages.notifyDataSetChanged()
             tiles.notifyDataSetChanged()
         }
@@ -683,15 +687,20 @@ class PhotoViewerActivity : ScreenActivity() {
                 @Suppress("DEPRECATION") if (selecting) startDrag(adapterPosition, photo)
                 true
             }
-            val cached = thumbs.get(photo.key)
-            image.setImageBitmap(cached)
-            if (cached != null) return
             val uri = photo.uri
+            // The gallery's small copy would be blown up on a big tile: those get the photo itself, scaled down.
+            val large = uri != null && gridLayout.spanCount <= LARGE_TILES
+            val cacheKey = if (large) photo.key + LARGE_SUFFIX else photo.key
+            val cached = thumbs.get(cacheKey)
+            image.setImageBitmap(cached ?: thumbs.get(photo.key))
+            if (cached != null) return
             if (uri != null) {
+                // Before the grid is laid out its width is 0; a decoder asked for nothing would never stop halving.
+                val side = (binding.grid.width / gridLayout.spanCount).coerceAtLeast(THUMB_SIDE)
                 runCatching {
                     decoder.execute {
-                        val bitmap = runCatching { thumbnail(uri) }.getOrNull()
-                        image.post { if (bitmap != null) deliver(photo.key, bitmap) }
+                        val bitmap = runCatching { if (large) decode(uri, side * LARGE_DECODE) else thumbnail(uri) }.getOrNull()
+                        image.post { if (bitmap != null) deliver(cacheKey, bitmap, photo.key) }
                     }
                 }
             } else {
@@ -701,8 +710,8 @@ class PhotoViewerActivity : ScreenActivity() {
             }
         }
 
-        private fun deliver(forKey: String, bitmap: Bitmap) {
-            thumbs.put(forKey, bitmap)
+        private fun deliver(cacheKey: String, bitmap: Bitmap, forKey: String = cacheKey) {
+            thumbs.put(cacheKey, bitmap)
             if (key == forKey) image.setImageBitmap(bitmap)
         }
     }
@@ -782,7 +791,16 @@ class PhotoViewerActivity : ScreenActivity() {
         private const val LINK_CHECK_MS = 3_000L
         private val LINK_ACCENT = android.graphics.Color.rgb(0xFF, 0xC1, 0x07)
         private const val THUMB_SIDE = 384
-        private const val THUMB_CACHE = 300
+        private const val THUMB_CACHE_KB = 96 * 1024
+        /** Up to this many columns a tile is big enough to show the gallery's copy blurred. */
+        private const val LARGE_TILES = 3
+        private const val LARGE_SUFFIX = "#large"
+        /**
+         * The longest side asked of the decoder, in tiles: halved by powers of
+         * two it comes out between 1.5 and 3, so the short side of a 3:2 photo
+         * still fills a square tile.
+         */
+        private const val LARGE_DECODE = 3
         /** Columns of the grid, from the largest tiles to the smallest. */
         private val TILE_SIZES = listOf(2, 3, 4, 6)
         /** Columns the grid opens with from a picture in landscape. */

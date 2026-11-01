@@ -531,15 +531,21 @@ object CameraPhotos {
         main.post { if (state is State.Ready) update(State.Ready(photos(context))) else changed() }
     }
 
-    /** The camera's small preview, cached, or null; the result on the main thread. */
+    /**
+     * The camera's preview, cached, or null; the result on the main thread.
+     * One cached the old way, small and lying on its side, stands in until the
+     * camera can be asked for the larger one.
+     */
     fun thumbnail(context: Context, photo: Photo, urgent: Boolean = false, done: (ByteArray?) -> Unit) {
-        val file = File(File(context.cacheDir, "camera-thumbs").apply { mkdirs() }, "${photo.key.hashCode()}.jpg")
+        val name = "${photo.key.hashCode()}.jpg"
+        val file = File(File(context.cacheDir, PREVIEWS_DIR).apply { mkdirs() }, name)
         if (file.exists()) {
             done(file.readBytes())
             return
         }
-        val handle = photo.handle ?: return done(null)
-        if (state !is State.Ready) return done(null)
+        val old = File(File(context.cacheDir, OLD_PREVIEWS_DIR), name)
+        val handle = photo.handle
+        if (handle == null || state !is State.Ready) return done(old.takeIf { it.exists() }?.readBytes())
         // The picture on screen's preview goes first; the grid's after everything else.
         onWorker(later = !urgent) {
             val bytes = runCatching { ptp?.let { exifThumbnail(it, handle) } }
@@ -554,18 +560,53 @@ object CameraPhotos {
     }
 
     /**
-     * The preview in the JPEG's own EXIF, read from the head of the file. While
-     * the camera serves XApp's gallery, GetThumb gets no answer and Fuji's own
-     * thumbnail operation takes only the newest picture.
+     * A preview from the head of the file. While the camera serves XApp's
+     * gallery, GetThumb gets no answer and Fuji's own thumbnail operation takes
+     * only the newest picture.
      */
     private fun exifThumbnail(session: FujiPtp, handle: Int): ByteArray? {
         // As for a download: the camera serves a file only once asked for its info in this mode.
         session.setProperty16(FujiPtp.DPC_COMPRESS, 2)
         try {
-            session.objectInfo(handle)
-            return FujiPtp.embeddedJpeg(session.partial(handle, 0, THUMBNAIL_HEAD))
+            val info = session.objectInfo(handle)
+            val head = session.partial(handle, 0, THUMBNAIL_HEAD)
+            return runCatching { upright(head, info) }.getOrNull() ?: FujiPtp.embeddedJpeg(head)
         } finally {
             session.setProperty16(FujiPtp.DPC_COMPRESS, 0)
+        }
+    }
+
+    /**
+     * The largest preview in the head, fit for a big tile: next to the EXIF
+     * thumbnail of 160×120 the camera keeps one of 640×480. Both are 4:3 with
+     * black bars around a picture of other proportions, and lie as the sensor
+     * saw them; cut to the picture and set upright as its EXIF says.
+     */
+    private fun upright(head: ByteArray, info: FujiPtp.ObjectInfo): ByteArray? {
+        val preview = FujiPtp.embeddedJpegs(head)
+            .mapNotNull { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) }
+            .maxByOrNull { it.width } ?: return null
+        var crop = android.graphics.Rect(0, 0, preview.width, preview.height)
+        if (info.width > 0 && info.height > 0) {
+            val ratio = info.width.toFloat() / info.height
+            if (preview.width.toFloat() / preview.height < ratio) {
+                val h = (preview.width / ratio).toInt()
+                crop = android.graphics.Rect(0, (preview.height - h) / 2, preview.width, (preview.height + h) / 2)
+            } else {
+                val w = (preview.height * ratio).toInt()
+                crop = android.graphics.Rect((preview.width - w) / 2, 0, (preview.width + w) / 2, preview.height)
+            }
+        }
+        val degrees = runCatching {
+            androidx.exifinterface.media.ExifInterface(java.io.ByteArrayInputStream(head)).rotationDegrees
+        }.getOrDefault(0)
+        val turned = android.graphics.Bitmap.createBitmap(
+            preview, crop.left, crop.top, crop.width(), crop.height(),
+            android.graphics.Matrix().apply { setRotate(degrees.toFloat()) }, true,
+        )
+        return java.io.ByteArrayOutputStream().use {
+            turned.compress(android.graphics.Bitmap.CompressFormat.JPEG, PREVIEW_QUALITY, it)
+            it.toByteArray()
         }
     }
 
@@ -670,6 +711,9 @@ object CameraPhotos {
     private const val HELD_REST_MS = 30_000L
     private const val LISTING_FILE = "camera-listing.json"
     private const val THUMBNAIL_HEAD = 128 * 1024
+    private const val PREVIEWS_DIR = "camera-previews"
+    private const val OLD_PREVIEWS_DIR = "camera-thumbs"
+    private const val PREVIEW_QUALITY = 88
     private const val CONNECT_LIMIT_MS = 90_000L
     private const val ACCEPT_TIMEOUT_MS = 60_000
     private const val REPLY_TIMEOUT_MS = 15_000

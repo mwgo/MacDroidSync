@@ -147,7 +147,7 @@ class CropView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                frameMove?.end()
+                finishFrameMove()
                 edges = if (free) edgesAt(event.x, event.y) else 0
                 last.set(event.x, event.y)
                 editing = true
@@ -245,7 +245,7 @@ class CropView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
      * at the scale [turnScale] gives, its straightening kept.
      */
     fun turn(turned: Bitmap, clockwise: Boolean) {
-        frameMove?.end()
+        finishFrameMove()
         val k = turnScale()
         bitmap = turned
         ratio = ratio?.let { 1 / it }
@@ -279,9 +279,19 @@ class CropView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         frame.set(target(ratio ?: (image.width.toFloat() / image.height)))
     }
 
+    /**
+     * Jumps a running frame move to its end. A finished one is left alone:
+     * ending it again would replay its last step, putting the picture back
+     * where that move left it.
+     */
+    private fun finishFrameMove() {
+        frameMove?.takeIf { it.isRunning }?.end()
+        frameMove = null
+    }
+
     /** The frame eased to [to], [step] keeping the picture in step with it. */
     private fun moveFrame(to: RectF, step: () -> Unit) {
-        frameMove?.end()
+        finishFrameMove()
         val from = RectF(frame)
         frameMove = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = FRAME_MS

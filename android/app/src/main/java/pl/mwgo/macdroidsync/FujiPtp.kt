@@ -211,6 +211,23 @@ class FujiPtp private constructor(private val socket: Socket) {
             return head.copyOfRange(start, end + 2)
         }
 
+        /** Every JPEG inside the head of another, from each start marker to the end marker after it. */
+        fun embeddedJpegs(head: ByteArray): List<ByteArray> {
+            val found = mutableListOf<ByteArray>()
+            var at = 2
+            while (at < head.size - 2) {
+                if (head[at] == 0xFF.toByte() && head[at + 1] == 0xD8.toByte() && head[at + 2] == 0xFF.toByte()) {
+                    val end = (at + 2 until head.size - 1).firstOrNull { head[it] == 0xFF.toByte() && head[it + 1] == 0xD9.toByte() }
+                        ?: break
+                    found += head.copyOfRange(at, end + 2)
+                    at = end + 2
+                } else {
+                    at++
+                }
+            }
+            return found
+        }
+
         fun initPacket(name: String): ByteArray {
             val buffer = le(82).putInt(82).putInt(INIT_COMMAND_REQUEST).putInt(FUJI_PROTOCOL_VERSION)
             GUID.forEach { buffer.putInt(it) }
