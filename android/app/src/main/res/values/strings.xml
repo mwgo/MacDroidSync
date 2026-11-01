@@ -148,6 +148,8 @@
     <string name="photos_download_stop">Stop downloading</string>
     <string name="photos_progress">%1$d of %2$d</string>
     <string name="photos_trashed">Moved to trash</string>
+    <string name="photos_camera_connect">Connect to the camera</string>
+    <string name="photos_camera_disconnect">Disconnect from the camera</string>
     <string name="editor_aspect">Proportions</string>
     <string name="editor_free">Free proportions</string>
     <string name="editor_original">Original</string>

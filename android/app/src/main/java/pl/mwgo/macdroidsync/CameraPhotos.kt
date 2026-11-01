@@ -86,13 +86,19 @@ object CameraPhotos {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var appContext: Context? = null
     private var cameraPhotos: List<FujiPtp.ObjectInfo> = emptyList()
-    private var waiting = mutableListOf<() -> Unit>()
+    /** What to do once the session is ready, and what instead if it never is. */
+    private var waiting = mutableListOf<Pair<() -> Unit, () -> Unit>>()
     private val rest = Runnable { close() }
+    /** Counts the sessions ended, so an answer meant for an earlier one is dropped. */
+    private var generation = 0
 
     // region Session
 
-    /** Opens the session if needed, then runs [then] on the main thread. */
-    fun connect(context: Context, then: () -> Unit = {}) {
+    /**
+     * Opens the session if needed, then runs [then] on the main thread, or
+     * [otherwise] when the session fails or is ended before it is ready.
+     */
+    fun connect(context: Context, otherwise: () -> Unit = {}, then: () -> Unit = {}) {
         val app = context.applicationContext
         appContext = app
         main.removeCallbacks(rest)
@@ -102,11 +108,12 @@ object CameraPhotos {
                 return
             }
             is State.Busy -> {
-                waiting.add(then)
+                waiting.add(then to otherwise)
                 return
             }
             else -> Unit
         }
+        waiting.add(then to otherwise)
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             fail(app.getString(R.string.photos_needs_android_10))
             return
@@ -118,7 +125,6 @@ object CameraPhotos {
             fail(app.getString(R.string.photos_camera_off))
             return
         }
-        waiting.add(then)
         if (link == null) {
             // Without Bluetooth the camera may still be waiting on its Wi-Fi, as after a session cut short.
             Log.i(Prefs.TAG, "No Bluetooth link, trying the camera's Wi-Fi as it was last")
@@ -126,7 +132,10 @@ object CameraPhotos {
             return
         }
         update(State.Busy(R.string.photos_step_wifi))
+        val attempt = generation
         link.startWifi { wifi ->
+            // Ended by hand while the camera was still starting its Wi-Fi.
+            if (attempt != generation) return@startWifi
             if (wifi == null) {
                 fail(app.getString(R.string.photos_wifi_failed))
             } else {
@@ -291,16 +300,18 @@ object CameraPhotos {
         update(State.Ready(photos(context)))
         val run = waiting
         waiting = mutableListOf()
-        run.forEach { it() }
+        run.forEach { it.first() }
         scheduleRest()
     }
 
     private fun fail(reason: String) {
         Log.w(Prefs.TAG, "Camera pictures: $reason")
-        waiting.clear()
+        val dropped = waiting
+        waiting = mutableListOf()
         release()
         update(State.Failed(reason))
         if (downloading) finishImport(0)
+        dropped.forEach { it.second() }
     }
 
     /** A failure is old news once the camera is back over Bluetooth. */
@@ -310,14 +321,17 @@ object CameraPhotos {
 
     fun close() {
         if (state is State.Idle) return
-        waiting.clear()
+        val dropped = waiting
+        waiting = mutableListOf()
         release()
         update(State.Idle)
+        dropped.forEach { it.second() }
     }
 
     private val stalled = Runnable { fail(appContext?.getString(R.string.photos_wifi_failed) ?: "") }
 
     private fun release() {
+        generation++
         main.removeCallbacks(rest)
         val session = ptp
         ptp = null
@@ -330,17 +344,21 @@ object CameraPhotos {
         cameraPhotos = emptyList()
     }
 
-    /** Set while the viewer is open: the camera stays on its Wi-Fi for the next picture. */
+    /** Set while the viewer is open: the camera stays on its Wi-Fi a while longer for the next picture. */
     var held = false
         set(value) {
             field = value
             if (state is State.Ready) scheduleRest()
         }
 
-    /** The camera stays black on its Wi-Fi until the session ends, so it ends soon after use. */
+    /**
+     * The camera stays black on its Wi-Fi until the session ends, and the phone
+     * leaves its own Wi-Fi, and with it the Mac, to join the camera's. So the
+     * session ends soon after the last use, even with the viewer still open.
+     */
     private fun scheduleRest() {
         main.removeCallbacks(rest)
-        if (importing == null && !held) main.postDelayed(rest, REST_MS)
+        if (importing == null) main.postDelayed(rest, if (held) HELD_REST_MS else REST_MS)
     }
 
     private fun update(new: State) {
@@ -389,7 +407,7 @@ object CameraPhotos {
         stopping = false
         downloading = true
         importDone = done
-        connect(app) {
+        connect(app, otherwise = { if (downloading) finishImport(0) }) {
             val fresh = photos(app).filter { it.handle != null && it.uri == null }
             if (fresh.isEmpty() || stopping) {
                 finishImport(0)
@@ -460,7 +478,7 @@ object CameraPhotos {
             done(null)
             return
         }
-        connect(app) {
+        connect(app, otherwise = { done(null) }) {
             // Remembered from an earlier session, it gets its handle from this one.
             val current = photo.takeIf { it.handle != null } ?: photos(app).firstOrNull { it.key == photo.key }
                 ?: return@connect done(null)
@@ -528,7 +546,10 @@ object CameraPhotos {
                 .onFailure { if (it is java.net.SocketTimeoutException) throw it }
                 .getOrNull()
             if (bytes != null) runCatching { file.writeBytes(bytes) }
-            main.post { done(bytes) }
+            main.post {
+                if (state is State.Ready && importing == null) scheduleRest()
+                done(bytes)
+            }
         }
     }
 
@@ -646,6 +667,7 @@ object CameraPhotos {
     private const val SAVED_JOIN_TIMEOUT_MS = 60_000
     private const val CONNECT_WINDOW_MS = 30_000L
     private const val REST_MS = 10_000L
+    private const val HELD_REST_MS = 30_000L
     private const val LISTING_FILE = "camera-listing.json"
     private const val THUMBNAIL_HEAD = 128 * 1024
     private const val CONNECT_LIMIT_MS = 90_000L

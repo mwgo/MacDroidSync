@@ -108,6 +108,10 @@ class SyncService : Service() {
     @Volatile
     private var connectedMac: String? = null
 
+    /** The network the connection to the Mac went over, the default one when it was made. */
+    @Volatile
+    private var connectionNetwork: Network? = null
+
     private var foregroundId = NotificationCenter.ID_IDLE
     private var foregroundMac: String? = null
 
@@ -121,6 +125,10 @@ class SyncService : Service() {
         }
 
         override fun onLost(network: Network) {
+            // Only the network the Mac was reached over; mobile data coming and
+            // going as Wi-Fi does is no reason to drop it.
+            val used = connectionNetwork
+            if (used != null && used != network) return
             Log.i(TAG, "Network lost, dropping the connection")
             connection?.close()
         }
@@ -228,6 +236,18 @@ class SyncService : Service() {
         }
     }
 
+    /**
+     * The Wi-Fi with internet, which is where the Mac is: just back after the
+     * camera's, it is not yet the default network, and mobile data never
+     * reaches the Mac. The camera's own Wi-Fi has no internet.
+     */
+    @Suppress("DEPRECATION")
+    private fun homeWifi(): Network? = connectivity.allNetworks.firstOrNull { network ->
+        connectivity.getNetworkCapabilities(network)?.let {
+            it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } == true
+    }
+
     /** Returns true when the session was actually established. */
     private suspend fun attemptConnection(): Boolean {
         val pairingCode = prefs.pairingCode
@@ -253,7 +273,10 @@ class SyncService : Service() {
         var established = false
         val socket = Socket()
         try {
+            val wifi = homeWifi()
+            runCatching { wifi?.bindSocket(socket) }
             socket.connect(InetSocketAddress(endpoint.host, endpoint.port), CONNECT_TIMEOUT_MS)
+            connectionNetwork = wifi ?: connectivity.activeNetwork
             socket.soTimeout = Wire.RECEIVE_TIMEOUT_MS.toInt()
             socket.keepAlive = true
             socket.tcpNoDelay = true
@@ -285,6 +308,7 @@ class SyncService : Service() {
         } finally {
             runCatching { socket.close() }
             connection = null
+            connectionNetwork = null
             connectedMac = null
             // The configuration belongs to the session that carried it. Keeping
             // it would let this phone work to instructions from a Mac that is no

@@ -105,4 +105,38 @@
         android:textColor="#E6FFFFFF"
         android:textSize="12sp"
         android:visibility="gone" />
+
+    <!--
+        Joins or leaves the camera's Wi-Fi; there only while the camera is on.
+        The ring turns while joining and fills as several pictures come down.
+    -->
+    <FrameLayout
+        android:id="@+id/cameraLinkBox"
+        android:layout_width="52dp"
+        android:layout_height="52dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp"
+        android:visibility="gone">
+
+        <ImageButton
+            android:id="@+id/cameraLink"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_round_translucent"
+            android:src="@drawable/ic_wifi_off"
+            app:tint="#FFFFFFFF" />
+
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+            android:id="@+id/cameraLinkProgress"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:visibility="invisible"
+            app:indicatorColor="#FFFFC107"
+            app:indicatorInset="0dp"
+            app:indicatorSize="50dp"
+            app:trackColor="#33FFFFFF"
+            app:trackThickness="3dp" />
+    </FrameLayout>
 </FrameLayout>

@@ -20,6 +20,7 @@ import android.widget.TextView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.updatePadding
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.PagerSnapHelper
@@ -162,6 +163,8 @@ class PhotoViewerActivity : ScreenActivity() {
     override fun onResume() {
         super.onResume()
         CameraPhotos.onChange = { refresh() }
+        CameraLinkService.onChange = { updateCameraLink() }
+        main.post(linkCheck)
         CameraPhotos.held = true
         refresh()
         if (CameraLinkService.instance?.ready == true) CameraPhotos.connect(this) { refresh() }
@@ -170,6 +173,8 @@ class PhotoViewerActivity : ScreenActivity() {
     override fun onPause() {
         super.onPause()
         CameraPhotos.onChange = null
+        CameraLinkService.onChange = null
+        main.removeCallbacks(linkCheck)
         CameraPhotos.held = false
         // Leaving is not undoing.
         undo?.dismiss()
@@ -209,8 +214,69 @@ class PhotoViewerActivity : ScreenActivity() {
             selected.retainAll(photos.map { it.key }.toSet())
             updateSelectionBar()
         }
+        updateCameraLink()
         // Which picture shows is known only once the list is laid out.
         binding.pager.post { updateCaption() }
+    }
+
+    /**
+     * The camera's Wi-Fi joined or left by hand, since while joined the phone
+     * is off its own Wi-Fi and the Mac. Shown only with the camera on.
+     */
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    /** The camera notification comes and goes with no word to this screen; looked at now and then. */
+    private val linkCheck: Runnable = object : Runnable {
+        override fun run() {
+            updateCameraLink()
+            main.postDelayed(this, LINK_CHECK_MS)
+        }
+    }
+
+    private fun updateCameraLink() {
+        val state = CameraPhotos.state
+        // On as the camera notification says, though Bluetooth may lag after a session on Wi-Fi.
+        val on = CameraLinkService.instance?.ready == true || CameraPhotos.active || FujifilmCamera.shown != null
+        binding.cameraLinkBox.visibility = if (on) View.VISIBLE else View.GONE
+        val joined = state is CameraPhotos.State.Ready || state is CameraPhotos.State.Busy
+        binding.cameraLink.setImageResource(if (joined) R.drawable.ic_wifi else R.drawable.ic_wifi_off)
+        binding.cameraLink.imageTintList = android.content.res.ColorStateList.valueOf(
+            if (state is CameraPhotos.State.Ready) LINK_ACCENT else android.graphics.Color.WHITE,
+        )
+        binding.cameraLink.contentDescription = getString(if (joined) R.string.photos_camera_disconnect else R.string.photos_camera_connect)
+        // Joining brings down everything still only on the camera; leaving stops that.
+        binding.cameraLink.setOnClickListener {
+            when {
+                // Stopped at the end of the chunk being read, then left; a cut mid-transfer upsets the camera.
+                CameraPhotos.importing != null -> CameraPhotos.stopImport()
+                joined -> CameraPhotos.close()
+                else -> CameraPhotos.importNew(this) { _, stopped ->
+                    if (stopped) CameraPhotos.close()
+                    refresh()
+                }
+            }
+            refresh()
+        }
+
+        val ring = binding.cameraLinkProgress
+        val transfer = (downloadingSelection ?: CameraPhotos.importing)?.takeIf { it.second > 1 }
+        when {
+            transfer != null -> {
+                if (ring.isIndeterminate) {
+                    ring.visibility = View.INVISIBLE
+                    ring.isIndeterminate = false
+                }
+                ring.visibility = View.VISIBLE
+                ring.setProgressCompat(transfer.first * 100 / transfer.second, true)
+            }
+            state is CameraPhotos.State.Busy -> {
+                if (!ring.isIndeterminate) {
+                    ring.visibility = View.INVISIBLE
+                    ring.isIndeterminate = true
+                }
+                ring.visibility = View.VISIBLE
+            }
+            else -> ring.visibility = View.INVISIBLE
+        }
     }
 
     private fun currentPhoto(): CameraPhotos.Photo? {
@@ -318,6 +384,8 @@ class PhotoViewerActivity : ScreenActivity() {
 
     private fun updateSelectionBar() {
         binding.selectionBar.visibility = if (selecting) View.VISIBLE else View.GONE
+        // The last tiles can still be scrolled out from under the bar.
+        binding.selectionBar.post { binding.grid.updatePadding(bottom = if (selecting) binding.selectionBar.height else 0) }
         val progress = downloadingSelection
         binding.selectionCount.text = if (progress != null) {
             getString(R.string.photos_selection_downloading, progress.first + 1, progress.second)
@@ -338,11 +406,14 @@ class PhotoViewerActivity : ScreenActivity() {
         if (wanted.isEmpty()) return
         downloadingSelection = 0 to wanted.size
         updateSelectionBar()
+        updateCameraLink()
         wanted.forEachIndexed { index, photo ->
             CameraPhotos.fetch(this, photo) {
                 downloadingSelection = (index + 1) to wanted.size
+                updateCameraLink()
                 if (index == wanted.lastIndex) {
                     downloadingSelection = null
+                    updateCameraLink()
                     endSelection()
                 } else {
                     updateSelectionBar()
@@ -394,7 +465,15 @@ class PhotoViewerActivity : ScreenActivity() {
 
     /** Back to one picture, [photo] or the one the grid was opened from. */
     private fun showPage(photo: CameraPhotos.Photo?) {
-        photo?.let { chosen -> photos.indexOfFirst { it.key == chosen.key }.takeIf { it >= 0 }?.let(pageLayout::scrollToPosition) }
+        photo?.let { chosen ->
+            val index = photos.indexOfFirst { it.key == chosen.key }.takeIf { it >= 0 } ?: return@let
+            pageLayout.scrollToPosition(index)
+            // Chosen again, a picture not on the phone yet is asked for again.
+            if (chosen.uri == null) {
+                stale = chosen.key
+                pages.notifyItemChanged(index)
+            }
+        }
         binding.pager.apply {
             visibility = View.VISIBLE
             animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(ANIMATION_MS).start()
@@ -430,6 +509,8 @@ class PhotoViewerActivity : ScreenActivity() {
         private var full = false
         /** The full picture was asked for; a refresh need not ask again. */
         private var requested = false
+        /** The full picture could not be had; shown so until asked again. */
+        private var failed = false
 
         init {
             image.onTap = { toggleCaption() }
@@ -453,11 +534,12 @@ class PhotoViewerActivity : ScreenActivity() {
                 stale = null
                 key = null
             }
-            if (key == photo.key && (full || requested && photo.uri == null)) return
+            if (key == photo.key && (full || (requested || failed) && photo.uri == null)) return
             if (key != photo.key) image.setImageDrawable(null)
             key = photo.key
             full = false
             requested = false
+            failed = false
             image.translationY = 0f
             image.alpha = 1f
             note.visibility = View.GONE
@@ -482,9 +564,11 @@ class PhotoViewerActivity : ScreenActivity() {
             requested = true
             CameraPhotos.fetch(this@PhotoViewerActivity, photo) { fetched ->
                 if (key != photo.key) return@fetch
+                requested = false
                 if (fetched != null) {
                     show(photo.key, fetched)
                 } else {
+                    failed = true
                     progress.visibility = View.GONE
                     note.visibility = View.VISIBLE
                     note.setText(if (CameraPhotos.reachable) R.string.photos_download_failed else R.string.photos_switch_camera_on)
@@ -688,6 +772,8 @@ class PhotoViewerActivity : ScreenActivity() {
         private const val MAX_SIDE = 4096
         /** How much brighter than plain white a photo may be lit. */
         private const val LIFT = 1.8f
+        private const val LINK_CHECK_MS = 3_000L
+        private val LINK_ACCENT = android.graphics.Color.rgb(0xFF, 0xC1, 0x07)
         private const val THUMB_SIDE = 384
         private const val THUMB_CACHE = 300
         /** Columns of the grid, from the largest tiles to the smallest. */
