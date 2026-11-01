@@ -504,6 +504,15 @@ object CameraPhotos {
         update(if (state is State.Ready) State.Ready(photos(app)) else state)
     }
 
+    /**
+     * An edited copy saved by the editor, listed with the camera's pictures
+     * just ahead of its original.
+     */
+    fun addEdit(context: Context, uri: Uri, name: String, taken: Long) {
+        History(context).add("edit|$uri", uri, name, taken + 1)
+        main.post { if (state is State.Ready) update(State.Ready(photos(context))) else changed() }
+    }
+
     /** The camera's small preview, cached, or null; the result on the main thread. */
     fun thumbnail(context: Context, photo: Photo, urgent: Boolean = false, done: (ByteArray?) -> Unit) {
         val file = File(File(context.cacheDir, "camera-thumbs").apply { mkdirs() }, "${photo.key.hashCode()}.jpg")

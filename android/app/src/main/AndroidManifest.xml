@@ -86,6 +86,7 @@
 
     <application
         android:name=".MacDroidSyncApp"
+        android:largeHeap="true"
         android:allowBackup="false"
         android:requestLegacyExternalStorage="true"
         android:icon="@drawable/ic_app"
@@ -139,6 +140,11 @@
             android:exported="false"
             android:label="@string/title_photos"
             android:parentActivityName=".ShutterActivity" />
+
+        <activity
+            android:name=".PhotoEditorActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
 
         <activity
             android:name=".AboutActivity"

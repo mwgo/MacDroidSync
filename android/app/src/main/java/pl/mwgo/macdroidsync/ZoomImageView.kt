@@ -30,6 +30,9 @@ class ZoomImageView @JvmOverloads constructor(context: Context, attrs: Attribute
     /** The picture flicked or dragged upwards at its fitted size. */
     var onSwipeUp: (() -> Unit)? = null
 
+    /** A finger held still on the picture. */
+    var onLongPress: (() -> Unit)? = null
+
     /** Two fingers pinched in while the whole picture already shows. */
     var onPinchOut: (() -> Unit)? = null
 
@@ -60,6 +63,10 @@ class ZoomImageView @JvmOverloads constructor(context: Context, attrs: Attribute
     })
 
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onLongPress(event: MotionEvent) {
+            if (!dragging) onLongPress?.invoke()
+        }
+
         override fun onSingleTapConfirmed(event: MotionEvent): Boolean {
             onTap?.invoke()
             return true

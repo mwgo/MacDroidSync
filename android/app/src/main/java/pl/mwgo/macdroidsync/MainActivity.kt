@@ -124,7 +124,16 @@ class MainActivity : ScreenActivity() {
         return true
     }
 
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        menu.findItem(R.id.action_shutter)?.isVisible = prefs.cameraEnabled
+        return super.onPrepareOptionsMenu(menu)
+    }
+
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_shutter -> {
+            startActivity(Intent(this, ShutterActivity::class.java))
+            true
+        }
         R.id.action_settings -> {
             openSettings()
             true
@@ -155,6 +164,8 @@ class MainActivity : ScreenActivity() {
         refreshFolders()
         refreshQueuedFiles()
         refreshCameraWifi()
+        // The camera feature may have been switched on or off on another screen.
+        invalidateOptionsMenu()
         ContextCompat.registerReceiver(
             this,
             wifiScanReceiver,
@@ -163,7 +174,7 @@ class MainActivity : ScreenActivity() {
         )
         // A fresh scan, so the button does not depend on one made minutes ago.
         @Suppress("DEPRECATION")
-        if (Prefs(this).cameraWifi.isNotEmpty()) runCatching { getSystemService(android.net.wifi.WifiManager::class.java)?.startScan() }
+        if (FujifilmCamera.mayBeOnWifi(this)) runCatching { getSystemService(android.net.wifi.WifiManager::class.java)?.startScan() }
         if (prefs.syncEnabled) {
             // The answer arrives as a broadcast and settles the Lock Now button.
             SyncService.start(this, SyncService.ACTION_QUERY_STATUS)
@@ -179,7 +190,7 @@ class MainActivity : ScreenActivity() {
 
     /** Offered while the camera's Wi-Fi is in range and Bluetooth does not reach it. */
     private fun refreshCameraWifi() {
-        val offer = FujifilmCamera.isWatched(this) && CameraLinkService.instance?.ready != true &&
+        val offer = FujifilmCamera.mayBeOnWifi(this) && CameraLinkService.instance?.ready != true &&
             FujifilmCamera.wifiVisible(this)
         binding.cameraWifiButton.visibility = if (offer) android.view.View.VISIBLE else android.view.View.GONE
     }

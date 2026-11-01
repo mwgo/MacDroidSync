@@ -72,6 +72,11 @@ class Prefs(context: Context) {
         get() = prefs.getString(KEY_CAMERA_WIFI, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_CAMERA_WIFI, value).apply()
 
+    /** When the camera was last seen or heard over Bluetooth, in wall clock milliseconds. */
+    var cameraLastSeen: Long
+        get() = prefs.getLong(KEY_CAMERA_LAST_SEEN, 0L)
+        set(value) = prefs.edit().putLong(KEY_CAMERA_LAST_SEEN, value).apply()
+
     /** Whether the background scan last saw the camera advertising, that is switched on. */
     var cameraNearby: Boolean
         get() = prefs.getBoolean(KEY_CAMERA_NEARBY, false)
@@ -116,6 +121,7 @@ class Prefs(context: Context) {
         private const val KEY_CAMERA_NAME = "cameraName"
         private const val KEY_CAMERA_NEARBY = "cameraNearby"
         private const val KEY_CAMERA_WIFI = "cameraWifi"
+        private const val KEY_CAMERA_LAST_SEEN = "cameraLastSeen"
         private const val KEY_CAMERA_GEO = "cameraGeo"
         private const val KEY_CAMERA_GEO_INTERVAL = "cameraGeoInterval"
     }

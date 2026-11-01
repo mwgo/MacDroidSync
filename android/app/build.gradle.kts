@@ -93,6 +93,8 @@ dependencies {
     // Already pulled in by Material; named here because the notes list uses it directly.
     implementation("androidx.recyclerview:recyclerview:1.1.0")
     implementation("androidx.security:security-crypto:1.1.0")
+    // The editor's copies keep the lens and ISO, which the platform's ExifInterface cannot write.
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     testImplementation("junit:junit:4.13.2")

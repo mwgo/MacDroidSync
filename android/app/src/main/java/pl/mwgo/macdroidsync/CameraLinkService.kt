@@ -174,6 +174,7 @@ class CameraLinkService : Service() {
      * the interval, then the first sync.
      */
     private fun prepare() {
+        prefs.cameraLastSeen = System.currentTimeMillis()
         introduce()
         CameraPhotos.forgetFailure()
         onChange?.invoke()

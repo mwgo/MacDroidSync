@@ -1,5 +1,6 @@
 package pl.mwgo.macdroidsync
 
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -52,6 +53,17 @@ class PhotoViewerActivity : ScreenActivity() {
     private var pendingTrash: CameraPhotos.Photo? = null
     private var undo: Snackbar? = null
     private var captionShown = true
+    /** A picture the editor wrote over: shown again from its file, not from memory. */
+    private var stale: String? = null
+    private val editor = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+        val written = result.data?.data ?: return@registerForActivityResult
+        photos.firstOrNull { it.uri == written }?.let { overwritten ->
+            stale = overwritten.key
+            thumbs.remove(overwritten.key)
+            pages.notifyDataSetChanged()
+            tiles.notifyDataSetChanged()
+        }
+    }
     /** Keys of the tiles picked by a long press and taps after it; empty when not selecting. */
     private val selected = linkedSetOf<String>()
     private var selecting = false
@@ -70,6 +82,9 @@ class PhotoViewerActivity : ScreenActivity() {
         binding = ActivityPhotoViewerBinding.inflate(layoutInflater)
         setContentView(binding.root)
         hideStatusBar()
+        // Room for the photos to be lit past plain white, as the phone's gallery does.
+        if (Build.VERSION.SDK_INT >= 34) window.colorMode = ActivityInfo.COLOR_MODE_HDR
+        if (Build.VERSION.SDK_INT >= 35) window.desiredHdrHeadroom = LIFT
 
         binding.pager.layoutManager = pageLayout
         binding.pager.adapter = pages
@@ -359,6 +374,11 @@ class PhotoViewerActivity : ScreenActivity() {
     private fun showGrid() {
         if (binding.grid.visibility == View.VISIBLE) return
         val key = currentPhoto()?.key
+        // On its side the screen is wide enough for four tiles from the start.
+        if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE && gridLayout.spanCount != LANDSCAPE_TILES) {
+            gridLayout.spanCount = LANDSCAPE_TILES
+            tiles.notifyItemRangeChanged(0, tiles.itemCount)
+        }
         tiles.positionOf(key)?.let { gridLayout.scrollToPositionWithOffset(it, binding.root.height / 3) }
         binding.grid.apply {
             alpha = 0f
@@ -414,6 +434,13 @@ class PhotoViewerActivity : ScreenActivity() {
         init {
             image.onTap = { toggleCaption() }
             image.onPinchOut = { showGrid() }
+            // Held, a picture on the phone opens in the editor.
+            image.onLongPress = {
+                photos.firstOrNull { it.key == key }?.uri?.let { uri ->
+                    image.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    editor.launch(PhotoEditorActivity.intent(this@PhotoViewerActivity, uri))
+                }
+            }
             image.onSwipeUp = {
                 photos.firstOrNull { it.key == key }?.let(::throwAway)
                 image.translationY = 0f
@@ -422,6 +449,10 @@ class PhotoViewerActivity : ScreenActivity() {
         }
 
         fun bind(photo: CameraPhotos.Photo) {
+            if (photo.key == stale) {
+                stale = null
+                key = null
+            }
             if (key == photo.key && (full || requested && photo.uri == null)) return
             if (key != photo.key) image.setImageDrawable(null)
             key = photo.key
@@ -471,7 +502,7 @@ class PhotoViewerActivity : ScreenActivity() {
                         if (bitmap != null) {
                             full = true
                             onCamera.visibility = View.GONE
-                            image.setImageBitmap(bitmap)
+                            image.setImageBitmap(lifted(bitmap))
                         } else {
                             note.visibility = View.VISIBLE
                             note.setText(R.string.photos_download_failed)
@@ -618,6 +649,21 @@ class PhotoViewerActivity : ScreenActivity() {
         bitmap?.let { rotate(uri, it) }
     }.getOrNull()
 
+    /**
+     * The camera's JPEGs carry no HDR of their own. An even gain map over the
+     * whole picture lets the screen light it brighter, as far as its headroom
+     * allows at the moment; a screen without any shows it as it is.
+     */
+    private fun lifted(bitmap: Bitmap): Bitmap {
+        if (Build.VERSION.SDK_INT < 34) return bitmap
+        val gain = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.WHITE) }
+        bitmap.gainmap = android.graphics.Gainmap(gain).apply {
+            setRatioMax(LIFT, LIFT, LIFT)
+            displayRatioForFullHdr = LIFT
+        }
+        return bitmap
+    }
+
     /** The camera stores the orientation in EXIF; the pixels are always landscape. */
     private fun rotate(uri: Uri, bitmap: Bitmap): Bitmap {
         val degrees = contentResolver.openInputStream(uri)?.use {
@@ -640,10 +686,14 @@ class PhotoViewerActivity : ScreenActivity() {
         const val EXTRA_GRID = "grid"
 
         private const val MAX_SIDE = 4096
+        /** How much brighter than plain white a photo may be lit. */
+        private const val LIFT = 1.8f
         private const val THUMB_SIDE = 384
         private const val THUMB_CACHE = 300
-        /** Columns of the grid: large tiles, small ones, and the smallest. */
-        private val TILE_SIZES = listOf(2, 4, 6)
+        /** Columns of the grid, from the largest tiles to the smallest. */
+        private val TILE_SIZES = listOf(2, 3, 4, 6)
+        /** Columns the grid opens with from a picture in landscape. */
+        private const val LANDSCAPE_TILES = 4
         /** How far the fingers must close or open to change the tile size. */
         private const val PINCH_SMALLER = 0.65f
         private const val PINCH_LARGER = 1.55f

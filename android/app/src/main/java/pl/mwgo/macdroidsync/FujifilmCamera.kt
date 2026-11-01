@@ -162,6 +162,19 @@ object FujifilmCamera {
      * Whether the camera's own Wi-Fi is in range, as it is while the camera waits
      * for a phone with Bluetooth silent. Read from the phone's latest scan.
      */
+    /**
+     * Whether looking for the camera's Wi-Fi is worth it: only a camera seen
+     * lately may still be waiting on its network. Android counts every Wi-Fi
+     * scan as a use of the location, so it is not done on a guess.
+     */
+    fun mayBeOnWifi(context: Context): Boolean {
+        val prefs = Prefs(context)
+        return isWatched(context) && prefs.cameraWifi.isNotEmpty() &&
+            System.currentTimeMillis() - prefs.cameraLastSeen < WIFI_RECENT_MS
+    }
+
+    private const val WIFI_RECENT_MS = 10 * 60_000L
+
     @SuppressLint("MissingPermission")
     fun wifiVisible(context: Context): Boolean {
         val ssid = Prefs(context).cameraWifi.substringBefore('\n').takeIf { it.isNotEmpty() } ?: return false
@@ -296,6 +309,7 @@ class FujifilmCameraReceiver : BroadcastReceiver() {
             )
         }
         prefs.cameraNearby = type and ScanSettings.CALLBACK_TYPE_MATCH_LOST == 0
+        prefs.cameraLastSeen = System.currentTimeMillis()
         Log.i(Prefs.TAG, "Camera ${prefs.cameraName} ${if (prefs.cameraNearby) "on" else "gone"}")
         FujifilmCamera.refresh(context)
     }
@@ -309,6 +323,7 @@ class FujifilmCameraReceiver : BroadcastReceiver() {
         // Switched off while connected, the camera never advertised to say it
         // was gone, so the link going down is what says it.
         if (!connected) prefs.cameraNearby = false
+        prefs.cameraLastSeen = System.currentTimeMillis()
         FujifilmCamera.refresh(context)
     }
 
