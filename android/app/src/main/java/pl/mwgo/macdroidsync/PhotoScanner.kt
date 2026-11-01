@@ -51,7 +51,8 @@ class PhotoScanner(private val context: Context) {
     private val resolver: ContentResolver = context.contentResolver
 
     /**
-     * Reads DCIM/Camera. Images and videos are queried separately because from
+     * Reads DCIM/Camera and, from Android 10, the folder the Fujifilm camera's
+     * photos are imported to. Images and videos are queried separately because from
      * Android 13 they are separate permissions, and a phone that granted one and
      * not the other has to be describable.
      */
@@ -103,11 +104,11 @@ class PhotoScanner(private val context: Context) {
         val selection: String
         val arguments: Array<String>
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // An exact match rather than a LIKE with a wildcard: the wildcard
+            // Exact matches rather than a LIKE with a wildcard: the wildcard
             // would also take DCIM/Camera Backup and every subfolder, and this
-            // feature reads one folder.
-            selection = "${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
-            arguments = arrayOf(PhotoKey.CAMERA_PATH)
+            // feature reads named folders only.
+            selection = "${MediaStore.MediaColumns.RELATIVE_PATH} IN (?, ?)"
+            arguments = arrayOf(PhotoKey.CAMERA_PATH, FujifilmCamera.picturesFolder(context))
         } else {
             @Suppress("DEPRECATION")
             selection = "${MediaStore.MediaColumns.DATA} LIKE ?"

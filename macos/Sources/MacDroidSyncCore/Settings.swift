@@ -33,6 +33,7 @@ public final class Settings: SyncConfiguration {
         static let photosIntervalMinutes = "photosIntervalMinutes"
         static let photosMaxItemMB = "photosMaxItemMB"
         static let photosAlbumName = "photosAlbumName"
+        static let photosFolderAlbums = "photosFolderAlbums"
         static let autoUpdateEnabled = "autoUpdateEnabled"
         static let lastUpdateCheckAt = "lastUpdateCheckAt"
         static let pendingUpdateNotice = "pendingUpdateNotice"
@@ -315,6 +316,18 @@ public final class Settings: SyncConfiguration {
             photosAlbumIdentifier = nil
             Log.info("Photos will go into a new album named \(name)")
         }
+    }
+
+    /// The albums of the phone's other photo folders, such as a camera's, by
+    /// folder name; each found by identifier for the same reason as the main one.
+    public func photosFolderAlbumIdentifier(_ folder: String) -> String? {
+        (defaults.dictionary(forKey: Keys.photosFolderAlbums) as? [String: String])?[folder]
+    }
+
+    public func setPhotosFolderAlbumIdentifier(_ folder: String, _ identifier: String) {
+        var albums = (defaults.dictionary(forKey: Keys.photosFolderAlbums) as? [String: String]) ?? [:]
+        albums[folder] = identifier
+        defaults.set(albums, forKey: Keys.photosFolderAlbums)
     }
 
     /// The album imports go into, by identifier rather than by title: titles are

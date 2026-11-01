@@ -559,12 +559,11 @@ object CameraPhotos {
         try {
             val info = session.objectInfo(handle)
             val prefs = Prefs(context)
-            val folder = prefs.cameraName.ifEmpty { context.getString(R.string.camera_default_name) }
             val taken = taken(info.captureDate)
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, info.filename)
                 put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/$folder")
+                put(MediaStore.Images.Media.RELATIVE_PATH, FujifilmCamera.picturesFolder(context))
                 put(MediaStore.Images.Media.IS_PENDING, 1)
                 if (taken > 0) put(MediaStore.Images.Media.DATE_TAKEN, taken)
             }

@@ -54,6 +54,13 @@ object FujifilmCamera {
         }.getOrDefault(false)
     }
 
+    /**
+     * Where the camera's photos are imported to, "Pictures/X-E5/", and so a
+     * folder the photo sync with the Mac reads besides the phone's own camera.
+     */
+    fun picturesFolder(context: Context): String =
+        "Pictures/${Prefs(context).cameraName.ifEmpty { context.getString(R.string.camera_default_name) }}/"
+
     /** How the camera knows this phone: written at every connection and sent when joining its Wi-Fi. */
     fun phoneName(context: Context): String =
         android.provider.Settings.Global.getString(context.contentResolver, android.provider.Settings.Global.DEVICE_NAME)

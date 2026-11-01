@@ -42,6 +42,8 @@ public final class PhotoImporter {
     private let readAlbumName: () -> String
     private let readAlbumIdentifier: () -> String?
     private let writeAlbumIdentifier: (String) -> Void
+    private let readFolderAlbumIdentifier: (String) -> String?
+    private let writeFolderAlbumIdentifier: (String, String) -> Void
     private let queue = DispatchQueue(label: "\(Log.subsystem).photo-importer")
 
     /// Called after a photo lands in Photos, for the menu and the notifications.
@@ -54,13 +56,27 @@ public final class PhotoImporter {
         index: PhotoIndexStore = PhotoIndexStore(),
         readAlbumName: @escaping () -> String = { PhotoSyncSettings.defaultAlbumName },
         readAlbumIdentifier: @escaping () -> String? = { nil },
-        writeAlbumIdentifier: @escaping (String) -> Void = { _ in }
+        writeAlbumIdentifier: @escaping (String) -> Void = { _ in },
+        readFolderAlbumIdentifier: @escaping (String) -> String? = { _ in nil },
+        writeFolderAlbumIdentifier: @escaping (String, String) -> Void = { _, _ in }
     ) {
         self.library = library
         self.index = index
         self.readAlbumName = readAlbumName
         self.readAlbumIdentifier = readAlbumIdentifier
         self.writeAlbumIdentifier = writeAlbumIdentifier
+        self.readFolderAlbumIdentifier = readFolderAlbumIdentifier
+        self.writeFolderAlbumIdentifier = writeFolderAlbumIdentifier
+    }
+
+    /// The album a photo from another folder than the phone's camera goes into,
+    /// named after that folder: "Pictures/X-E5/DSCF0001.JPG" goes into "X-E5".
+    /// Nil for the phone's own camera, whose photos go into the album set in
+    /// the settings.
+    public static func folderAlbum(forKey key: String) -> String? {
+        let folders = key.split(separator: "/").dropLast()
+        guard let last = folders.last, folders.joined(separator: "/") != "DCIM/Camera" else { return nil }
+        return String(last)
     }
 
     public var readiness: PhotoLibraryReadiness { library.readiness }
@@ -137,11 +153,20 @@ public final class PhotoImporter {
 
             // Asked for on every import rather than held from construction, so
             // renaming the album in the settings window takes effect at once.
-            let albumIdentifier = try? library.ensureAlbum(
-                named: readAlbumName(), knownIdentifier: readAlbumIdentifier()
-            )
-            if let albumIdentifier, albumIdentifier != readAlbumIdentifier() {
-                writeAlbumIdentifier(albumIdentifier)
+            let albumIdentifier: String?
+            if let folder = Self.folderAlbum(forKey: key) {
+                let known = readFolderAlbumIdentifier(folder)
+                albumIdentifier = try? library.ensureAlbum(named: folder, knownIdentifier: known)
+                if let albumIdentifier, albumIdentifier != known {
+                    writeFolderAlbumIdentifier(folder, albumIdentifier)
+                }
+            } else {
+                albumIdentifier = try? library.ensureAlbum(
+                    named: readAlbumName(), knownIdentifier: readAlbumIdentifier()
+                )
+                if let albumIdentifier, albumIdentifier != readAlbumIdentifier() {
+                    writeAlbumIdentifier(albumIdentifier)
+                }
             }
 
             var request = PhotoImportRequest(

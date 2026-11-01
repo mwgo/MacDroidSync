@@ -168,7 +168,7 @@ data class PhotoPayload(
  */
 object PhotoKey {
 
-    /** The one folder this feature reads. */
+    /** The phone's own camera folder; see PhotoScanner for the other one it reads. */
     const val CAMERA_PATH = "DCIM/Camera/"
 
     /**

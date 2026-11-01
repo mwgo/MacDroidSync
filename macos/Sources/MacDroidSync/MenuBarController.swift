@@ -23,7 +23,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         index: photoIndex,
         readAlbumName: { Settings.shared.photosAlbumName },
         readAlbumIdentifier: { Settings.shared.photosAlbumIdentifier },
-        writeAlbumIdentifier: { Settings.shared.photosAlbumIdentifier = $0 }
+        writeAlbumIdentifier: { Settings.shared.photosAlbumIdentifier = $0 },
+        readFolderAlbumIdentifier: { Settings.shared.photosFolderAlbumIdentifier($0) },
+        writeFolderAlbumIdentifier: { Settings.shared.setPhotosFolderAlbumIdentifier($0, $1) }
     )
     private lazy var photoSync = PhotoSyncCoordinator(
         importer: photoImporter,
