@@ -36,6 +36,23 @@ object FujifilmGeo {
     val XAPP_INFORMATION = byteArrayOf(0x80.toByte(), 1, 1)
     val POWER_KEY_STATE: UUID = UUID.fromString("F90F7D3A-3B64-45C6-AB21-933900184837")
 
+    /** Starts the camera's Wi-Fi for a phone to view and import its pictures: 3, in-camera viewing. */
+    val FUNCTION_LAUNCH_REQUEST: UUID = UUID.fromString("600655E6-3637-42F1-8FB2-44EFC5C63B13")
+    const val FUNCTION_IN_CAMERA_VIEWING = 3
+    /** Notified as the access point comes up: 0x8001 launched, 0x8002 launching, 0x8000 failed. */
+    val AP_STATE: UUID = UUID.fromString("A68E3F66-0FCC-4395-8D4C-AA980B5877FA")
+    const val AP_LAUNCHED = 0x8001
+    const val AP_FAILED = 0x8000
+    val WIFI_SSID: UUID = UUID.fromString("BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4")
+    val WIFI_PASSPHRASE: UUID = UUID.fromString("E809256A-915C-4967-92E8-53B7D4CAD213")
+    /** The camera's Wi-Fi MAC as "AA-BB-…", which is the access point's BSSID. */
+    val WIFI_MAC: UUID = UUID.fromString("49A12959-DFAA-4EB2-89CE-62548AD948F3")
+
+    fun text(value: ByteArray): String = String(value, Charsets.US_ASCII).substringBefore('\u0000').trim()
+
+    fun uint16(value: ByteArray): Int =
+        if (value.size >= 2) (value[0].toInt() and 0xFF) or ((value[1].toInt() and 0xFF) shl 8) else -1
+
     /** In the Camera Control service: the shutter button, as a uint16 state. */
     val SHOOTING_REQUEST: UUID = UUID.fromString("7FCF49C6-4FF0-4777-A03D-1A79166AF7A8")
     const val SHUTTER_UP = 0

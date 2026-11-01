@@ -7,4 +7,9 @@
     <color name="brand_on_primary_container">#D6E3FF</color>
     <color name="brand_secondary_container">#3B4254</color>
     <color name="brand_on_secondary_container">#DCE2F9</color>
+    <color name="camera_download">#66BB6A</color>
+    <color name="camera_browse">#7CACF8</color>
+    <color name="camera_stop">#EF5350</color>
+    <color name="camera_shutter">#E8EAED</color>
+    <color name="camera_on_button">#FF202124</color>
 </resources>

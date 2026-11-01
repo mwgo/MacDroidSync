@@ -82,6 +82,8 @@ class CameraLinkService : Service() {
 
 
     override fun onDestroy() {
+        // Whoever waits for the Wi-Fi hears no now, not never.
+        finishWifi(null)
         main.removeCallbacksAndMessages(null)
         locating?.cancel()
         gatt?.run { disconnect(); close() }
@@ -155,13 +157,14 @@ class CameraLinkService : Service() {
         }
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
-            main.post { asked(characteristic) }
+            main.post { asked(characteristic, value) }
         }
 
         @Deprecated("Before Android 13")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
-            main.post { asked(characteristic) }
+            @Suppress("DEPRECATION") val value = characteristic.value ?: ByteArray(0)
+            main.post { asked(characteristic, value) }
         }
     }
 
@@ -171,6 +174,7 @@ class CameraLinkService : Service() {
      */
     private fun prepare() {
         introduce()
+        CameraPhotos.forgetFailure()
         onChange?.invoke()
         if (!prefs.cameraGeoEnabled) {
             Log.i(Prefs.TAG, "Connected to ${prefs.cameraName} for the shutter only")
@@ -190,17 +194,66 @@ class CameraLinkService : Service() {
     /** What XApp sends before the camera obeys its shutter, see FujifilmGeo.IDENTIFICATION_NUMBER. */
     private fun introduce() {
         characteristic(FujifilmGeo.IDENTIFICATION_NUMBER)?.let { enqueue { gatt?.readCharacteristic(it) == true } }
-        characteristic(FujifilmGeo.DEVICE_NAME)?.let { enqueue { write(it, FujifilmGeo.deviceName(phoneName())) } }
+        characteristic(FujifilmGeo.DEVICE_NAME)?.let { enqueue { write(it, FujifilmGeo.deviceName(FujifilmCamera.phoneName(this))) } }
         characteristic(FujifilmGeo.APPLICATION_INFORMATION)?.let { enqueue { write(it, FujifilmGeo.XAPP_INFORMATION) } }
         characteristic(FujifilmGeo.POWER_KEY_STATE)?.let { enqueue { gatt?.readCharacteristic(it) == true } }
     }
 
-    private fun phoneName(): String =
-        android.provider.Settings.Global.getString(contentResolver, android.provider.Settings.Global.DEVICE_NAME)
-            ?: Build.MODEL
+
+    /** The camera's Wi-Fi, as it reports it once the access point is up. */
+    data class Wifi(val ssid: String, val passphrase: String, val bssid: String)
+
+    private var wifiWanted: ((Wifi?) -> Unit)? = null
+    private var wifiSsid = ""
+    private var wifiPassphrase = ""
+    private val wifiTimeout = Runnable { finishWifi(null) }
+
+    /**
+     * Asks the camera to start its access point for viewing its pictures, and
+     * answers with how to join it, or null when it did not come up.
+     */
+    fun startWifi(result: (Wifi?) -> Unit) {
+        val launch = characteristic(FujifilmGeo.FUNCTION_LAUNCH_REQUEST)
+        val state = characteristic(FujifilmGeo.AP_STATE)
+        if (!connected || launch == null || state == null) {
+            result(null)
+            return
+        }
+        wifiWanted = result
+        main.postDelayed(wifiTimeout, WIFI_TIMEOUT_MS)
+        Log.i(Prefs.TAG, "Asking ${prefs.cameraName} to start its Wi-Fi")
+        enqueue { subscribe(state) }
+        enqueue { write(launch, FujifilmGeo.shutter(FujifilmGeo.FUNCTION_IN_CAMERA_VIEWING)) }
+    }
+
+    private fun apState(value: ByteArray) {
+        val state = FujifilmGeo.uint16(value)
+        Log.i(Prefs.TAG, "Camera access point state 0x%04X".format(state))
+        if (wifiWanted == null) return
+        when (state) {
+            FujifilmGeo.AP_LAUNCHED, FujifilmGeo.AP_LAUNCHED + 2 -> listOf(
+                FujifilmGeo.WIFI_SSID, FujifilmGeo.WIFI_PASSPHRASE, FujifilmGeo.WIFI_MAC,
+            ).forEach { uuid -> characteristic(uuid)?.let { enqueue { gatt?.readCharacteristic(it) == true } } }
+            FujifilmGeo.AP_FAILED -> finishWifi(null)
+        }
+    }
+
+    private fun finishWifi(wifi: Wifi?) {
+        main.removeCallbacks(wifiTimeout)
+        val result = wifiWanted ?: return
+        wifiWanted = null
+        result(wifi)
+    }
 
     private fun read(characteristic: BluetoothGattCharacteristic, value: ByteArray) {
         when (characteristic.uuid) {
+            FujifilmGeo.WIFI_SSID -> wifiSsid = FujifilmGeo.text(value)
+            FujifilmGeo.WIFI_PASSPHRASE -> wifiPassphrase = FujifilmGeo.text(value)
+            FujifilmGeo.WIFI_MAC -> {
+                val bssid = FujifilmGeo.text(value).replace('-', ':')
+                Log.i(Prefs.TAG, "Camera Wi-Fi $wifiSsid at $bssid")
+                finishWifi(Wifi(wifiSsid, wifiPassphrase, bssid))
+            }
             FujifilmGeo.IDENTIFICATION_NUMBER -> {
                 val number = FujifilmGeo.identification(value)
                 Log.i(Prefs.TAG, "Camera identification ${value.toHex()} -> ${number?.toHex()}")
@@ -218,8 +271,9 @@ class CameraLinkService : Service() {
 
     private fun ByteArray.toHex(): String = joinToString(" ") { "%02x".format(it) }
 
-    private fun asked(characteristic: BluetoothGattCharacteristic) {
+    private fun asked(characteristic: BluetoothGattCharacteristic, value: ByteArray) {
         when (characteristic.uuid) {
+            FujifilmGeo.AP_STATE -> apState(value)
             FujifilmGeo.DATE_SYNC_STATE -> sendTime()
             FujifilmGeo.LOCATION_SYNC_STATE -> lastFix?.takeIf { fresh(it) }?.let { sendLocation(it) }
         }
@@ -308,6 +362,7 @@ class CameraLinkService : Service() {
     private fun lost(status: Int) {
         val wasConnected = connected
         connected = false
+        finishWifi(null)
         onChange?.invoke()
         main.removeCallbacks(tick)
         locating?.cancel()
@@ -318,11 +373,26 @@ class CameraLinkService : Service() {
         Log.i(Prefs.TAG, "Camera link closed ($status)")
         // A failed first attempt is common with Bluetooth LE; a camera still
         // advertising gets a few more before this gives up.
-        if (!wasConnected && attempts < MAX_ATTEMPTS && prefs.cameraNearby) {
-            main.postDelayed({ connect() }, RETRY_DELAY_MS)
-        } else {
-            stopSelf()
+        when {
+            // On its Wi-Fi the camera may drop Bluetooth; the service stays for
+            // the transfer, with the notification, and keeps trying to come back.
+            CameraPhotos.active -> {
+                startForegroundCompat(status())
+                main.postDelayed({ if (gatt == null) connect() }, WIFI_RECONNECT_MS)
+            }
+            !wasConnected && attempts < MAX_ATTEMPTS && prefs.cameraNearby ->
+                main.postDelayed({ connect() }, RETRY_DELAY_MS)
+            else -> stopSelf()
         }
+    }
+
+    /** The picture transfer moved on: the notification says so, and the service ends with it. */
+    fun photosChanged() {
+        if (!connected && !CameraPhotos.active && gatt == null) {
+            stopSelf()
+            return
+        }
+        startForegroundCompat(status())
     }
 
     // region One GATT operation at a time
@@ -381,6 +451,10 @@ class CameraLinkService : Service() {
     // endregion
 
     private fun status(): String {
+        CameraPhotos.importing?.let { (done, total) ->
+            return getString(R.string.photos_downloading, done + 1, total)
+        }
+        if (!connected && CameraPhotos.active) return getString(R.string.camera_on_wifi)
         if (lastSync == 0L) {
             return getString(
                 when {
@@ -413,6 +487,8 @@ class CameraLinkService : Service() {
         private const val RETRY_DELAY_MS = 5_000L
         private const val OPERATION_TIMEOUT_MS = 5_000L
         private const val LOCATE_TIMEOUT_MS = 30_000L
+        private const val WIFI_TIMEOUT_MS = 20_000L
+        private const val WIFI_RECONNECT_MS = 15_000L
 
         @Volatile
         var running = false

@@ -30,6 +30,18 @@
         android:text="@string/shutter_link"
         android:textAppearance="?attr/textAppearanceBodyLarge" />
 
+    <TextView
+        android:id="@+id/stateText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="24dp"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:textAppearance="?attr/textAppearanceBodyLarge"
+        android:textColor="?android:attr/textColorSecondary"
+        tools:text="@string/shutter_ready" />
+
+    <!-- As sketched: download and browse side by side, the shutter large below. -->
     <LinearLayout
         android:id="@+id/content"
         android:layout_width="match_parent"
@@ -39,32 +51,127 @@
         android:orientation="vertical"
         android:padding="24dp">
 
-        <TextView
-            android:id="@+id/stateText"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:textAppearance="?attr/textAppearanceBodyLarge"
-            android:textColor="?android:attr/textColorSecondary"
-            tools:text="@string/shutter_ready" />
+            android:baselineAligned="false"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:layout_width="88dp"
+                    android:layout_height="88dp">
+
+                    <com.google.android.material.progressindicator.CircularProgressIndicator
+                        android:id="@+id/downloadProgress"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center"
+                        android:visibility="invisible"
+                        app:indicatorColor="@color/camera_stop"
+                        app:indicatorInset="0dp"
+                        app:indicatorSize="86dp"
+                        app:trackThickness="4dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/downloadButton"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="72dp"
+                        android:layout_height="72dp"
+                        android:layout_gravity="center"
+                        android:backgroundTint="@color/camera_download"
+                        android:contentDescription="@string/photos_download_new"
+                        android:insetLeft="0dp"
+                        android:insetTop="0dp"
+                        android:insetRight="0dp"
+                        android:insetBottom="0dp"
+                        android:padding="0dp"
+                        app:cornerRadius="36dp"
+                        app:icon="@drawable/ic_download"
+                        app:iconGravity="textStart"
+                        app:iconPadding="0dp"
+                        app:iconSize="32dp"
+                        app:iconTint="@color/camera_on_button" />
+                </FrameLayout>
+
+                <TextView
+                    android:id="@+id/downloadText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center"
+                    android:text="@string/photos_download_short"
+                    android:textAppearance="?attr/textAppearanceLabelLarge" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:layout_width="88dp"
+                    android:layout_height="88dp">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/browseButton"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="72dp"
+                        android:layout_height="72dp"
+                        android:layout_gravity="center"
+                        android:backgroundTint="@color/camera_browse"
+                        android:contentDescription="@string/title_photos"
+                        android:insetLeft="0dp"
+                        android:insetTop="0dp"
+                        android:insetRight="0dp"
+                        android:insetBottom="0dp"
+                        android:padding="0dp"
+                        app:cornerRadius="36dp"
+                        app:icon="@drawable/ic_gallery"
+                        app:iconGravity="textStart"
+                        app:iconPadding="0dp"
+                        app:iconSize="32dp"
+                        app:iconTint="@color/camera_on_button" />
+                </FrameLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/title_photos"
+                    android:textAppearance="?attr/textAppearanceLabelLarge" />
+            </LinearLayout>
+        </LinearLayout>
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/shutterButton"
             style="@style/Widget.Material3.Button"
-            android:layout_width="160dp"
-            android:layout_height="160dp"
-            android:layout_marginTop="32dp"
+            android:layout_width="180dp"
+            android:layout_height="180dp"
+            android:layout_marginTop="40dp"
+            android:backgroundTint="@color/camera_shutter"
             android:contentDescription="@string/shutter_button"
             android:insetLeft="0dp"
             android:insetTop="0dp"
             android:insetRight="0dp"
             android:insetBottom="0dp"
             android:padding="0dp"
-            app:cornerRadius="80dp"
+            app:cornerRadius="90dp"
             app:icon="@drawable/ic_stat_camera"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
-            app:iconSize="64dp" />
+            app:iconSize="72dp"
+            app:iconTint="@color/camera_on_button"
+            app:strokeColor="?attr/colorOutline"
+            app:strokeWidth="4dp" />
 
         <TextView
             android:layout_width="wrap_content"

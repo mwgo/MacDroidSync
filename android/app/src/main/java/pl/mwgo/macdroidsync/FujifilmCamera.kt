@@ -54,6 +54,11 @@ object FujifilmCamera {
         }.getOrDefault(false)
     }
 
+    /** How the camera knows this phone: written at every connection and sent when joining its Wi-Fi. */
+    fun phoneName(context: Context): String =
+        android.provider.Settings.Global.getString(context.contentResolver, android.provider.Settings.Global.DEVICE_NAME)
+            ?: android.os.Build.MODEL
+
     fun hasBluetooth(context: Context): Boolean =
         context.getSystemService(BluetoothManager::class.java)?.adapter != null
 
@@ -82,7 +87,8 @@ object FujifilmCamera {
         return connected.any { it.address.equals(address, ignoreCase = true) }
     }
 
-    fun isOn(context: Context): Boolean = Prefs(context).cameraNearby || isConnected(context)
+    fun isOn(context: Context): Boolean =
+        Prefs(context).cameraNearby || isConnected(context) || CameraPhotos.active
 
     /**
      * Brings the notification, and the link that sends the location and time,
@@ -145,9 +151,27 @@ object FujifilmCamera {
         return prefs.cameraEnabled && prefs.cameraAddress.isNotEmpty() && Permissions.hasBluetoothConnect(context)
     }
 
-    fun show(context: Context) {
+    /**
+     * Whether the camera's own Wi-Fi is in range, as it is while the camera waits
+     * for a phone with Bluetooth silent. Read from the phone's latest scan.
+     */
+    @SuppressLint("MissingPermission")
+    fun wifiVisible(context: Context): Boolean {
+        val ssid = Prefs(context).cameraWifi.substringBefore('\n').takeIf { it.isNotEmpty() } ?: return false
+        if (!Permissions.hasForegroundLocation(context)) return false
+        val wifi = context.getSystemService(android.net.wifi.WifiManager::class.java) ?: return false
+        val now = android.os.SystemClock.elapsedRealtime() * 1000
+        return runCatching {
+            @Suppress("DEPRECATION")
+            wifi.scanResults.any { it.SSID == ssid && now - it.timestamp < WIFI_FRESH_US }
+        }.getOrDefault(false)
+    }
+
+    private const val WIFI_FRESH_US = 300_000_000L
+
+    fun show(context: Context, text: String = context.getString(R.string.camera_notification_text)) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        val notification = notification(context, context.getString(R.string.camera_notification_text))
+        val notification = notification(context, text)
         runCatching { manager.notify(NOTIFICATION_ID, notification) }
             .onFailure { Log.w(Prefs.TAG, "Could not show the camera notification", it) }
         posted(notification)

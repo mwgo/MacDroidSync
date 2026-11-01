@@ -78,6 +78,9 @@ class MainActivity : ScreenActivity() {
         binding.beaconHint.setOnClickListener { openSettings() }
         binding.photosHint.setOnClickListener { openSettings() }
         binding.foldersHint.setOnClickListener { requestAllFiles() }
+        binding.cameraWifiButton.setOnClickListener {
+            startActivity(Intent(this, ShutterActivity::class.java).putExtra(ShutterActivity.EXTRA_CONNECT, true))
+        }
     }
 
     /**
@@ -151,6 +154,16 @@ class MainActivity : ScreenActivity() {
         refreshPhotoHint()
         refreshFolders()
         refreshQueuedFiles()
+        refreshCameraWifi()
+        ContextCompat.registerReceiver(
+            this,
+            wifiScanReceiver,
+            IntentFilter(android.net.wifi.WifiManager.SCAN_RESULTS_AVAILABLE_ACTION),
+            ContextCompat.RECEIVER_EXPORTED,
+        )
+        // A fresh scan, so the button does not depend on one made minutes ago.
+        @Suppress("DEPRECATION")
+        if (Prefs(this).cameraWifi.isNotEmpty()) runCatching { getSystemService(android.net.wifi.WifiManager::class.java)?.startScan() }
         if (prefs.syncEnabled) {
             // The answer arrives as a broadcast and settles the Lock Now button.
             SyncService.start(this, SyncService.ACTION_QUERY_STATUS)
@@ -160,7 +173,19 @@ class MainActivity : ScreenActivity() {
         }
     }
 
+    private val wifiScanReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: Intent) = refreshCameraWifi()
+    }
+
+    /** Offered while the camera's Wi-Fi is in range and Bluetooth does not reach it. */
+    private fun refreshCameraWifi() {
+        val offer = FujifilmCamera.isWatched(this) && CameraLinkService.instance?.ready != true &&
+            FujifilmCamera.wifiVisible(this)
+        binding.cameraWifiButton.visibility = if (offer) android.view.View.VISIBLE else android.view.View.GONE
+    }
+
     override fun onPause() {
+        runCatching { unregisterReceiver(wifiScanReceiver) }
         runCatching { unregisterReceiver(statusReceiver) }
         super.onPause()
     }

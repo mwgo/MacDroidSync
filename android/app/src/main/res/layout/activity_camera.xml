@@ -50,6 +50,13 @@
                 android:text="@string/camera_switch"
                 android:textAppearance="?attr/textAppearanceBodyLarge" />
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/shutterButton"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/camera_open_shutter" />
+
             <TextView
                 android:id="@+id/stateText"
                 android:layout_width="match_parent"

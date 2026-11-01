@@ -67,6 +67,11 @@ class Prefs(context: Context) {
         get() = prefs.getInt(KEY_CAMERA_GEO_INTERVAL, FujifilmGeo.DEFAULT_INTERVAL)
         set(value) = prefs.edit().putInt(KEY_CAMERA_GEO_INTERVAL, value).apply()
 
+    /** The camera's Wi-Fi as "ssid\npassphrase\nbssid", to rejoin it when Bluetooth is gone. */
+    var cameraWifi: String
+        get() = prefs.getString(KEY_CAMERA_WIFI, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_CAMERA_WIFI, value).apply()
+
     /** Whether the background scan last saw the camera advertising, that is switched on. */
     var cameraNearby: Boolean
         get() = prefs.getBoolean(KEY_CAMERA_NEARBY, false)
@@ -110,6 +115,7 @@ class Prefs(context: Context) {
         private const val KEY_CAMERA_ADDRESS = "cameraAddress"
         private const val KEY_CAMERA_NAME = "cameraName"
         private const val KEY_CAMERA_NEARBY = "cameraNearby"
+        private const val KEY_CAMERA_WIFI = "cameraWifi"
         private const val KEY_CAMERA_GEO = "cameraGeo"
         private const val KEY_CAMERA_GEO_INTERVAL = "cameraGeoInterval"
     }

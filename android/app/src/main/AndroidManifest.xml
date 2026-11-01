@@ -4,6 +4,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Joining the Fujifilm camera's own Wi-Fi to import its photos. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- Multicast is what Bonjour discovery runs on; it is also the capability that
          lets a connectedDevice foreground service run on Android 14 and newer. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
@@ -128,6 +132,12 @@
             android:exported="false"
             android:label="@string/title_shutter"
             android:launchMode="singleTop" />
+
+        <activity
+            android:name=".PhotoViewerActivity"
+            android:exported="false"
+            android:label="@string/title_photos"
+            android:parentActivityName=".ShutterActivity" />
 
         <activity
             android:name=".AboutActivity"

@@ -71,6 +71,7 @@ class CameraActivity : ScreenActivity() {
         binding.bluetoothButton.setOnClickListener { requestBluetooth() }
         binding.notificationsButton.setOnClickListener { requestNotifications() }
         binding.locationButton.setOnClickListener { requestLocation() }
+        binding.shutterButton.setOnClickListener { startActivity(Intent(this, ShutterActivity::class.java)) }
         binding.companionButton.setOnClickListener { requestCompanion() }
 
         binding.geoSwitch.isChecked = prefs.cameraGeoEnabled
