@@ -330,6 +330,27 @@ final class PhotoImporterAlbumTests: XCTestCase {
                            size: 100, captureAt: 1, isVideo: false)
     }
 
+    /// A photo from another folder than the phone's camera goes into an album
+    /// named after that folder, found again by its identifier.
+    func testAnotherFolderGoesIntoItsOwnAlbum() throws {
+        XCTAssertNil(PhotoImporter.folderAlbum(forKey: "DCIM/Camera/IMG_1.jpg"))
+        XCTAssertNil(PhotoImporter.folderAlbum(forKey: "a"))
+        XCTAssertEqual(PhotoImporter.folderAlbum(forKey: "Pictures/X-E5/DSCF0001.JPG"), "X-E5")
+
+        var folderAlbums: [String: String] = [:]
+        let importer = PhotoImporter(
+            library: library,
+            index: index,
+            readFolderAlbumIdentifier: { folderAlbums[$0] },
+            writeFolderAlbumIdentifier: { folderAlbums[$0] = $1 }
+        )
+        library.albumIdentifier = "album/camera"
+        try store("Pictures/X-E5/DSCF0001.JPG", using: importer)
+        XCTAssertEqual(library.albumTitles.last, "X-E5")
+        XCTAssertEqual(folderAlbums, ["X-E5": "album/camera"])
+        XCTAssertEqual(library.imported.last?.albumIdentifier, "album/camera")
+    }
+
     /// The name is asked for at every import rather than held from construction,
     /// so renaming the album in the settings window takes effect at once.
     func testTheAlbumNameIsAskedForEveryTime() throws {

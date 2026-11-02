@@ -450,6 +450,7 @@ public final class PhotoSyncCoordinator {
             items: snapshot.items,
             from: snapshot.from,
             tombstones: snapshot.tombstones,
+            folders: snapshot.folders,
             index: indexBefore,
             limits: limits
         )

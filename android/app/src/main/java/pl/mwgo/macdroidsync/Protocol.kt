@@ -58,6 +58,9 @@ object MessageType {
     /** Mac to phone: how this phone should describe its camera folder. */
     const val PHOTO_CONFIG = "photo-config"
 
+    /** Phone to Mac, after every photo-config: this phone's albums, for the Mac's settings. */
+    const val PHOTO_ALBUMS = "photo-albums"
+
     /**
      * Both ways. From the Mac with one key in photo.keys: "show me what this
      * is". Back from this phone: the same key, a small JPEG in data, or ok:false

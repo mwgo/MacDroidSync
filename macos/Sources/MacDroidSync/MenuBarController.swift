@@ -23,7 +23,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         index: photoIndex,
         readAlbumName: { Settings.shared.photosAlbumName },
         readAlbumIdentifier: { Settings.shared.photosAlbumIdentifier },
-        writeAlbumIdentifier: { Settings.shared.photosAlbumIdentifier = $0 }
+        writeAlbumIdentifier: { Settings.shared.photosAlbumIdentifier = $0 },
+        readFolderAlbumIdentifier: { Settings.shared.photosFolderAlbumIdentifier($0) },
+        writeFolderAlbumIdentifier: { Settings.shared.setPhotosFolderAlbumIdentifier($0, $1) }
     )
     private lazy var photoSync = PhotoSyncCoordinator(
         importer: photoImporter,
@@ -810,6 +812,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         server.onPhotoPreview = { [weak self] key, bytes, reason in
             self?.photoSyncWindow?.receivePreview(key: key, bytes: bytes, reason: reason)
         }
+        // Kept for the settings window, which offers them while the phone is away too.
+        server.onPhotoAlbums = { [weak self] albums in
+            Settings.shared.photosKnownAlbums = albums
+            self?.settingsWindow?.refreshFromMenu()
+        }
         // A photo transfer speaks on its own line only. It gets no notification
         // and no "Received: …" entry: a holiday's worth of photos arriving is
         // background work, and the file line belongs to what the user asked for.
@@ -926,7 +933,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return PhotoPayload(
             enabled: settings.photosEnabled,
             lastDays: settings.photosLastDays,
-            maxItemBytes: settings.photosMaxItemBytes
+            maxItemBytes: settings.photosMaxItemBytes,
+            folders: settings.photosFolders
         )
     }
 
@@ -974,11 +982,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 self.refreshPhotoReport()
             },
             syncNow: { [weak self] in self?.syncPhotosNow() },
-            previewFromLibrary: { [weak self] key in
+            previewFromLibrary: { [weak self] key, maxPixel in
                 guard let self, let id = self.photoIndex.entry(for: key)?.localIdentifier else { return nil }
-                return self.photoLibrary.thumbnail(of: id, maxPixel: 480)
+                return self.photoLibrary.thumbnail(of: id, maxPixel: maxPixel)
             },
-            requestPreview: { [weak self] key in self?.server.requestPhotoPreview(key: key) ?? false },
+            requestPreview: { [weak self] key, side in
+                self?.server.requestPhotoPreview(key: key, side: side) ?? false
+            },
             status: { [weak self] in
                 guard let self else { return nil }
                 guard Settings.shared.photosEnabled else {

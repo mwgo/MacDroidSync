@@ -55,6 +55,8 @@ public final class PeerSession {
     /// The phone's answer to `requestPhotoPreview`: the key, the JPEG bytes, or
     /// nil bytes and the phone's reason when it has none to give.
     public var onPhotoPreview: ((String, Data?, String?) -> Void)?
+    /// The phone's albums, sent after every configuration.
+    public var onPhotoAlbums: (([PhotoAlbum]) -> Void)?
     /// Anything the phone says about messages, see PROTOCOL.md section 9.
     public var onSms: ((SmsReply) -> Void)?
     /// Anything the phone says about the synced folders, see PROTOCOL.md section 10.
@@ -393,6 +395,9 @@ public final class PeerSession {
         case MessageType.photoManifest:
             guard let photo = message.photo else { return }
             onPhotoManifest?(photo, message.ok ?? true, message.reason)
+        case MessageType.photoAlbums:
+            guard let albums = message.photo?.albums else { return }
+            onPhotoAlbums?(albums)
         case MessageType.photoPreview:
             guard let key = message.photo?.keys?.first else { return }
             let bytes = (message.ok ?? true) ? message.data.flatMap { Data(base64Encoded: $0) } : nil
@@ -454,12 +459,12 @@ public final class PeerSession {
     /// Asks for a small picture of one item, to look at before deciding about
     /// it. One key at a time: this follows the selection in a window, and the
     /// answer to a key nobody is looking at any more is simply dropped there.
-    public func requestPhotoPreview(key: String) throws {
+    public func requestPhotoPreview(key: String, side: Int? = nil) throws {
         guard isAuthenticated else { return }
         try send(Message(
             seq: codec.nextSequence(),
             type: MessageType.photoPreview,
-            photo: PhotoPayload(manifestId: nil, keys: [key])
+            photo: PhotoPayload(manifestId: nil, keys: [key], side: side)
         ))
     }
 

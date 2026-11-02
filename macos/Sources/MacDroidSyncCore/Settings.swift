@@ -33,6 +33,9 @@ public final class Settings: SyncConfiguration {
         static let photosIntervalMinutes = "photosIntervalMinutes"
         static let photosMaxItemMB = "photosMaxItemMB"
         static let photosAlbumName = "photosAlbumName"
+        static let photosFolderAlbums = "photosFolderAlbums"
+        static let photosFolders = "photosFolders"
+        static let photosKnownAlbums = "photosKnownAlbums"
         static let autoUpdateEnabled = "autoUpdateEnabled"
         static let lastUpdateCheckAt = "lastUpdateCheckAt"
         static let pendingUpdateNotice = "pendingUpdateNotice"
@@ -315,6 +318,38 @@ public final class Settings: SyncConfiguration {
             photosAlbumIdentifier = nil
             Log.info("Photos will go into a new album named \(name)")
         }
+    }
+
+    /// The phone's albums to sync, as folders like "DCIM/Camera/". Never empty:
+    /// with none chosen the camera folder is, as before there was a choice.
+    public var photosFolders: [String] {
+        get {
+            let stored = defaults.stringArray(forKey: Keys.photosFolders) ?? []
+            return stored.isEmpty ? [PhotoSyncSettings.cameraFolder] : stored
+        }
+        set { defaults.set(newValue, forKey: Keys.photosFolders) }
+    }
+
+    /// The phone's albums as it last listed them, for the settings window to
+    /// offer while the phone is away.
+    public var photosKnownAlbums: [PhotoAlbum] {
+        get {
+            guard let data = defaults.data(forKey: Keys.photosKnownAlbums) else { return [] }
+            return (try? JSONDecoder().decode([PhotoAlbum].self, from: data)) ?? []
+        }
+        set { defaults.set(try? JSONEncoder().encode(newValue), forKey: Keys.photosKnownAlbums) }
+    }
+
+    /// The albums of the phone's other photo folders, by folder name; each found
+    /// by identifier for the same reason as the main one.
+    public func photosFolderAlbumIdentifier(_ folder: String) -> String? {
+        (defaults.dictionary(forKey: Keys.photosFolderAlbums) as? [String: String])?[folder]
+    }
+
+    public func setPhotosFolderAlbumIdentifier(_ folder: String, _ identifier: String) {
+        var albums = (defaults.dictionary(forKey: Keys.photosFolderAlbums) as? [String: String]) ?? [:]
+        albums[folder] = identifier
+        defaults.set(albums, forKey: Keys.photosFolderAlbums)
     }
 
     /// The album imports go into, by identifier rather than by title: titles are

@@ -3,6 +3,9 @@ package pl.mwgo.macdroidsync
 import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -51,16 +54,17 @@ class PhotoScanner(private val context: Context) {
     private val resolver: ContentResolver = context.contentResolver
 
     /**
-     * Reads DCIM/Camera. Images and videos are queried separately because from
-     * Android 13 they are separate permissions, and a phone that granted one and
-     * not the other has to be describable.
+     * Reads the chosen albums, DCIM/Camera unless told otherwise. Images and
+     * videos are queried separately because from Android 13 they are separate
+     * permissions, and a phone that granted one and not the other has to be
+     * describable.
      */
-    fun scan(): Scan {
+    fun scan(folders: List<String> = listOf(PhotoKey.CAMERA_PATH)): Scan {
         Permissions.mediaRefusal(context)?.let {
             return Scan(emptyList(), complete = false, refusal = it)
         }
         return try {
-            val rows = query(video = false) + query(video = true)
+            val rows = query(video = false, folders) + query(video = true, folders)
             if (rows.isEmpty() && !mediaStoreHasAnything()) {
                 // An empty answer from a library that is not there is not "every
                 // photo was deleted" - which is exactly how the Mac's delete rule
@@ -68,7 +72,7 @@ class PhotoScanner(private val context: Context) {
                 Scan(
                     emptyList(),
                     complete = false,
-                    refusal = "nothing was found in ${PhotoKey.CAMERA_PATH}",
+                    refusal = "nothing was found in ${folders.joinToString()}",
                 )
             } else {
                 Scan(rows, complete = true)
@@ -79,7 +83,44 @@ class PhotoScanner(private val context: Context) {
         }
     }
 
-    private fun query(video: Boolean): List<Row> {
+    /**
+     * Every album: each folder holding photos or videos, with how many, most
+     * first. Read whole each time, since it is asked for once a session.
+     */
+    fun albums(): List<PhotoAlbum> {
+        if (Permissions.mediaRefusal(context) != null) return emptyList()
+        val counts = mutableMapOf<String, Int>()
+        for (video in listOf(false, true)) {
+            val column = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.MediaColumns.RELATIVE_PATH
+            } else {
+                @Suppress("DEPRECATION")
+                MediaStore.MediaColumns.DATA
+            }
+            runCatching {
+                resolver.query(collection(video), arrayOf(column), null, null, null)?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val folder = albumFolder(cursor.getStringOrNull(0)) ?: continue
+                        counts[folder] = (counts[folder] ?: 0) + 1
+                    }
+                }
+            }.onFailure { Log.w(TAG, "Could not list the albums", it) }
+        }
+        return counts.map { (path, count) -> PhotoAlbum(path, path.trimEnd('/').substringAfterLast('/'), count) }
+            .sortedWith(compareByDescending<PhotoAlbum> { it.path == PhotoKey.CAMERA_PATH }.thenByDescending { it.count })
+    }
+
+    /** "DCIM/Camera/" from the column, which before Android 10 is the whole path of the file. */
+    private fun albumFolder(raw: String?): String? {
+        raw ?: return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return raw.takeIf { it.isNotEmpty() }
+        @Suppress("DEPRECATION")
+        val root = android.os.Environment.getExternalStorageDirectory().absolutePath + "/"
+        if (!raw.startsWith(root)) return null
+        return raw.removePrefix(root).substringBeforeLast('/', "").takeIf { it.isNotEmpty() }?.let { "$it/" }
+    }
+
+    private fun query(video: Boolean, folders: List<String>): List<Row> {
         val columns = mutableListOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -103,15 +144,15 @@ class PhotoScanner(private val context: Context) {
         val selection: String
         val arguments: Array<String>
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // An exact match rather than a LIKE with a wildcard: the wildcard
-            // would also take DCIM/Camera Backup and every subfolder, and this
-            // feature reads one folder.
-            selection = "${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
-            arguments = arrayOf(PhotoKey.CAMERA_PATH)
+            // Exact matches rather than a LIKE with a wildcard: the wildcard
+            // would also take DCIM/Camera Backup and every subfolder, and each
+            // album is one folder.
+            selection = "${MediaStore.MediaColumns.RELATIVE_PATH} IN (${folders.joinToString { "?" }})"
+            arguments = folders.toTypedArray()
         } else {
             @Suppress("DEPRECATION")
-            selection = "${MediaStore.MediaColumns.DATA} LIKE ?"
-            arguments = arrayOf("%/${PhotoKey.CAMERA_PATH}%")
+            selection = folders.joinToString(" OR ") { "${MediaStore.MediaColumns.DATA} LIKE ?" }
+            arguments = folders.map { "%/$it%" }.toTypedArray()
         }
 
         val zoneOffset = TimeZone.getDefault().getOffset(System.currentTimeMillis())
@@ -140,7 +181,9 @@ class PhotoScanner(private val context: Context) {
 
                 while (cursor.moveToNext()) {
                     val name = cursor.getString(nameColumn) ?: continue
-                    val relativePath = relativePath(cursor.getStringOrNull(pathColumn), name)
+                    val relativePath = relativePath(cursor.getStringOrNull(pathColumn), name, folders)
+                    // Before Android 10 the LIKE also takes subfolders, which are albums of their own.
+                    if (relativePath !in folders) continue
                     val key = PhotoKey.of(relativePath, name) ?: continue
                     val taken = if (takenColumn >= 0 && !cursor.isNull(takenColumn)) {
                         cursor.getLong(takenColumn)
@@ -177,12 +220,11 @@ class PhotoScanner(private val context: Context) {
      * On Android 10 and up the column is already a relative path. On Android 9 it
      * is a full filesystem path, so the folder is taken out of it.
      */
-    private fun relativePath(raw: String?, name: String): String {
-        if (raw == null) return PhotoKey.CAMERA_PATH
+    private fun relativePath(raw: String?, name: String, folders: List<String>): String {
+        if (raw == null) return folders.first()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return raw
         val withoutName = raw.removeSuffix(name)
-        val index = withoutName.indexOf(PhotoKey.CAMERA_PATH)
-        return if (index >= 0) withoutName.substring(index) else PhotoKey.CAMERA_PATH
+        return folders.firstOrNull { withoutName.endsWith("/$it") } ?: withoutName
     }
 
     private fun collection(video: Boolean): Uri =
@@ -246,7 +288,9 @@ class PhotoScanner(private val context: Context) {
      * `setRequireOriginal` and nothing to fail on when that permission is gone.
      */
     fun thumbnail(row: Row, maxPixel: Int): ByteArray? {
-        val bitmap = try {
+        // A photo is scaled down from itself: for a camera's JPEG MediaStore
+        // hands back the tiny thumbnail inside the file, whatever size is asked.
+        val bitmap = (if (row.isVideo) null else scaledDown(row, maxPixel)) ?: try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 resolver.loadThumbnail(itemUri(row), Size(maxPixel, maxPixel), null)
             } else if (row.isVideo) {
@@ -280,10 +324,44 @@ class PhotoScanner(private val context: Context) {
             bitmap
         }
         val out = ByteArrayOutputStream()
-        bounded.compress(Bitmap.CompressFormat.JPEG, 70, out)
+        // A glance at a list takes little; a picture opened to look at, more.
+        bounded.compress(Bitmap.CompressFormat.JPEG, if (maxPixel > 480) 88 else 70, out)
         if (bounded !== bitmap) bounded.recycle()
         bitmap.recycle()
         return out.toByteArray()
+    }
+
+    /** The photo decoded at the smallest power-of-two scale still at least [maxPixel], set upright. */
+    private fun scaledDown(row: Row, maxPixel: Int): Bitmap? = try {
+        val uri = itemUri(row)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            null
+        } else {
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxPixel) sample *= 2
+            val decoded = resolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
+            }
+            val degrees = resolver.openInputStream(uri)?.use {
+                when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+            } ?: 0f
+            if (decoded == null || degrees == 0f) {
+                decoded
+            } else {
+                Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, Matrix().apply { setRotate(degrees) }, true)
+                    .also { if (it !== decoded) decoded.recycle() }
+            }
+        }
+    } catch (error: Exception) {
+        Log.w(TAG, "Could not scale down ${row.name}", error)
+        null
     }
 
     /**

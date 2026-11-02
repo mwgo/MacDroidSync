@@ -185,6 +185,18 @@ class PhotoConfigTest {
         assertEquals(false, PhotoConfig.of(PhotoPayload(lastDays = 30)).enabled)
     }
 
+    /** A Mac from before albums sends none, and the camera folder is what it always meant. */
+    @Test
+    fun `albums are folders, and none means the camera`() {
+        assertEquals(listOf(PhotoKey.CAMERA_PATH), PhotoConfig.of(PhotoPayload()).folders)
+        assertEquals(listOf(PhotoKey.CAMERA_PATH), PhotoConfig.folders(listOf(" ", "../x")))
+        assertEquals(
+            listOf("DCIM/Camera/", "Pictures/WhatsApp/"),
+            PhotoConfig.folders(listOf("DCIM/Camera/", "/Pictures/WhatsApp", "DCIM/Camera/")),
+        )
+        assertEquals("Pictures/WhatsApp/", PhotoAlbum.folderOf("Pictures/WhatsApp/a.jpg"))
+    }
+
     @Test
     fun `an absent day count falls back to the default`() {
         assertEquals(PhotoConfig.DEFAULT_LAST_DAYS, PhotoConfig.of(PhotoPayload()).lastDays)

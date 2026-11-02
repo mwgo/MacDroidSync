@@ -39,7 +39,7 @@ class PhotoSyncEngine(
      * everything was deleted.
      */
     fun describe(connection: PeerConnection, config: PhotoConfig) {
-        val scan = scanner.scan()
+        val scan = scanner.scan(config.folders)
         if (!scan.complete) {
             Log.i(TAG, "Not describing the camera folder: ${scan.refusal}")
             connection.sendPhotoManifest(PhotoPayload(), ok = false, reason = scan.refusal)
@@ -53,8 +53,10 @@ class PhotoSyncEngine(
 
         // The tombstones come from the *unwindowed* scan: a photo deleted from
         // last year has to be reported too, and it is long outside the window.
+        // Only of the albums described: one taken off the list is not deleted.
         val present = scan.rows.map { it.key }
-        val gone = PhotoTombstones.goneKeys(ledger.keys, present, scan.complete)
+        val described = ledger.keys.filter { PhotoAlbum.folderOf(it) in config.folders }.toSet()
+        val gone = PhotoTombstones.goneKeys(described, present, scan.complete)
         ledger.remove(gone)
 
         val inWindow = scan.rows.filter { PhotoWindow.contains(it.captureAt, from) }
@@ -81,6 +83,7 @@ class PhotoSyncEngine(
                     pages = page.pages,
                     count = page.count,
                     from = from,
+                    folders = config.folders,
                     items = page.items,
                     // Tombstones ride on the first page; repeating them on every
                     // page would have the Mac see each of them several times.
@@ -232,9 +235,14 @@ class PhotoSyncEngine(
      * rows just described, then the ledger, so a key the Mac remembered across
      * its own restart can still be drawn.
      */
-    fun preview(key: String): ByteArray? {
+    /** This phone's albums, for the Mac to offer in its settings. */
+    fun albums(): List<PhotoAlbum> = scanner.albums()
+
+    /** [side] is asked for to open the picture large on the Mac; within reason, since it travels whole. */
+    fun preview(key: String, side: Int? = null): ByteArray? {
         val row = describedRows[key] ?: ledgerRowAsScanRow(key) ?: return null
-        return scanner.thumbnail(row, maxPixel = PREVIEW_MAX_PIXEL)
+        val maxPixel = side?.coerceIn(PREVIEW_MAX_PIXEL, LARGE_PREVIEW_MAX_PIXEL) ?: PREVIEW_MAX_PIXEL
+        return scanner.thumbnail(row, maxPixel = maxPixel)
     }
 
     /** A key the Mac asked for that was described in an earlier cycle. */
@@ -262,6 +270,7 @@ class PhotoSyncEngine(
          * to a few tens of kilobytes - one frame, not a transfer.
          */
         private const val PREVIEW_MAX_PIXEL = 320
+        private const val LARGE_PREVIEW_MAX_PIXEL = 2048
         private val VIDEO_EXTENSIONS = setOf("mp4", "mov", "3gp", "mkv", "webm", "m4v")
     }
 }

@@ -67,6 +67,23 @@ final class PhotoDeltaTests: XCTestCase {
         XCTAssertTrue(plan.refusedDelete.isEmpty)
     }
 
+    /// An album taken off the list is no longer described, and its photos are
+    /// not deleted for it; one still on the list is judged as before.
+    func testAnAlbumNotDescribedIsNotDeleted() {
+        let index = [
+            entry("DCIM/Camera/a.jpg", at: 10 * day),
+            entry("DCIM/Camera/b.jpg", at: 10 * day),
+            entry("Pictures/WhatsApp/c.jpg", at: 10 * day),
+        ]
+        let plan = PhotoDelta.plan(
+            items: [item("DCIM/Camera/a.jpg", at: 10 * day)], from: 5 * day,
+            folders: ["DCIM/Camera/"], index: index
+        )
+        XCTAssertEqual(plan.delete.map(\.key), ["DCIM/Camera/b.jpg"])
+        XCTAssertTrue(PhotoDelta.described("Pictures/WhatsApp/c.jpg", by: nil))
+        XCTAssertFalse(PhotoDelta.described("Pictures/WhatsApp/c.jpg", by: ["DCIM/Camera/"]))
+    }
+
     /// And the reason tombstones exist: without them, deleting last year's photo
     /// on the phone could never reach the Mac, because it is outside the window.
     func testTombstoneDeletesOutsideTheWindow() {

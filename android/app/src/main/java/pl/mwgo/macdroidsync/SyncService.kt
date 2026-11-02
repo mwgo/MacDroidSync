@@ -351,21 +351,28 @@ class SyncService : Service() {
                 "Photo configuration from the Mac: " +
                     if (config.enabled) {
                         "on, ${config.lastDays} day(s) back, " +
-                            "at most ${config.maxItemBytes / (1024 * 1024)} MB per item"
+                            "at most ${config.maxItemBytes / (1024 * 1024)} MB per item, " +
+                            "from ${config.folders.joinToString()}"
                     } else {
                         "off"
                     },
             )
             photoConfig = config
+            // The Mac's settings choose among these, so they go over every session.
+            scope.launch {
+                val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
+                runCatching { peer.sendPhotoAlbums(photos.albums()) }
+                    .onFailure { Log.w(TAG, "Could not send the albums", it) }
+            }
         }
 
-        override fun onPhotoPreview(key: String) {
+        override fun onPhotoPreview(key: String, side: Int?) {
             // Off the socket thread, but deliberately not behind the send lock:
             // the whole point is to answer while the operator is looking, and a
             // video in flight would otherwise hold the answer for minutes.
             scope.launch {
                 val peer = connection?.takeIf { it.isAuthenticated } ?: return@launch
-                val jpeg = runCatching { photos.preview(key) }
+                val jpeg = runCatching { photos.preview(key, side) }
                     .onFailure { Log.w(TAG, "Could not draw a preview of $key", it) }
                     .getOrNull()
                 runCatching {

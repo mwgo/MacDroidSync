@@ -23,6 +23,9 @@ public final class PhotoManifestAssembler {
         public let tombstones: [String]
         /// Items the phone could not place, for the report.
         public let skipped: Int
+        /// The folders the phone described; nil from a phone that predates
+        /// albums, which described its camera folder alone.
+        public var folders: [String]? = nil
     }
 
     public enum Outcome: Equatable {
@@ -45,6 +48,7 @@ public final class PhotoManifestAssembler {
     private var received: [Int: [PhotoItem]] = [:]
     private var tombstones: [String] = []
     private var skipped: Int = 0
+    private var folders: [String]?
 
     public init() {}
 
@@ -79,6 +83,7 @@ public final class PhotoManifestAssembler {
             self.pages = pages
             self.expected = count
             self.from = from
+            self.folders = payload.folders
         }
         guard pages == self.pages, count == self.expected, from == self.from else {
             let stale = manifestId ?? id
@@ -104,7 +109,7 @@ public final class PhotoManifestAssembler {
 
         let items = received.keys.sorted().flatMap { received[$0] ?? [] }
         let snapshot = Snapshot(manifestId: id, from: from, items: items,
-                                tombstones: tombstones, skipped: skipped)
+                                tombstones: tombstones, skipped: skipped, folders: folders)
         reset()
         return .complete(snapshot)
     }

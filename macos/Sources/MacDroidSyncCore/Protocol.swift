@@ -73,6 +73,9 @@ public enum MessageType {
     public static let photoPull = "photo-pull"
     /// Mac to phone: how the phone should describe its camera folder.
     public static let photoConfig = "photo-config"
+    /// Phone to Mac, after every `photo-config`: the phone's albums, each a
+    /// folder of photos, for the settings to choose from.
+    public static let photoAlbums = "photo-albums"
     /// Both ways. From the Mac, with one key in `photo.keys`: "show me what this
     /// is". From the phone, the same key back with a small JPEG in `data`, or
     /// `ok: false` and a reason. The bytes of an item waiting for a decision are

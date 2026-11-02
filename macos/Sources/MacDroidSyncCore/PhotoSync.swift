@@ -102,6 +102,16 @@ public struct PhotoPayload: Codable, Equatable {
     public var lastDays: Int?
     /// The largest item worth starting. The phone may lower this, never raise it.
     public var maxItemBytes: Int64?
+    /// On `photo-config`: the albums to describe, as folders such as
+    /// "DCIM/Camera/". Absent means the camera folder alone, as before albums.
+    /// On `photo-manifest`: the folders the phone actually described, which is
+    /// what scopes reading an absence as a deletion.
+    public var folders: [String]?
+    /// On `photo-albums`: every album the phone has.
+    public var albums: [PhotoAlbum]?
+    /// On `photo-preview` to the phone: the longest side wanted, for a picture
+    /// to open rather than glance at. Absent asks for the small one.
+    public var side: Int?
 
     public init(
         key: String? = nil,
@@ -117,7 +127,10 @@ public struct PhotoPayload: Codable, Equatable {
         skipped: Int? = nil,
         enabled: Bool? = nil,
         lastDays: Int? = nil,
-        maxItemBytes: Int64? = nil
+        maxItemBytes: Int64? = nil,
+        folders: [String]? = nil,
+        albums: [PhotoAlbum]? = nil,
+        side: Int? = nil
     ) {
         self.key = key
         self.manifestId = manifestId
@@ -133,6 +146,25 @@ public struct PhotoPayload: Codable, Equatable {
         self.enabled = enabled
         self.lastDays = lastDays
         self.maxItemBytes = maxItemBytes
+        self.folders = folders
+        self.albums = albums
+        self.side = side
+    }
+}
+
+/// One album of the phone: a folder its photos and videos are in.
+public struct PhotoAlbum: Codable, Equatable {
+    /// The folder, "DCIM/Camera/", as the phone's keys begin with it.
+    public var path: String
+    /// What the phone's gallery calls it, the folder's own name.
+    public var name: String
+    /// Photos and videos in it, for the list to show.
+    public var count: Int
+
+    public init(path: String, name: String, count: Int) {
+        self.path = path
+        self.name = name
+        self.count = count
     }
 }
 
@@ -310,6 +342,8 @@ public enum PhotoSyncSettings {
     public static let maxItemMB = 1...2048
     public static let defaultMaxItemMB = 2048
     public static let defaultAlbumName = "MacDroidSync"
+    /// The phone's own camera, the one album synced before there was a choice.
+    public static let cameraFolder = "DCIM/Camera/"
 
     /// Zero means the key has never been written - `UserDefaults.integer`
     /// cannot tell that from a real zero, and zero is not a sane value for any
@@ -380,10 +414,15 @@ public enum PhotoDelta {
     /// `tombstones` are handled separately from absence on purpose: they are an
     /// assertion by the phone and are *not* window-scoped, which is the only way
     /// a deletion of last year's photo can reach the Mac at all.
+    ///
+    /// Absence is scoped by `folders` the same way it is by `from`: an album
+    /// taken off the list is not described, and its photos are not deleted.
+    /// Nil, from a phone that predates albums, scopes nothing.
     public static func plan(
         items: [PhotoItem],
         from: Int64,
         tombstones: [String] = [],
+        folders: [String]? = nil,
         index: [PhotoIndexEntry],
         limits: PhotoSyncLimits = PhotoSyncLimits()
     ) -> PhotoPlan {
@@ -456,11 +495,12 @@ public enum PhotoDelta {
         var candidates: [PhotoIndexEntry] = []
         var inWindow = 0
         for entry in index where entry.state == .imported {
-            if entry.captureAt >= from { inWindow += 1 }
+            if entry.captureAt >= from, described(entry.key, by: folders) { inWindow += 1 }
             guard !renamedAway.contains(entry.key) else { continue }
             if tombstoned.contains(entry.key) {
                 candidates.append(entry)
-            } else if entry.captureAt >= from, !manifestKeys.contains(entry.key) {
+            } else if entry.captureAt >= from, !manifestKeys.contains(entry.key),
+                      described(entry.key, by: folders) {
                 candidates.append(entry)
             }
         }
@@ -484,6 +524,13 @@ public enum PhotoDelta {
         )
         plan.needsApproval = plan.approvalReason != nil
         return plan
+    }
+
+    /// Whether the phone described the folder this key is in.
+    public static func described(_ key: String, by folders: [String]?) -> Bool {
+        guard let folders else { return true }
+        guard let slash = key.lastIndex(of: "/") else { return false }
+        return folders.contains(String(key[...slash]))
     }
 
     /// Why this batch may not move without the operator, or nil when it may.

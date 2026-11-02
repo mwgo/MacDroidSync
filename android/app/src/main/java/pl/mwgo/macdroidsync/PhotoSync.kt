@@ -113,6 +113,16 @@ data class PhotoPayload(
     val lastDays: Int? = null,
     /** The largest item worth starting. This phone may lower it, never raise it. */
     val maxItemBytes: Long? = null,
+    /**
+     * On photo-config: the albums to describe, as folders like "DCIM/Camera/";
+     * absent means the camera folder alone. On photo-manifest: the folders this
+     * phone described, which is what the Mac may read an absence in.
+     */
+    val folders: List<String>? = null,
+    /** On photo-albums: every album this phone has. */
+    val albums: List<PhotoAlbum>? = null,
+    /** On photo-preview from the Mac: the longest side wanted; absent is the small one. */
+    val side: Int? = null,
 ) {
     fun toJson(): JSONObject {
         val json = JSONObject()
@@ -130,6 +140,9 @@ data class PhotoPayload(
         enabled?.let { json.put("enabled", it) }
         lastDays?.let { json.put("lastDays", it) }
         maxItemBytes?.let { json.put("maxItemBytes", it) }
+        folders?.let { list -> json.put("folders", JSONArray(list)) }
+        albums?.let { list -> json.put("albums", JSONArray().apply { list.forEach { put(it.toJson()) } }) }
+        side?.let { json.put("side", it) }
         return json
     }
 
@@ -151,6 +164,11 @@ data class PhotoPayload(
             enabled = if (json.has("enabled")) json.optBoolean("enabled") else null,
             lastDays = if (json.has("lastDays")) json.optInt("lastDays") else null,
             maxItemBytes = if (json.has("maxItemBytes")) json.optLong("maxItemBytes") else null,
+            folders = json.optJSONArray("folders")?.strings(),
+            albums = json.optJSONArray("albums")?.let { array ->
+                (0 until array.length()).map { PhotoAlbum.fromJson(array.getJSONObject(it)) }
+            },
+            side = if (json.has("side")) json.optInt("side") else null,
         )
 
         private fun JSONObject.stringOrNull(key: String): String? =
@@ -158,6 +176,28 @@ data class PhotoPayload(
 
         private fun JSONArray.strings(): List<String> =
             (0 until length()).map { optString(it) }
+    }
+}
+
+/** One album of this phone: a folder its photos and videos are in. */
+data class PhotoAlbum(
+    /** "DCIM/Camera/", as the keys of its photos begin. */
+    val path: String,
+    /** The folder's own name, which is what the gallery shows. */
+    val name: String,
+    val count: Int,
+) {
+    fun toJson(): JSONObject = JSONObject().put("path", path).put("name", name).put("count", count)
+
+    companion object {
+        fun fromJson(json: JSONObject) = PhotoAlbum(
+            path = json.optString("path"),
+            name = json.optString("name"),
+            count = json.optInt("count"),
+        )
+
+        /** The folder part of a key, "DCIM/Camera/" of "DCIM/Camera/a.jpg". */
+        fun folderOf(key: String): String = key.substringBeforeLast('/', "") + "/"
     }
 }
 
@@ -202,6 +242,8 @@ data class PhotoConfig(
     val enabled: Boolean,
     val lastDays: Int,
     val maxItemBytes: Long,
+    /** The albums to describe, as folders; never empty. */
+    val folders: List<String> = listOf(PhotoKey.CAMERA_PATH),
 ) {
     companion object {
         const val DEFAULT_LAST_DAYS = 30
@@ -224,7 +266,21 @@ data class PhotoConfig(
                 .coerceIn(DAYS.first, DAYS.last),
             maxItemBytes = (payload.maxItemBytes ?: Wire.MAX_PHOTO_BYTES)
                 .coerceIn(MIN_ITEM_BYTES, Wire.MAX_PHOTO_BYTES),
+            folders = folders(payload.folders),
         )
+
+        /**
+         * Only folder-shaped paths, each once, ending in a slash; none means the
+         * camera folder, as before the Mac could choose.
+         */
+        fun folders(raw: List<String>?): List<String> {
+            val clean = raw.orEmpty()
+                .map { it.trim().trimStart('/') }
+                .filter { it.isNotEmpty() && it.split('/').none { part -> part == ".." } }
+                .map { if (it.endsWith("/")) it else "$it/" }
+                .distinct()
+            return clean.ifEmpty { listOf(PhotoKey.CAMERA_PATH) }
+        }
     }
 }
 

@@ -92,6 +92,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let photoWaitingLabel = NSTextField(labelWithString: "")
     private let photoWindowButton = NSButton(title: "Review…", target: nil, action: nil)
     private let photoAlbumField = NSTextField(string: "")
+    /// One checkbox per album of the phone, each carrying its folder.
+    private let photoAlbumsList = NSStackView()
+    private let photoAlbumsScroll = NSScrollView()
+    private var photoAlbumsHeight: NSLayoutConstraint?
     private let photoDaysField = NSTextField(string: "")
     private let photoIntervalField = NSTextField(string: "")
     private let photoMaxField = NSTextField(string: "")
@@ -845,6 +849,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let grid = NSGridView(views: [
             [NSGridCell.emptyContentView, photosBox],
             [label("Album:"), row([sized(photoAlbumField, width: 160)])],
+            [label("Phone albums:"), buildPhotoAlbums()],
             [label("Look back:"), row([sized(photoDaysField, width: 50), label("days"),
                                        spacer(12),
                                        label("every"), sized(photoIntervalField, width: 50),
@@ -867,9 +872,77 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             [label("Not sent:"), photoSkippedLabel],
         ])
         // Kept for hiding: a row that has nothing to say is worse than no row.
-        photoAccessRow = grid.row(at: 5)
-        photoSkippedRow = grid.row(at: 10)
+        photoAccessRow = grid.row(at: 6)
+        photoSkippedRow = grid.row(at: 11)
         return configure(grid)
+    }
+
+    /// A list that scrolls once it is longer than a few lines: a phone may have dozens of albums.
+    private func buildPhotoAlbums() -> NSView {
+        photoAlbumsList.orientation = .vertical
+        photoAlbumsList.alignment = .leading
+        photoAlbumsList.spacing = 4
+        photoAlbumsList.translatesAutoresizingMaskIntoConstraints = false
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(photoAlbumsList)
+        photoAlbumsScroll.documentView = document
+        photoAlbumsScroll.hasVerticalScroller = true
+        photoAlbumsScroll.autohidesScrollers = true
+        photoAlbumsScroll.drawsBackground = false
+        photoAlbumsScroll.translatesAutoresizingMaskIntoConstraints = false
+        let height = photoAlbumsScroll.heightAnchor.constraint(equalToConstant: 22)
+        photoAlbumsHeight = height
+        NSLayoutConstraint.activate([
+            photoAlbumsList.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            photoAlbumsList.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            photoAlbumsList.topAnchor.constraint(equalTo: document.topAnchor),
+            photoAlbumsList.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+            document.widthAnchor.constraint(equalTo: photoAlbumsScroll.contentView.widthAnchor),
+            photoAlbumsScroll.widthAnchor.constraint(equalToConstant: 340),
+            height,
+        ])
+        photoAlbumsScroll.toolTip = "The albums the phone has, as it last listed them. The camera's "
+            + "photos go into the album above; every other album into one of its own name."
+        return photoAlbumsScroll
+    }
+
+    /// The phone's albums as last listed, with any chosen one it did not list kept on the list.
+    private func refreshPhotoAlbums() {
+        let chosen = Set(settings.photosFolders)
+        var albums = settings.photosKnownAlbums
+        for folder in chosen where !albums.contains(where: { $0.path == folder }) {
+            let name = folder.split(separator: "/").last.map(String.init) ?? folder
+            albums.append(PhotoAlbum(path: folder, name: name, count: -1))
+        }
+        photoAlbumsList.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for album in albums {
+            let title = album.count >= 0 ? "\(album.name)  (\(album.count))" : album.name
+            let box = NSButton(checkboxWithTitle: title, target: self, action: #selector(togglePhotoAlbum(_:)))
+            box.identifier = NSUserInterfaceItemIdentifier(album.path)
+            box.state = chosen.contains(album.path) ? .on : .off
+            box.isEnabled = settings.photosEnabled
+            box.toolTip = album.path
+            photoAlbumsList.addArrangedSubview(box)
+        }
+        if albums.isEmpty {
+            photoAlbumsList.addArrangedSubview(hint("The phone lists its albums when it connects."))
+        }
+        photoAlbumsHeight?.constant = CGFloat(min(max(albums.count, 1), 7)) * 22
+    }
+
+    @objc private func togglePhotoAlbum(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        var folders = settings.photosFolders.filter { $0 != path }
+        if sender.state == .on { folders.append(path) }
+        // At least one: with none the camera would be synced anyway, unasked.
+        guard !folders.isEmpty else {
+            sender.state = .on
+            return
+        }
+        settings.photosFolders = folders
+        hooks.photoSettingsChanged()
+        refreshAfterChange()
     }
 
     @objc private func togglePhotos() {
@@ -990,6 +1063,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             field.isEnabled = Settings.shared.photosEnabled
         }
         photoApproveAdditionsBox.isEnabled = Settings.shared.photosEnabled
+        refreshPhotoAlbums()
 
         if let taken = report.baselineAt {
             let formatter = DateFormatter()
@@ -1299,4 +1373,9 @@ extension SettingsWindowController: NSToolbarDelegate {
         item.action = #selector(selectPage(_:))
         return item
     }
+}
+
+/// A view whose origin is at the top, so a list in a scroll view starts at its first line.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }

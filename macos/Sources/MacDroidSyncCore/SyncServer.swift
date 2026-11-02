@@ -36,6 +36,7 @@ public final class SyncServer {
     public var onPhotoManifest: ((PhotoPayload, Bool, String?) -> Void)?
     /// The phone's answer to `requestPhotoPreview`: key, JPEG bytes or nil, reason.
     public var onPhotoPreview: ((String, Data?, String?) -> Void)?
+    public var onPhotoAlbums: (([PhotoAlbum]) -> Void)?
     /// Anything the phone says about messages, on the main queue.
     public var onSms: ((SmsReply) -> Void)?
     /// Anything the phone says about the synced folders, on the main queue.
@@ -323,6 +324,9 @@ public final class SyncServer {
         session.onPhotoPreview = { [weak self] key, bytes, reason in
             DispatchQueue.main.async { self?.onPhotoPreview?(key, bytes, reason) }
         }
+        session.onPhotoAlbums = { [weak self] albums in
+            DispatchQueue.main.async { self?.onPhotoAlbums?(albums) }
+        }
         session.onSms = { [weak self] reply in
             DispatchQueue.main.async { self?.onSms?(reply) }
         }
@@ -421,11 +425,11 @@ public final class SyncServer {
     /// Asks the phone for a small picture of one item. False when there is no
     /// phone to ask, which the caller shows rather than waits on.
     @discardableResult
-    public func requestPhotoPreview(key: String) -> Bool {
+    public func requestPhotoPreview(key: String, side: Int? = nil) -> Bool {
         queue.sync {
             guard let session, session.isAuthenticated else { return false }
             do {
-                try session.requestPhotoPreview(key: key)
+                try session.requestPhotoPreview(key: key, side: side)
                 return true
             } catch {
                 Log.error("Could not ask the phone for a preview: \(error.localizedDescription)")

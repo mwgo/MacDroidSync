@@ -45,7 +45,7 @@ class PeerConnection(
          * Answered with [sendPhotoPreview]; a key this phone no longer has is
          * answered too, with a reason, so the Mac is not left waiting.
          */
-        fun onPhotoPreview(key: String)
+        fun onPhotoPreview(key: String, side: Int?)
 
         /**
          * The Mac saying how this phone should describe its camera folder. It
@@ -182,6 +182,11 @@ class PeerConnection(
      * back in the same place it arrived in, so the Mac can match the answer to
      * whatever its window is showing by now.
      */
+    /** The albums the Mac's settings offer to sync. */
+    fun sendPhotoAlbums(albums: List<PhotoAlbum>) {
+        send(Message(type = MessageType.PHOTO_ALBUMS, photo = PhotoPayload(albums = albums)))
+    }
+
     fun sendPhotoPreview(key: String, jpeg: ByteArray?, reason: String? = null) {
         send(
             Message(
@@ -418,7 +423,7 @@ class PeerConnection(
                 message.photo?.manifestId,
             )
             MessageType.PHOTO_PREVIEW -> message.photo?.keys?.firstOrNull()?.let {
-                listener.onPhotoPreview(it)
+                listener.onPhotoPreview(it, message.photo.side)
             }
             MessageType.PHOTO_CONFIG -> message.photo?.let {
                 listener.onPhotoConfig(PhotoConfig.of(it))

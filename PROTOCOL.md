@@ -372,7 +372,7 @@ direction. The Mac ignores it only when the screen is already locked.
 
 ## 8. Photo sync
 
-One way only: the phone's camera folder to the Mac's Photos library. The Mac
+One way only: the phone's albums to the Mac's Photos library. The Mac
 configures and decides, the phone describes and sends, and the bytes travel over
 the file transfer of section 5 with one field added.
 
@@ -381,6 +381,7 @@ Four message types carry the conversation.
 ```
 phone                                          Mac
   |<- photo-config {enabled, lastDays, ...} -- |  inside the handshake, every session
+  |-- photo-albums {albums} ------------------>|  the phone's albums, for the Mac's settings
   |<- photo-pull {}  ------------------------- |  "describe your camera folder"
   |-- photo-manifest {page 1..n} ------------->|  what the phone has, in pages
   |<- photo-preview {keys:[k]} --------------- |  "what is this one?", see below
@@ -408,6 +409,10 @@ phone                                          Mac
 | `enabled` | `photo-config` | whether the phone describes its camera folder at all |
 | `lastDays` | `photo-config` | how many days back to look |
 | `maxItemBytes` | `photo-config` | the largest item worth starting |
+| `folders` | `photo-config` | the albums to describe, as folders like `DCIM/Camera/`; absent means `DCIM/Camera/` alone |
+| `folders` | `photo-manifest` | the folders the phone described; absence is read as deletion only inside them |
+| `side` | `photo-preview` from the Mac | the longest side wanted, up to 2048 px, for a picture to open rather than glance at; absent is 320 px |
+| `albums` | `photo-albums` | every album of the phone: `{path, name, count}`, `path` being the folder its keys begin with |
 
 One item, with single letter keys because a full camera folder sends thousands of
 them:
@@ -428,9 +433,11 @@ what the wait is about - so the window asks: `photo-preview` with one key in
 `keys`. The phone answers with the same type and key, a JPEG no longer than
 320 px on its longest side in `data` (base64) with `mime: "image/jpeg"`, or with
 `ok: false` and a `reason` when it has nothing to show, including for a key it no
-longer has. It is the redacted thumbnail MediaStore keeps, never the original:
-a picture to glance at carries no location and needs none, and it works for a
-video, whose frame is precisely what tells the operator which clip this is.
+longer has. A photo is scaled down from itself and a video gets the frame
+MediaStore keeps, which is precisely what tells the operator which clip this is;
+either is a fresh JPEG with no location in it, since a picture to look at needs
+none. Not MediaStore's thumbnail for a photo: for a camera's JPEG that is the
+160 px one inside the file, whatever size is asked for.
 
 One key per message, because the request follows a selection: the answer to a
 row nobody is looking at any more is stored for later or dropped, and there is
@@ -495,6 +502,21 @@ exactly what a truncated or untrustworthy manifest looks like:
 
 An item that cannot be sent is **listed with `x`**, never left out: leaving it out
 would read as a deletion.
+
+Albums narrow both kinds the same way. The phone reports as `gone` only keys of the
+folders it was asked to describe, and the Mac reads an absence only for keys inside
+the `folders` the manifest declares: an album taken off the list is no longer
+described, and its photos stay in Photos. A manifest without `folders`, from a
+phone that predates albums, is judged as before.
+
+### Albums
+
+A phone keeps its photos in several folders - the camera, screenshots, a messenger's
+downloads - and the Mac chooses which to sync. After every `photo-config` the phone
+sends `photo-albums` with each folder holding photos or videos and how many; the Mac
+keeps the list for its settings and sends its choice back as `folders` in the next
+`photo-config`. The camera folder's photos go into the album named in the Mac's
+settings, any other album's into a Photos album of the folder's own name.
 
 ### Limits
 

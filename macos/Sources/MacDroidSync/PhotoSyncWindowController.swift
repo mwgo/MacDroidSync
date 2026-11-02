@@ -17,10 +17,11 @@ struct PhotoSyncHooks {
     var syncNow: () -> Void = {}
     /// A picture of an item that is already in the Photos library - the rows
     /// about to be removed or replaced - drawn locally and at once.
-    var previewFromLibrary: (String) -> NSImage? = { _ in nil }
-    /// Asks the phone for a picture of an item that is not here yet. False when
-    /// there is no phone to ask; the answer comes back through `receivePreview`.
-    var requestPreview: (String) -> Bool = { _ in false }
+    var previewFromLibrary: (String, CGFloat) -> NSImage? = { _, _ in nil }
+    /// Asks the phone for a picture of an item that is not here yet, the small
+    /// one or one of the given longest side. False when there is no phone to
+    /// ask; the answer comes back through `receivePreview`.
+    var requestPreview: (String, Int?) -> Bool = { _, _ in false }
     /// Why the feature is doing nothing, when it is doing nothing.
     var status: () -> String? = { nil }
 }
@@ -78,6 +79,9 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
     /// Arrow keys run through the list faster than the phone can answer, so the
     /// ask waits until the selection has stood still for a moment.
     private var previewDebounce: DispatchWorkItem?
+    /// The row whose picture was clicked, until the phone's larger one arrives.
+    private var openingKey: String?
+    private var openingTimeout: DispatchWorkItem?
 
     /// What the table is showing. The data source reads this and nothing else:
     /// asking the hooks again mid-reload is how a table ends up drawing a row
@@ -143,6 +147,23 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
     /// The phone's answer to a preview request. Stored whatever the selection
     /// is by now, shown only if the row is still the one being looked at.
     func receivePreview(key: String, bytes: Data?, reason: String?) {
+        if openingKey == key {
+            openingKey = nil
+            openingTimeout?.cancel()
+            if awaitingPreview == key {
+                awaitingPreview = nil
+                previewTimeout?.cancel()
+            }
+            if let bytes, let image = NSImage(data: bytes) {
+                previews[key] = image
+                open(bytes, named: selectedRow()?.name ?? key)
+            } else if let image = previews[key] {
+                // Better the small picture than none.
+                open(image, named: selectedRow()?.name ?? key)
+            }
+            if selectedRow()?.key == key { showPreview(for: selectedRow()) }
+            return
+        }
         if let bytes, let image = NSImage(data: bytes) {
             previews[key] = image
         } else {
@@ -253,6 +274,10 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         previewImage.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
         previewImage.translatesAutoresizingMaskIntoConstraints = false
         previewImage.setAccessibilityLabel("Preview of the selected item")
+        previewImage.toolTip = "Click to open it in Preview"
+        previewImage.addGestureRecognizer(
+            NSClickGestureRecognizer(target: self, action: #selector(openPreview))
+        )
 
         previewCaption.font = .systemFont(ofSize: 11)
         previewCaption.alignment = .center
@@ -319,7 +344,7 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         // at once and without bothering the phone. Everything else - and an
         // asset the library could not draw - is asked for.
         if action.kind == .delete || action.kind == .change,
-           let image = hooks.previewFromLibrary(action.key) {
+           let image = hooks.previewFromLibrary(action.key, 480) {
             previews[action.key] = image
             previewImage.image = image
             previewNote.stringValue = Self.describe(image)
@@ -333,11 +358,60 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
     }
 
+    /// The picture of the selected row in the system's viewer, larger than the
+    /// pane shows: from the library for what is already here, from the phone,
+    /// asked for at full screen size, for what is not.
+    @objc private func openPreview() {
+        guard let action = selectedRow() else { return }
+        if action.kind == .delete || action.kind == .change,
+           let image = hooks.previewFromLibrary(action.key, Self.openSide) {
+            open(image, named: action.name)
+            return
+        }
+        guard hooks.requestPreview(action.key, Int(Self.openSide)) else {
+            // No phone: the small picture is all there is.
+            if let image = previews[action.key] { open(image, named: action.name) }
+            return
+        }
+        openingKey = action.key
+        previewNote.stringValue = "Opening…"
+        openingTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, self.openingKey == action.key else { return }
+            self.openingKey = nil
+            if let image = self.previews[action.key] { self.open(image, named: action.name) }
+            if self.selectedRow()?.key == action.key { self.showPreview(for: action) }
+        }
+        openingTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
+    }
+
+    private func open(_ image: NSImage, named name: String) {
+        guard let tiff = image.tiffRepresentation,
+              let jpeg = NSBitmapImageRep(data: tiff)?.representation(using: .jpeg, properties: [.compressionFactor: 0.9])
+        else { return }
+        open(jpeg, named: name)
+    }
+
+    /// Written to a temporary file under the item's own name, then opened with whatever opens JPEGs.
+    private func open(_ jpeg: Data, named name: String) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("MacDroidSync Previews")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let base = (name as NSString).deletingPathExtension
+        let url = folder.appendingPathComponent((base.isEmpty ? "Preview" : base) + ".jpg")
+        do {
+            try jpeg.write(to: url, options: .atomic)
+            NSWorkspace.shared.open(url)
+        } catch {
+            Log.error("Could not open the preview of \(name): \(error.localizedDescription)")
+        }
+    }
+
     private func askPhoneForPreview(of action: PhotoPendingAction) {
         // Only if this is still the row being looked at.
         guard selectedRow()?.key == action.key else { return }
         previewTimeout?.cancel()
-        guard hooks.requestPreview(action.key) else {
+        guard hooks.requestPreview(action.key, nil) else {
             awaitingPreview = nil
             previewNote.stringValue = "No preview: the phone is not connected"
             return
@@ -355,6 +429,9 @@ final class PhotoSyncWindowController: NSWindowController, NSWindowDelegate,
         previewTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
     }
+
+    /// The longest side of a picture opened to look at.
+    private static let openSide: CGFloat = 2048
 
     private static func describe(_ image: NSImage) -> String {
         guard let rep = image.representations.first, rep.pixelsWide > 0 else { return "" }
