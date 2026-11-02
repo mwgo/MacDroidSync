@@ -29,7 +29,7 @@ class MacScanner(private val context: Context, private val prefs: Prefs) {
      * typed in host the Mac may well be reached from afar.
      */
     val isUsable: Boolean
-        get() = Permissions.hasScan(context) && Permissions.hasCompanion(context) &&
+        get() = Permissions.hasScan(context) && MacCompanion.isLinked(context) &&
             adapter?.isEnabled == true && prefs.manualHost.isEmpty()
 
     @SuppressLint("MissingPermission")
@@ -79,6 +79,7 @@ class MacScanner(private val context: Context, private val prefs: Prefs) {
         private const val STORE = "mac-range"
         private const val KEY_SEEN_AT = "seenAt"
         private const val KEY_IN_RANGE = "inRange"
+        private const val KEY_ADDRESS = "address"
         /** Writing every packet would wear the flash for nothing. */
         private const val MARK_EVERY_MS = 30_000L
 
@@ -88,6 +89,13 @@ class MacScanner(private val context: Context, private val prefs: Prefs) {
          * encrypted preferences: none of it is a secret.
          */
         fun seenAt(context: Context): Long = store(context).getLong(KEY_SEEN_AT, 0)
+
+        /** The Mac's Bluetooth address as it said in hello-ack, null until then. */
+        fun address(context: Context): String? = store(context).getString(KEY_ADDRESS, null)
+
+        fun rememberAddress(context: Context, address: String) {
+            if (address != address(context)) store(context).edit().putString(KEY_ADDRESS, address).apply()
+        }
 
         fun inRange(context: Context): Boolean = store(context).getBoolean(KEY_IN_RANGE, false)
 

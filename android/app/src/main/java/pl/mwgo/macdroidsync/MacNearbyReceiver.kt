@@ -8,8 +8,8 @@ import android.content.Intent
 import android.util.Log
 
 /**
- * Results of the scan [MacScanner] left with the system. A Bluetooth broadcast
- * like this one is allowed to start a foreground service from the background.
+ * Results of the scan [MacScanner] left with the system. Starting the service
+ * from here is allowed only with the Mac linked as the companion device.
  */
 class MacNearbyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -24,9 +24,16 @@ class MacNearbyReceiver : BroadcastReceiver() {
             MacScanner.markLost(context)
             return
         }
-        MacScanner.markSeen(context, inRange = callback == ScanSettings.CALLBACK_TYPE_FIRST_MATCH)
-        if (SyncService.running != null || !Prefs(context).syncEnabled) return
-        Log.i(Prefs.TAG, "The Mac is in range again, starting the sync")
-        SyncService.start(context)
+        appeared(context, inRange = callback == ScanSettings.CALLBACK_TYPE_FIRST_MATCH)
+    }
+
+    companion object {
+        /** The Mac was seen, by this scan or by the system's (MacPresenceService). */
+        fun appeared(context: Context, inRange: Boolean) {
+            MacScanner.markSeen(context, inRange)
+            if (SyncService.running != null || !Prefs(context).syncEnabled) return
+            Log.i(Prefs.TAG, "The Mac is in range again, starting the sync")
+            SyncService.start(context)
+        }
     }
 }

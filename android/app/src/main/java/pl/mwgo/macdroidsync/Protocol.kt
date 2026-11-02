@@ -130,6 +130,8 @@ data class Message(
      * broadcasting it. Carried by hello and by presence.
      */
     val beacon: Boolean? = null,
+    /** The Mac's Bluetooth address in hello-ack, for the companion device link. */
+    val bluetooth: String? = null,
     /**
      * Photo sync, see PROTOCOL.md section 8. One nested object rather than the
      * ten flat fields it holds, because every field of this class costs three
@@ -162,6 +164,7 @@ data class Message(
         ok?.let { json.put("ok", it) }
         path?.let { json.put("path", it) }
         beacon?.let { json.put("beacon", it) }
+        bluetooth?.let { json.put("bluetooth", it) }
         photo?.let { json.put("photo", it.toJson()) }
         sms?.let { json.put("sms", it.toJson()) }
         folder?.let { json.put("folder", it.toJson()) }
@@ -191,6 +194,7 @@ data class Message(
                 ok = if (json.has("ok")) json.optBoolean("ok") else null,
                 path = json.optStringOrNull("path"),
                 beacon = if (json.has("beacon")) json.optBoolean("beacon") else null,
+                bluetooth = json.optStringOrNull("bluetooth"),
                 photo = json.optJSONObject("photo")?.let { PhotoPayload.fromJson(it) },
                 sms = json.optJSONObject("sms")?.let { SmsPayload.fromJson(it) },
                 folder = json.optJSONObject("folder")?.let { FolderPayload.fromJson(it) },

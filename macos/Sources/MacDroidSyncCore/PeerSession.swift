@@ -326,7 +326,8 @@ public final class PeerSession {
                 seq: codec.nextSequence(),
                 type: MessageType.helloAck,
                 device: localDeviceName,
-                deviceId: localDeviceId
+                deviceId: localDeviceId,
+                bluetooth: MacAdvertiser.bluetoothAddress
             ))
             // Sent from inside the handshake, on this queue, so that it cannot
             // be overtaken by the first `photo-pull` of the session. The phone

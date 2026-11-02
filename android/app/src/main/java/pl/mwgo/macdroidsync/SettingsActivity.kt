@@ -1,17 +1,15 @@
 package pl.mwgo.macdroidsync
 
 import android.Manifest
-import android.bluetooth.le.ScanFilter
 import android.companion.AssociationInfo
 import android.companion.AssociationRequest
-import android.companion.BluetoothLeDeviceFilter
+import android.companion.BluetoothDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Intent
 import android.content.IntentSender
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.ParcelUuid
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
@@ -134,21 +132,23 @@ class SettingsActivity : ScreenActivity() {
     }
 
     /**
-     * The system's own dialog that makes the Mac this app's companion device,
-     * found by its advertisement (see MacScanner).
+     * The system's own dialog that makes the Mac this app's companion device.
+     * Matched among the paired devices by the address the Mac gave in its
+     * hello-ack, which stays the same while its advertisement's does not.
      */
     private fun requestCompanion() {
         val manager = getSystemService(CompanionDeviceManager::class.java) ?: return
-        if (Permissions.hasCompanion(this)) {
+        if (MacCompanion.isLinked(this)) {
             openAppSettings()
             return
         }
-        val code = prefs.pairingCode
-        if (code.isBlank()) return
-        val filter = BluetoothLeDeviceFilter.Builder()
-            .setScanFilter(
-                ScanFilter.Builder().setServiceUuid(ParcelUuid(PresenceBeacon.macServiceUuid(code))).build()
-            )
+        val address = MacScanner.address(this)
+        if (address == null) {
+            Toast.makeText(this, R.string.permission_companion_no_address, Toast.LENGTH_LONG).show()
+            return
+        }
+        val filter = BluetoothDeviceFilter.Builder()
+            .setAddress(address)
             .build()
         val request = AssociationRequest.Builder()
             .addDeviceFilter(filter)
@@ -178,6 +178,8 @@ class SettingsActivity : ScreenActivity() {
     }
 
     private fun companionLinked() {
+        // A new association is only watched once observe asks for it.
+        MacCompanion.observe(this)
         refreshPermissionRows()
         if (prefs.syncEnabled) SyncService.start(this, SyncService.ACTION_START)
     }
@@ -234,7 +236,7 @@ class SettingsActivity : ScreenActivity() {
     private fun refreshPermissionRows() {
         row(Permissions.hasNotifications(this), binding.notificationsState, binding.notificationsButton)
         row(Permissions.hasAllNearby(this), binding.nearbyState, binding.nearbyButton)
-        row(Permissions.hasCompanion(this), binding.companionState, binding.companionButton)
+        row(MacCompanion.isLinked(this), binding.companionState, binding.companionButton)
         row(Permissions.canDrawOverlays(this), binding.overlayState, binding.overlayButton)
         row(Permissions.hasMediaRead(this), binding.mediaState, binding.mediaButton)
         row(Permissions.hasMediaLocation(this), binding.mediaLocationState, binding.mediaLocationButton)

@@ -20,7 +20,8 @@
     <string name="permission_notifications">Notifications</string>
     <string name="permission_nearby">Nearby devices</string>
     <string name="permission_companion">Mac as companion device</string>
-    <string name="permission_companion_failed">The Mac was not found. Keep MacDroidSync running on it, with Bluetooth on, and try again.</string>
+    <string name="permission_companion_failed">The Mac was not found. Pair this phone with the Mac in the Bluetooth settings first, then try again.</string>
+    <string name="permission_companion_no_address">Connect to the Mac once first: it tells this phone its Bluetooth address.</string>
     <string name="permission_overlay">Display over other apps</string>
     <string name="permission_overlay_explanation">Android only lets an app touch the clipboard while it has a window on screen. MacDroidSync opens an invisible window for a fraction of a second, which requires this permission.</string>
     <string name="permission_granted">Granted</string>

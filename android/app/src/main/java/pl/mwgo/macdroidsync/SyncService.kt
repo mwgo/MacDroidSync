@@ -153,7 +153,10 @@ class SyncService : Service() {
 
         notifications.createChannels()
         showIdle()
-        if (prefs.syncEnabled) macScanner.watch()
+        if (prefs.syncEnabled) {
+            macScanner.watch()
+            MacCompanion.observe(this)
+        }
 
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -332,6 +335,8 @@ class SyncService : Service() {
         override fun onAuthenticated(macName: String) {
             Log.i(TAG, "Authenticated with $macName")
             connectedMac = macName
+            connection?.macBluetooth?.let { MacScanner.rememberAddress(this@SyncService, it) }
+            MacCompanion.observe(this@SyncService)
             showConnected(macName)
             drainOutbox()
             startWatchingSms()

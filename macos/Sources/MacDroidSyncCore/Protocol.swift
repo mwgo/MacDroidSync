@@ -135,6 +135,10 @@ public struct Message: Codable {
     /// Presence beacon, see PROTOCOL.md section 7: whether the phone is
     /// broadcasting it. Carried by `hello` and by `presence`.
     public var beacon: Bool?
+    /// The Mac's Bluetooth address, `AA:BB:CC:DD:EE:FF`, in `hello-ack`: the
+    /// phone paired with this Mac links it as its companion device, see
+    /// PROTOCOL.md section 7.
+    public var bluetooth: String?
     /// Photo sync, see PROTOCOL.md section 8. One nested object rather than the
     /// ten flat fields it holds: this struct carries every field of every message
     /// type, and each one added here costs three edits on both platforms.
@@ -164,6 +168,7 @@ public struct Message: Codable {
         ok: Bool? = nil,
         path: String? = nil,
         beacon: Bool? = nil,
+        bluetooth: String? = nil,
         photo: PhotoPayload? = nil,
         sms: SmsPayload? = nil,
         folder: FolderPayload? = nil
@@ -187,6 +192,7 @@ public struct Message: Codable {
         self.ok = ok
         self.path = path
         self.beacon = beacon
+        self.bluetooth = bluetooth
         self.photo = photo
         self.sms = sms
         self.folder = folder

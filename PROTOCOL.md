@@ -387,9 +387,14 @@ the service running as before; so does a phone with a typed in host, Bluetooth
 off, or no permission to scan.
 
 Android does not let a scan result start a foreground service from the
-background. The phone therefore sleeps only once the user has confirmed the Mac
-as the app's companion device, found by this advertisement, which is what grants
-that start.
+background. The phone therefore sleeps only once the user has paired it with the
+Mac in the Bluetooth settings and confirmed the Mac as the app's companion
+device. The Mac's `hello-ack` carries its public Bluetooth address in
+`bluetooth` (`AA:BB:CC:DD:EE:FF`), by which the phone finds it among the paired
+devices: the advertisement goes out from an address that changes every few
+minutes, which only a paired phone can resolve. The link also has the system
+watch for the Mac and wake the app when it is back, which keeps working while
+the app is frozen and its own scan with it.
 
 ## 8. Photo sync
 

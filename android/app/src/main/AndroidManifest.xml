@@ -49,6 +49,9 @@
          background once the Mac is seen again. Without it the service has to
          keep running while the Mac is away. -->
     <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <!-- The system scans for the companion Mac and wakes this app when it comes
+         into range, even while the app's own scan is frozen. -->
+    <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
     <uses-feature
         android:name="android.software.companion_device_setup"
         android:required="false" />
@@ -168,6 +171,16 @@
         <receiver
             android:name=".MacNearbyReceiver"
             android:exported="false" />
+
+        <!-- Bound by the system when the companion Mac comes into range or goes. -->
+        <service
+            android:name=".MacPresenceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
 
         <receiver
             android:name=".BootReceiver"

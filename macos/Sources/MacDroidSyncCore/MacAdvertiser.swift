@@ -1,5 +1,6 @@
 import CoreBluetooth
 import Foundation
+import IOBluetooth
 
 /// Advertises this Mac over Bluetooth LE, so the phone, which stops its service
 /// while the Mac is out of range, notices it is back and connects again.
@@ -8,6 +9,14 @@ public final class MacAdvertiser: NSObject {
     private var serviceUUID: CBUUID?
 
     public var isRunning: Bool { peripheral != nil }
+
+    /// This Mac's public Bluetooth address as `AA:BB:CC:DD:EE:FF`, nil without
+    /// a controller. A phone paired with the Mac knows it by this address
+    /// whatever address the advertisement goes out from.
+    public static var bluetoothAddress: String? {
+        guard let raw = IOBluetoothHostController.default()?.addressAsString(), !raw.isEmpty else { return nil }
+        return raw.replacingOccurrences(of: "-", with: ":").uppercased()
+    }
 
     public func start(pairingCode: String) {
         let uuid = CBUUID(nsuuid: PresenceBeacon.macServiceUUID(pairingCode: pairingCode))

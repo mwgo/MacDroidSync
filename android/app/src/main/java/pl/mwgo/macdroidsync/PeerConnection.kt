@@ -86,6 +86,9 @@ class PeerConnection(
 
     @Volatile
     var isAuthenticated = false
+
+    /** The Mac's Bluetooth address from hello-ack, null from an older Mac. */
+    var macBluetooth: String? = null
         private set
 
     @Volatile
@@ -391,6 +394,7 @@ class PeerConnection(
             MessageType.HELLO_ACK -> {
                 isAuthenticated = true
                 macName = message.device ?: macName
+                macBluetooth = message.bluetooth
                 listener.onAuthenticated(macName)
             }
             MessageType.CLIPBOARD -> {
