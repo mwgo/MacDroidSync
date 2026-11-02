@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.companion.CompanionDeviceManager
 import android.os.Environment
 import android.provider.Settings
 import androidx.core.content.ContextCompat
@@ -23,6 +24,40 @@ object Permissions {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE) ==
             PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Seeing the Mac's advertisement, which brings the sync back once the Mac
+     * is in range. Not looked for before Android 12, where scanning needs the
+     * location permission.
+     */
+    fun hasScan(context: Context): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /** The beacon and, where it exists, the scan: what the Nearby devices row shows. */
+    fun hasAllNearby(context: Context): Boolean =
+        hasNearby(context) && (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || hasScan(context))
+
+    /**
+     * The Mac confirmed as this app's companion device, which is what lets
+     * [MacNearbyReceiver] start the service from the background: Android does
+     * not count a Bluetooth scan result as reason enough. Any association will
+     * do, since the Mac's Bluetooth address changes anyway.
+     */
+    fun hasCompanion(context: Context): Boolean {
+        val manager = context.getSystemService(CompanionDeviceManager::class.java) ?: return false
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                manager.myAssociations.isNotEmpty()
+            } else {
+                @Suppress("DEPRECATION") manager.associations.isNotEmpty()
+            }
+        }.getOrDefault(false)
+    }
+
+    /** Both halves of Nearby devices: the beacon and the scan for the Mac. */
+    val nearby = arrayOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_SCAN)
 
     /** Runtime permission from Android 13 on; before that notifications just work. */
     fun hasNotifications(context: Context): Boolean =

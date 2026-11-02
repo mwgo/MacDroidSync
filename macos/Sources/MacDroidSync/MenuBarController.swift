@@ -12,6 +12,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let outbox = OutboxStore()
     private let power = PowerMonitor()
     private let presence = PresenceScanner()
+    private let advertiser = MacAdvertiser()
     private let safeNetworks = SafeNetworkStore()
     private let network = NetworkMonitor()
     private let photoIndex = PhotoIndexStore()
@@ -180,6 +181,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         lockStateObservers.forEach(DistributedNotificationCenter.default().removeObserver)
         lockStateObservers.removeAll()
         presence.stop()
+        advertiser.stop()
         network.stop()
         power.stop()
         watcher.stop()
@@ -572,6 +574,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // knownPairingCode, not pairingCode: this runs on the main thread and
         // must never wait for the keychain.
         let code = settings.knownPairingCode
+        if let code, !code.isEmpty, !power.isSuspended {
+            advertiser.start(pairingCode: code)
+        } else if advertiser.isRunning {
+            advertiser.stop()
+        }
         // Every reason is spelled out: a security feature that silently does
         // nothing is the worst of both worlds.
         let blockers = [

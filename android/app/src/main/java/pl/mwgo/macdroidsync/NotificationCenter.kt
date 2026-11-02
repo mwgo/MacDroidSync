@@ -11,13 +11,11 @@ import androidx.core.app.NotificationCompat
 /**
  * Two ongoing notifications back the same foreground service:
  *
- *  * while no Mac is connected, [CHANNEL_IDLE] carries a silent notification with
- *    a fully transparent icon, so nothing shows up in the status bar. The channel
- *    asks for IMPORTANCE_MIN but Android raises the importance of any foreground
- *    service notification to at least IMPORTANCE_LOW, which is why the icon
- *    itself has to be blank (see drawable/ic_stat_idle).
- *  * [CHANNEL_ACTIVE] posts the real icon the moment a Mac is connected, together
- *    with the clipboard action.
+ *  * while no Mac is connected, [CHANNEL_IDLE] carries a silent notification.
+ *    It only stays up while the Mac is in Bluetooth range, since the service
+ *    stops once the Mac is gone (see MacScanner).
+ *  * [CHANNEL_ACTIVE] the moment a Mac is connected, together with the clipboard
+ *    action.
  *
  * A posted notification cannot change its channel, hence the two ids that the
  * service alternates between.
@@ -74,8 +72,7 @@ class NotificationCenter(private val context: Context) {
 
     fun idleNotification(): Notification =
         NotificationCompat.Builder(context, CHANNEL_IDLE)
-            // Transparent on purpose: no status bar icon while disconnected.
-            .setSmallIcon(R.drawable.ic_stat_idle)
+            .setSmallIcon(R.drawable.ic_stat_waiting)
             .setContentTitle(context.getString(R.string.notification_idle_title))
             .setContentText(context.getString(R.string.notification_idle_text))
             .setContentIntent(mainActivityIntent())

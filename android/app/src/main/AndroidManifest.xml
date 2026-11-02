@@ -40,6 +40,18 @@
          user walked away. Nothing is ever scanned or connected to from here, so
          no location permission is involved. -->
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <!-- Seeing the Mac's own advertisement, which starts the sync again once the
+         Mac is in range. It says nothing about where the phone is. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <!-- With the Mac as a companion device, the service may start from the
+         background once the Mac is seen again. Without it the service has to
+         keep running while the Mac is away. -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
     <uses-permission
         android:name="android.permission.BLUETOOTH"
         android:maxSdkVersion="30" />
@@ -152,6 +164,10 @@
                 <action android:name="pl.mwgo.macdroidsync.FOLDER_EDITING" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".MacNearbyReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".BootReceiver"

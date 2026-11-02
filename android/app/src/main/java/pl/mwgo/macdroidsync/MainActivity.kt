@@ -28,10 +28,10 @@ class MainActivity : ScreenActivity() {
     private lateinit var outbox: Outbox
 
     private val nearbyPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             refreshBeaconHint()
-            // The beacon could not start without it, so try again now.
-            if (granted && prefs.beaconEnabled) SyncService.start(this, SyncService.ACTION_START)
+            // The beacon and the scan for the Mac could not start without it.
+            if (prefs.syncEnabled && Permissions.hasNearby(this)) SyncService.start(this, SyncService.ACTION_START)
         }
 
     private val storagePermission =
@@ -78,6 +78,9 @@ class MainActivity : ScreenActivity() {
         binding.beaconHint.setOnClickListener { openSettings() }
         binding.photosHint.setOnClickListener { openSettings() }
         binding.foldersHint.setOnClickListener { requestAllFiles() }
+        // Phones set up before the scan existed; with Nearby devices already
+        // granted for the beacon, Android adds it without asking.
+        if (prefs.syncEnabled && !Permissions.hasScan(this)) requestNearby()
     }
 
     /**
@@ -184,6 +187,8 @@ class MainActivity : ScreenActivity() {
             binding.statusText.text = getString(R.string.status_missing_code)
             return
         }
+        // Without the scan the service cannot stop while the Mac is away.
+        if (!Permissions.hasScan(this)) requestNearby()
         binding.statusText.text = getString(R.string.status_connecting)
         SyncService.start(this, if (reconnect) SyncService.ACTION_RECONNECT else SyncService.ACTION_START)
     }
@@ -221,8 +226,8 @@ class MainActivity : ScreenActivity() {
 
     private fun requestNearby() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        if (Permissions.hasNearby(this)) return
-        nearbyPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE)
+        if (Permissions.hasAllNearby(this)) return
+        nearbyPermission.launch(Permissions.nearby)
     }
 
     private fun lockTheMac() {

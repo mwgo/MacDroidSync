@@ -1,12 +1,21 @@
 package pl.mwgo.macdroidsync
 
 import android.Manifest
+import android.bluetooth.le.ScanFilter
+import android.companion.AssociationInfo
+import android.companion.AssociationRequest
+import android.companion.BluetoothLeDeviceFilter
+import android.companion.CompanionDeviceManager
 import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.ParcelUuid
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import pl.mwgo.macdroidsync.databinding.ActivitySettingsBinding
 
@@ -28,13 +37,16 @@ class SettingsActivity : ScreenActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refreshPermissionRows() }
 
     private val nearbyPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             refreshPermissionRows()
-            // The beacon could not start without it, so try again now.
-            if (granted && prefs.beaconEnabled && prefs.syncEnabled) {
+            // The beacon and the scan for the Mac could not start without it.
+            if (Permissions.hasNearby(this) && prefs.syncEnabled) {
                 SyncService.start(this, SyncService.ACTION_START)
             }
         }
+
+    private val companionLink =
+        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { companionLinked() }
 
     private val mediaPermission =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -66,6 +78,7 @@ class SettingsActivity : ScreenActivity() {
         binding.saveButton.setOnClickListener { save() }
         binding.notificationsButton.setOnClickListener { requestNotifications() }
         binding.nearbyButton.setOnClickListener { requestNearby() }
+        binding.companionButton.setOnClickListener { requestCompanion() }
         binding.overlayButton.setOnClickListener { requestOverlay() }
         binding.mediaButton.setOnClickListener { requestMedia() }
         binding.mediaLocationButton.setOnClickListener { requestMediaLocation() }
@@ -109,15 +122,64 @@ class SettingsActivity : ScreenActivity() {
 
     private fun requestNearby() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        if (Permissions.hasNearby(this)) {
+        if (Permissions.hasAllNearby(this)) {
             // Already granted, so the only thing left to offer is the place it
             // can be taken away again.
             startActivity(
                 Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
             )
         } else {
-            nearbyPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE)
+            nearbyPermission.launch(Permissions.nearby)
         }
+    }
+
+    /**
+     * The system's own dialog that makes the Mac this app's companion device,
+     * found by its advertisement (see MacScanner).
+     */
+    private fun requestCompanion() {
+        val manager = getSystemService(CompanionDeviceManager::class.java) ?: return
+        if (Permissions.hasCompanion(this)) {
+            openAppSettings()
+            return
+        }
+        val code = prefs.pairingCode
+        if (code.isBlank()) return
+        val filter = BluetoothLeDeviceFilter.Builder()
+            .setScanFilter(
+                ScanFilter.Builder().setServiceUuid(ParcelUuid(PresenceBeacon.macServiceUuid(code))).build()
+            )
+            .build()
+        val request = AssociationRequest.Builder()
+            .addDeviceFilter(filter)
+            .setSingleDevice(true)
+            .build()
+        val pending = { sender: IntentSender ->
+            companionLink.launch(IntentSenderRequest.Builder(sender).build())
+        }
+        val failed = { error: CharSequence? ->
+            Log.w(Prefs.TAG, "Companion link failed: $error")
+            Toast.makeText(this, R.string.permission_companion_failed, Toast.LENGTH_LONG).show()
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            manager.associate(request, mainExecutor, object : CompanionDeviceManager.Callback() {
+                override fun onAssociationPending(intentSender: IntentSender) = pending(intentSender)
+                override fun onAssociationCreated(associationInfo: AssociationInfo) = companionLinked()
+                override fun onFailure(error: CharSequence?) = failed(error)
+            })
+        } else {
+            @Suppress("DEPRECATION")
+            manager.associate(request, object : CompanionDeviceManager.Callback() {
+                @Deprecated("Before Android 13")
+                override fun onDeviceFound(intentSender: IntentSender) = pending(intentSender)
+                override fun onFailure(error: CharSequence?) = failed(error)
+            }, null)
+        }
+    }
+
+    private fun companionLinked() {
+        refreshPermissionRows()
+        if (prefs.syncEnabled) SyncService.start(this, SyncService.ACTION_START)
     }
 
     private fun requestOverlay() {
@@ -171,7 +233,8 @@ class SettingsActivity : ScreenActivity() {
 
     private fun refreshPermissionRows() {
         row(Permissions.hasNotifications(this), binding.notificationsState, binding.notificationsButton)
-        row(Permissions.hasNearby(this), binding.nearbyState, binding.nearbyButton)
+        row(Permissions.hasAllNearby(this), binding.nearbyState, binding.nearbyButton)
+        row(Permissions.hasCompanion(this), binding.companionState, binding.companionButton)
         row(Permissions.canDrawOverlays(this), binding.overlayState, binding.overlayButton)
         row(Permissions.hasMediaRead(this), binding.mediaState, binding.mediaButton)
         row(Permissions.hasMediaLocation(this), binding.mediaLocationState, binding.mediaLocationButton)

@@ -35,10 +35,10 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Long lived foreground service that owns the connection to the Mac.
  *
- * While disconnected it stays alive on a silent IMPORTANCE_MIN notification (no
- * status bar icon) and retries with a backoff; the retry is also woken up the
- * moment a network becomes available. Once the handshake succeeds the visible
- * notification with the status bar icon and the clipboard action is posted.
+ * While disconnected it stays alive on a silent IMPORTANCE_MIN notification and
+ * retries with a backoff; the retry is also woken up the moment a network
+ * becomes available. Once the handshake succeeds the notification with the
+ * clipboard action is posted. With the Mac out of range it stops altogether.
  */
 class SyncService : Service() {
 
@@ -50,6 +50,7 @@ class SyncService : Service() {
     private lateinit var outbox: Outbox
     private lateinit var incomingFiles: IncomingFiles
     private lateinit var beacon: PresenceAdvertiser
+    private lateinit var macScanner: MacScanner
     private lateinit var photos: PhotoSyncEngine
     private lateinit var smsReader: SmsReader
     private lateinit var smsSender: SmsSender
@@ -135,6 +136,7 @@ class SyncService : Service() {
         outbox = Outbox(this)
         incomingFiles = IncomingFiles(this)
         beacon = PresenceAdvertiser(this)
+        macScanner = MacScanner(this, prefs)
         photos = PhotoSyncEngine(this, prefs)
         smsReader = SmsReader(this)
         smsSender = SmsSender(this)
@@ -151,6 +153,7 @@ class SyncService : Service() {
 
         notifications.createChannels()
         showIdle()
+        if (prefs.syncEnabled) macScanner.watch()
 
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -167,10 +170,15 @@ class SyncService : Service() {
             ACTION_STOP -> {
                 Log.i(TAG, "Stop requested")
                 prefs.syncEnabled = false
+                macScanner.unwatch()
                 stopWithGoodbye()
                 return START_NOT_STICKY
             }
+            // Also what a fresh Nearby devices grant sends, so the scan starts then.
+            ACTION_START, null -> if (prefs.syncEnabled) macScanner.watch()
             ACTION_RECONNECT -> {
+                // The pairing code may be new, and with it the Mac's UUID.
+                if (prefs.syncEnabled) macScanner.watch()
                 connection?.close()
                 retryTrigger.trySend(Unit)
             }
@@ -217,6 +225,11 @@ class SyncService : Service() {
             while (isActive) {
                 if (!prefs.syncEnabled && !hasQueuedFiles()) break
                 val connected = attemptConnection()
+                if (!connected && prefs.syncEnabled && macAway()) {
+                    Log.i(TAG, "Mac out of range, sleeping until it is seen again")
+                    withContext(Dispatchers.Main) { stopEverything(getString(R.string.status_mac_away)) }
+                    break
+                }
                 failures = if (connected) 0 else failures + 1
                 val wait = BACKOFF_MS[minOf(failures, BACKOFF_MS.lastIndex)]
                 Log.d(TAG, "Next attempt in ${wait / 1000}s")
@@ -224,6 +237,18 @@ class SyncService : Service() {
             }
         }
     }
+
+    /**
+     * The Mac's advertisement has not been seen for a while, so the service can
+     * stop and leave the waking to [MacNearbyReceiver].
+     */
+    private fun macAway(): Boolean =
+        MacRange.shouldSleep(
+            System.currentTimeMillis(),
+            MacScanner.seenAt(this),
+            MacScanner.inRange(this),
+            macScanner.isUsable,
+        )
 
     /** Returns true when the session was actually established. */
     private suspend fun attemptConnection(): Boolean {
@@ -1044,7 +1069,7 @@ class SyncService : Service() {
         }
     }
 
-    private fun stopEverything() {
+    private fun stopEverything(status: String? = null) {
         smsWatcher.stop()
         beacon.stop()
         ringer.stop()
@@ -1058,7 +1083,7 @@ class SyncService : Service() {
         connection?.close()
         connection = null
         connectedMac = null
-        broadcastStatus()
+        broadcastStatus(message = status)
         stopForeground(STOP_FOREGROUND_REMOVE)
         notifications.cancel(NotificationCenter.ID_IDLE)
         notifications.cancel(NotificationCenter.ID_ACTIVE)

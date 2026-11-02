@@ -21,6 +21,11 @@ final class PresenceBeaconTests: XCTestCase {
         )
     }
 
+    func testMacServiceUUIDMatchesTheCrossPlatformVector() {
+        XCTAssertEqual(PresenceBeacon.macServiceUUID(pairingCode: code).uuidString, "36FF2646-C121-95DD-BB3C-A80CD4588973")
+        XCTAssertNotEqual(PresenceBeacon.macServiceUUID(pairingCode: code), PresenceBeacon.serviceUUID(pairingCode: code))
+    }
+
     func testTheUUIDIsDifferentFromTheChannelKey() {
         // Same pairing code, different HKDF info: broadcasting the beacon must
         // not leak anything about the key that encrypts the clipboard.

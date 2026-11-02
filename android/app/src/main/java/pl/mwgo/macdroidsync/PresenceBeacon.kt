@@ -38,6 +38,7 @@ object PresenceBeacon {
     const val PAYLOAD_LENGTH = 1 + MAC_LENGTH
 
     private val UUID_INFO = "presence-beacon".toByteArray(Charsets.UTF_8)
+    private val MAC_UUID_INFO = "mac-beacon".toByteArray(Charsets.UTF_8)
     private val TOKEN_INFO = "presence-token".toByteArray(Charsets.UTF_8)
     /** Domain separator, so this HMAC cannot be confused with any other. */
     private val DOMAIN = "MDS1".toByteArray(Charsets.UTF_8)
@@ -51,6 +52,12 @@ object PresenceBeacon {
      */
     fun serviceUuid(pairingCode: String): UUID {
         val buffer = ByteBuffer.wrap(serviceUuidBytes(pairingCode))
+        return UUID(buffer.long, buffer.long)
+    }
+
+    /** What the Mac advertises, so a phone asleep while it was away sees it back. */
+    fun macServiceUuid(pairingCode: String): UUID {
+        val buffer = ByteBuffer.wrap(CryptoBox.deriveKey(pairingCode, MAC_UUID_INFO, 16))
         return UUID(buffer.long, buffer.long)
     }
 

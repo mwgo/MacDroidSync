@@ -19,6 +19,8 @@
     <string name="section_permissions">Permissions</string>
     <string name="permission_notifications">Notifications</string>
     <string name="permission_nearby">Nearby devices</string>
+    <string name="permission_companion">Mac as companion device</string>
+    <string name="permission_companion_failed">The Mac was not found. Keep MacDroidSync running on it, with Bluetooth on, and try again.</string>
     <string name="permission_overlay">Display over other apps</string>
     <string name="permission_overlay_explanation">Android only lets an app touch the clipboard while it has a window on screen. MacDroidSync opens an invisible window for a fraction of a second, which requires this permission.</string>
     <string name="permission_granted">Granted</string>
@@ -30,10 +32,11 @@
     <string name="status_connecting">Looking for the Mac…</string>
     <string name="status_connected">Connected to %1$s</string>
     <string name="status_missing_code">Enter the pairing code shown in the Mac menu</string>
+    <string name="status_mac_away">The Mac is out of range. The sync comes back when it is near.</string>
     <string name="status_sync_off">Clipboard sync is off</string>
 
     <string name="notification_channel_idle">Waiting for the Mac</string>
-    <string name="notification_channel_idle_description">Silent placeholder shown while no Mac is connected. It has no status bar icon.</string>
+    <string name="notification_channel_idle_description">Silent notification shown while the Mac is near but not connected.</string>
     <string name="notification_channel_active">Connected</string>
     <string name="notification_channel_active_description">Shown while a Mac is connected, with the action that sends this phone\'s clipboard.</string>
     <string name="notification_channel_events">Clipboard events</string>

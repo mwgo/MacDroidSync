@@ -1,0 +1,29 @@
+<!--
+  Status bar icon while the Mac is near but not connected: the two arrows of
+  ic_stat_sync drawn as outlines only, so it reads as the same app, not syncing.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024"
+    android:tint="#FFFFFFFF">
+    <group
+        android:pivotX="512"
+        android:pivotY="512"
+        android:scaleX="1.5"
+        android:scaleY="1.5">
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="30"
+            android:strokeLineJoin="round"
+            android:pathData="M232,384 L412,284 L412,350 L792,350 L792,418 L412,418 L412,484 Z" />
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="30"
+            android:strokeLineJoin="round"
+            android:pathData="M792,640 L612,540 L612,606 L232,606 L232,674 L612,674 L612,740 Z" />
+    </group>
+</vector>

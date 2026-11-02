@@ -24,6 +24,11 @@ class PresenceBeaconTest {
     }
 
     @Test
+    fun `the mac's uuid matches the cross platform vector`() {
+        assertEquals("36ff2646-c121-95dd-bb3c-a80cd4588973", PresenceBeacon.macServiceUuid(code).toString())
+    }
+
+    @Test
     fun `payload matches the cross platform vector`() {
         val payload = PresenceBeacon.payload(code, PresenceBeacon.FLAG_AUTO_LOCK, slot)
         assertEquals(PresenceBeacon.PAYLOAD_LENGTH, payload.size)

@@ -64,6 +64,7 @@ public enum PresenceBeacon {
     public static let payloadLength = 1 + macLength
 
     private static let uuidInfo = Data("presence-beacon".utf8)
+    private static let macUUIDInfo = Data("mac-beacon".utf8)
     private static let tokenInfo = Data("presence-token".utf8)
     /// Domain separator, so an HMAC from this feature can never be mistaken for
     /// one computed anywhere else with the same key material.
@@ -80,6 +81,20 @@ public enum PresenceBeacon {
     /// RFC 4122 version, because both sides only ever compare them.
     public static func serviceUUID(pairingCode: String) -> UUID {
         let b = [UInt8](serviceUUIDBytes(pairingCode: pairingCode))
+        return UUID(uuid: (
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+        ))
+    }
+
+    /// What this Mac advertises so that the phone, asleep while the Mac is out
+    /// of range, can tell it is back. It carries nothing else: it only wakes
+    /// the phone, which still has to pass the handshake to get anywhere.
+    public static func macServiceUUID(pairingCode: String) -> UUID {
+        let b = [UInt8](
+            CryptoBox.deriveKey(pairingCode: pairingCode, info: macUUIDInfo, outputByteCount: 16)
+                .withUnsafeBytes { Data($0) }
+        )
         return UUID(uuid: (
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
             b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]

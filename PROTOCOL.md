@@ -370,6 +370,27 @@ switched on, on the beacon, or on any measurement: the user pressed a button,
 which is a clearer signal than any distance estimate, and locking is the safe
 direction. The Mac ignores it only when the screen is already locked.
 
+### The Mac's advertisement
+
+The Mac advertises too, while it is awake and knows the pairing code: a bare
+128 bit service UUID derived like the phone's, with HKDF info `mac-beacon`, and
+no payload. For the pairing code of section 6 it is
+`36ff2646-c121-95dd-bb3c-a80cd4588973`.
+
+It only tells the phone that the Mac is in range. The phone leaves a scan for it
+with the system, which runs it while the app does not, and once the Mac has not
+been seen for two minutes and no session is up, it stops its service, and with
+it the notification and its own beacon. The Mac cannot hear that beacon from
+out of range anyway. The next sighting starts the service again. A Mac never
+seen is assumed not to advertise, as an older version, and the phone then keeps
+the service running as before; so does a phone with a typed in host, Bluetooth
+off, or no permission to scan.
+
+Android does not let a scan result start a foreground service from the
+background. The phone therefore sleeps only once the user has confirmed the Mac
+as the app's companion device, found by this advertisement, which is what grants
+that start.
+
 ## 8. Photo sync
 
 One way only: the phone's albums to the Mac's Photos library. The Mac
